@@ -19,7 +19,7 @@ func main() {
 		MaxPositionEmbeddings: 512,
 	}
 
-	backend := device.NewMetalBackend() // FP32 is faster until all ops FP16-native
+	backend := device.NewMetalBackendFP16() // FP16 with bulk weight upload
 	bertModel := model.NewBertModelWithBackend(config, backend)
 
 	seqLen := 50 // ~50 tokens per sentence to match Python

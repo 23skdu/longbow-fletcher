@@ -62,6 +62,10 @@ type Tensor interface {
 	// ToHost copies the data back to a Go slice (row-major).
 	ToHost() []float64
 
+	// CopyFromFloat64 copies a []float64 slice to the tensor in bulk.
+	// This is much more efficient than using Set() for each element.
+	CopyFromFloat64(data []float64)
+
     // Data returns the underlying slice if on CPU, nil otherwise.
     // Dangerous, use with caution.
     Data() []float64

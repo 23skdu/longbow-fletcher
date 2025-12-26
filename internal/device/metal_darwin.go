@@ -329,6 +329,31 @@ func (t *MetalTensor) Data() []float64 {
 	return nil
 }
 
+// CopyFromFloat64 copies []float64 data to GPU in a single bulk operation.
+// This is much faster than using Set() for each element.
+func (t *MetalTensor) CopyFromFloat64(data []float64) {
+	size := t.rows * t.cols
+	if len(data) != size {
+		panic("CopyFromFloat64: size mismatch")
+	}
+	
+	if t.backend.useFP16 {
+		// Batch convert to FP16 and upload
+		f16 := make([]uint16, size)
+		for i, v := range data {
+			f16[i] = float32ToFloat16(float32(v))
+		}
+		C.Metal_CopyToDevice(t.buf, C.int(t.offset), unsafe.Pointer(&f16[0]), C.int(size*2))
+	} else {
+		// FP32 path
+		f32 := make([]float32, size)
+		for i, v := range data {
+			f32[i] = float32(v)
+		}
+		C.Metal_CopyToDevice(t.buf, C.int(t.offset), unsafe.Pointer(&f32[0]), C.int(size*4))
+	}
+}
+
 func (t *MetalTensor) Copy(from Tensor) {
 	_, ok := from.(*MetalTensor)
 	if !ok {

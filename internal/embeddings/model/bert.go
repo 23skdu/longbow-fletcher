@@ -84,14 +84,20 @@ func (m *BertModel) initWeights() {
 }
 
 // xavierInit initializes a matrix with Xavier/Glorot uniform initialization.
+// Uses bulk CopyFromFloat64 for efficient GPU upload (especially FP16).
 func xavierInit(m device.Tensor) {
 	r, c := m.Dims()
+	size := r * c
 	limit := math.Sqrt(6.0 / float64(r+c))
-	for i := 0; i < r; i++ {
-		for j := 0; j < c; j++ {
-			m.Set(i, j, (rand.Float64()*2-1)*limit)
-		}
+	
+	// Generate all random values in a single slice
+	data := make([]float64, size)
+	for i := range data {
+		data[i] = (rand.Float64()*2 - 1) * limit
 	}
+	
+	// Bulk upload to GPU (single FP16 conversion pass)
+	m.CopyFromFloat64(data)
 }
 
 // ForwardBatch performs the forward pass for a batch of sequences.

@@ -324,3 +324,11 @@ func (t *CPUTensor) ToHost() []float64 {
 func (t *CPUTensor) Data() []float64 {
     return t.mat.RawMatrix().Data
 }
+
+func (t *CPUTensor) CopyFromFloat64(data []float64) {
+	dst := t.mat.RawMatrix().Data
+	if len(data) != len(dst) {
+		panic("CopyFromFloat64: size mismatch")
+	}
+	copy(dst, data)
+}
