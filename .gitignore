@@ -35,3 +35,13 @@ go.work.sum
 /fletcher
 /fletcher_cgo
 bin/
+
+# Profiling
+*.prof
+*.pprof
+
+# Logs
+*.log
+
+# Text artifacts (temp)
+*.txt
