@@ -447,6 +447,64 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
   mc.lastMPSBuffer = buffer;
 }
 
+// FP16 MatMul for 2x GPU performance
+void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                      bool transA, MetalBufferRef b, int offB, bool transB,
+                      MetalBufferRef c, int offC, int M, int N, int K) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+
+  [mc flush];
+
+  id<MTLCommandBuffer> buffer = [mc.commandQueue commandBuffer];
+
+  // Use Float16 data type for 2x performance
+  MPSMatrixDescriptor *descA = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transA ? K : M)
+                       columns:(transA ? M : K)rowBytes:(transA ? M : K) *
+                               sizeof(uint16_t)
+                      dataType:MPSDataTypeFloat16];
+
+  MPSMatrixDescriptor *descB = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transB ? N : K)
+                       columns:(transB ? K : N)rowBytes:(transB ? K : N) *
+                               sizeof(uint16_t)
+                      dataType:MPSDataTypeFloat16];
+
+  MPSMatrixDescriptor *descC =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:N
+                                           rowBytes:N * sizeof(uint16_t)
+                                           dataType:MPSDataTypeFloat16];
+
+  MPSMatrix *matA = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)a
+                                               offset:offA
+                                           descriptor:descA];
+  MPSMatrix *matB = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)b
+                                               offset:offB
+                                           descriptor:descB];
+  MPSMatrix *matC = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)c
+                                               offset:offC
+                                           descriptor:descC];
+
+  MPSMatrixMultiplication *mul =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:transA
+                                       transposeRight:transB
+                                           resultRows:M
+                                        resultColumns:N
+                                      interiorColumns:K
+                                                alpha:1.0
+                                                 beta:0.0];
+
+  [mul encodeToCommandBuffer:buffer
+                  leftMatrix:matA
+                 rightMatrix:matB
+                resultMatrix:matC];
+
+  [buffer commit];
+  mc.lastMPSBuffer = buffer;
+}
+
 void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
                          int strideA, bool transA, MetalBufferRef b, int offB,
                          int strideB, bool transB, MetalBufferRef c, int offC,

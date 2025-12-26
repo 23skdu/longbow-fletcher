@@ -19,7 +19,7 @@ func main() {
 		MaxPositionEmbeddings: 512,
 	}
 
-	backend := device.NewMetalBackend()
+	backend := device.NewMetalBackend() // Using FP32 for stability
 	bertModel := model.NewBertModelWithBackend(config, backend)
 
 	seqLen := 50 // ~50 tokens per sentence to match Python

@@ -63,6 +63,11 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   MetalBufferRef b, int offB, bool transB, MetalBufferRef c,
                   int offC, int M, int N, int K);
 
+// FP16 MatMul for 2x GPU performance (requires FP16 buffers)
+void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                      bool transA, MetalBufferRef b, int offB, bool transB,
+                      MetalBufferRef c, int offC, int M, int N, int K);
+
 // Batched MatMul for attention: process multiple sequences at once
 // Assumes uniform matrix sizes. batchCount = number of independent MatMuls.
 // strideA/B/C = byte offset between consecutive matrices in the batch

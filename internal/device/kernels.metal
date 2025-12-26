@@ -1,11 +1,52 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// ============ FP32 Kernels ============
+
 kernel void add_kernel(device const float *a [[ buffer(0) ]],
                        device const float *b [[ buffer(1) ]],
                        device float *result [[ buffer(2) ]],
                        uint index [[ thread_position_in_grid ]]) {
     result[index] = a[index] + b[index];
+}
+
+// ============ FP16 Kernels ============
+
+kernel void add_kernel_f16(device const half *a [[ buffer(0) ]],
+                           device const half *b [[ buffer(1) ]],
+                           device half *result [[ buffer(2) ]],
+                           uint index [[ thread_position_in_grid ]]) {
+    result[index] = a[index] + b[index];
+}
+
+kernel void add_scalar_kernel_f16(device const half *a [[ buffer(0) ]],
+                                  constant half &val [[ buffer(1) ]],
+                                  device half *result [[ buffer(2) ]],
+                                  uint index [[ thread_position_in_grid ]]) {
+    result[index] = a[index] + val;
+}
+
+kernel void scale_kernel_f16(device const half *a [[ buffer(0) ]],
+                             constant half &val [[ buffer(1) ]],
+                             device half *result [[ buffer(2) ]],
+                             uint index [[ thread_position_in_grid ]]) {
+    result[index] = a[index] * val;
+}
+
+kernel void tanh_kernel_f16(device const half *a [[ buffer(0) ]],
+                            device half *result [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    result[index] = half(tanh(float(a[index])));
+}
+
+kernel void gelu_kernel_f16(device const half *a [[ buffer(0) ]],
+                            device half *result [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    float x = float(a[index]);
+    float c1 = 0.7978845608;
+    float c2 = 0.044715;
+    float inner = c1 * (x + c2 * x * x * x);
+    result[index] = half(0.5 * x * (1.0 + tanh(inner)));
 }
 
 kernel void add_scalar_kernel(device const float *a [[ buffer(0) ]],

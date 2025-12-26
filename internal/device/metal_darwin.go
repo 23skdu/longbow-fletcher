@@ -30,8 +30,9 @@ type bufferPoolEntry struct {
 }
 
 type MetalBackend struct {
-	ctx  C.MetalContextRef
-	pool []bufferPoolEntry // Simple pool of GPU buffers
+	ctx    C.MetalContextRef
+	pool   []bufferPoolEntry // Simple pool of GPU buffers
+	useFP16 bool             // Use FP16 precision for 2x GPU performance
 }
 
 func NewMetalBackend() *MetalBackend {
@@ -43,33 +44,70 @@ func NewMetalBackend() *MetalBackend {
 		panic("Failed to initialize Metal backend")
 	}
 	
-	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64)}
+	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64), useFP16: false}
+}
+
+// NewMetalBackendFP16 creates a Metal backend using FP16 precision for 2x GPU performance
+func NewMetalBackendFP16() *MetalBackend {
+	cSrc := C.CString(kernelsSource)
+	defer C.free(unsafe.Pointer(cSrc))
+	
+	ctx := C.Metal_Init(cSrc)
+	if ctx == nil {
+		panic("Failed to initialize Metal backend")
+	}
+	
+	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64), useFP16: true}
 }
 
 func (b *MetalBackend) Name() string {
+	if b.useFP16 {
+		return "Metal-FP16"
+	}
 	return "Metal"
 }
 
 func (b *MetalBackend) NewTensor(r, c int, data []float64) Tensor {
 	size := r * c // number of elements
-	sizeBytes := size * 4
+	
+	var sizeBytes int
 	var buf C.MetalBufferRef
 	
-	// Try to get buffer from pool
-	buf = b.getPooledBuffer(sizeBytes)
-	if buf == nil {
-		buf = C.Metal_Alloc(C.MetalContextRef(b.ctx), C.int(sizeBytes))
-	}
-	
-	if len(data) > 0 {
-		// Convert []float64 to []float32
-		f32 := make([]float32, size)
-		for i, v := range data {
-			f32[i] = float32(v)
+	if b.useFP16 {
+		// FP16: 2 bytes per element
+		sizeBytes = size * 2
+		buf = b.getPooledBuffer(sizeBytes)
+		if buf == nil {
+			buf = C.Metal_Alloc(C.MetalContextRef(b.ctx), C.int(sizeBytes))
 		}
-		C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&f32[0]), C.int(sizeBytes))
+		
+		if len(data) > 0 {
+			// Convert []float64 to []uint16 (FP16 encoded)
+			f16 := make([]uint16, size)
+			for i, v := range data {
+				f16[i] = float32ToFloat16(float32(v))
+			}
+			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&f16[0]), C.int(sizeBytes))
+		} else {
+			C.Metal_Memset(buf, 0, 0, C.int(sizeBytes))
+		}
 	} else {
-		C.Metal_Memset(buf, 0, 0, C.int(sizeBytes))
+		// FP32: 4 bytes per element
+		sizeBytes = size * 4
+		buf = b.getPooledBuffer(sizeBytes)
+		if buf == nil {
+			buf = C.Metal_Alloc(C.MetalContextRef(b.ctx), C.int(sizeBytes))
+		}
+		
+		if len(data) > 0 {
+			f32 := make([]float32, size)
+			for i, v := range data {
+				f32[i] = float32(v)
+			}
+			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&f32[0]), C.int(sizeBytes))
+		} else {
+			C.Metal_Memset(buf, 0, 0, C.int(sizeBytes))
+		}
 	}
 
 	t := &MetalTensor{
@@ -82,15 +120,56 @@ func (b *MetalBackend) NewTensor(r, c int, data []float64) Tensor {
 		ownsBuffer: true,
 	}
 	
-	// Use finalizer only for non-pooled fallback
 	runtime.SetFinalizer(t, func(mt *MetalTensor) {
 		if mt.ownsBuffer && mt.offset == 0 {
-			// Return to pool instead of freeing
 			mt.backend.returnToPool(mt.buf, mt.sizeBytes)
 		}
 	})
 	
 	return t
+}
+
+// FP16 conversion helpers
+func float32ToFloat16(f float32) uint16 {
+	bits := *(*uint32)(unsafe.Pointer(&f))
+	sign := (bits >> 31) & 1
+	exp := (bits >> 23) & 0xFF
+	frac := bits & 0x7FFFFF
+	
+	if exp == 255 { // Inf/NaN
+		return uint16((sign << 15) | (0x1F << 10) | (frac >> 13))
+	}
+	if exp == 0 { // Zero/Denorm
+		return uint16(sign << 15)
+	}
+	
+	newExp := int(exp) - 127 + 15
+	if newExp >= 31 { // Overflow -> Inf
+		return uint16((sign << 15) | (0x1F << 10))
+	}
+	if newExp <= 0 { // Underflow -> Zero
+		return uint16(sign << 15)
+	}
+	
+	return uint16((sign << 15) | (uint32(newExp) << 10) | (frac >> 13))
+}
+
+func float16ToFloat32(h uint16) float32 {
+	sign := (uint32(h) >> 15) & 1
+	exp := (uint32(h) >> 10) & 0x1F
+	frac := uint32(h) & 0x3FF
+	
+	if exp == 0 { // Zero/Denorm
+		return 0.0
+	}
+	if exp == 31 { // Inf/NaN
+		bits := (sign << 31) | (0xFF << 23) | (frac << 13)
+		return *(*float32)(unsafe.Pointer(&bits))
+	}
+	
+	newExp := exp - 15 + 127
+	bits := (sign << 31) | (newExp << 23) | (frac << 13)
+	return *(*float32)(unsafe.Pointer(&bits))
 }
 
 func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
@@ -185,11 +264,23 @@ func (t *MetalTensor) Set(i, j int, v float64) {
 }
 
 func (t *MetalTensor) rawHostCopy() []float32 {
-	// IMPORTANT: Flush pending GPU operations before copying to host
 	t.backend.Synchronize()
 	
-	size := t.rows * t.cols // number of elements
+	size := t.rows * t.cols
 	
+	if t.backend.useFP16 {
+		// Read FP16 data and convert to float32
+		raw16 := make([]uint16, size)
+		C.Metal_CopyToHost(t.buf, C.int(t.offset), unsafe.Pointer(&raw16[0]), C.int(size*2))
+		
+		raw := make([]float32, size)
+		for i, h := range raw16 {
+			raw[i] = float16ToFloat32(h)
+		}
+		return raw
+	}
+	
+	// FP32 path
 	raw := make([]float32, size)
 	C.Metal_CopyToHost(t.buf, C.int(t.offset), unsafe.Pointer(&raw[0]), C.int(size*4))
 	return raw
@@ -248,10 +339,16 @@ func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
 	// If full width slice (j=0, l=cols), it's a contiguous chunk.
 	if j == 0 && l == t.cols {
 		// Contiguous rows
-		// Make new tensor sharing buffer with offset
 		newRows := k - i
 		newCols := t.cols
-		rowBytes := t.cols * 4 // Each element is float32 (4 bytes)
+		
+		// Byte offset depends on precision
+		var rowBytes int
+		if t.backend.useFP16 {
+			rowBytes = t.cols * 2 // FP16: 2 bytes
+		} else {
+			rowBytes = t.cols * 4 // FP32: 4 bytes
+		}
 		
 		byteOffset := t.offset + i * rowBytes
 		
@@ -286,15 +383,6 @@ func (t *MetalTensor) Mul(a, b Tensor) {
 		panic("Mixed backend Mul")
 	}
 	
-	// C = A * B
-	// MPS uses Column-Major by default? No, MPSMatrix defaults to Row-Major if rowBytes is configured.
-	// In MatMul bridge, we set up descriptors for Row Major.
-	
-	// Dimensions:
-	// A: (M x K)
-	// B: (K x N)
-	// C: (M x N)
-	
 	r, common1 := ma.Dims()
 	common2, c := mb.Dims()
 	
@@ -302,11 +390,20 @@ func (t *MetalTensor) Mul(a, b Tensor) {
 		panic(fmt.Sprintf("Dimension mismatch: %dx%d * %dx%d", r, common1, common2, c))
 	}
 	
-	C.Metal_MatMul(t.backend.ctx, 
-		ma.buf, C.int(ma.offset), C.bool(ma.trans),
-		mb.buf, C.int(mb.offset), C.bool(mb.trans),
-		t.buf, C.int(t.offset),
-		C.int(r), C.int(c), C.int(common1))
+	if t.backend.useFP16 {
+		// FP16 MatMul for 2x performance
+		C.Metal_MatMul_F16(t.backend.ctx, 
+			ma.buf, C.int(ma.offset), C.bool(ma.trans),
+			mb.buf, C.int(mb.offset), C.bool(mb.trans),
+			t.buf, C.int(t.offset),
+			C.int(r), C.int(c), C.int(common1))
+	} else {
+		C.Metal_MatMul(t.backend.ctx, 
+			ma.buf, C.int(ma.offset), C.bool(ma.trans),
+			mb.buf, C.int(mb.offset), C.bool(mb.trans),
+			t.buf, C.int(t.offset),
+			C.int(r), C.int(c), C.int(common1))
+	}
 }
 
 func (t *MetalTensor) Add(other Tensor) {
