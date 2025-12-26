@@ -23,6 +23,7 @@ var (
 	useGPU      = flag.Bool("gpu", false, "Use Metal GPU acceleration")
 	interactive = flag.Bool("interactive", false, "Interactive mode")
 	loremIpsum  = flag.Int("lorem", 0, "Generate N lines of lorem ipsum")
+	modelType   = flag.String("model", "bert-tiny", "Model type (bert-tiny, nomic-embed-text)")
 )
 
 func main() {
@@ -37,7 +38,7 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU)
+	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU, *modelType)
 	if err != nil {
 		log.Fatalf("Failed to create embedder: %v", err)
 	}

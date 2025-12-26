@@ -505,6 +505,9 @@ func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation Acti
 		result.Tanh()
 	case ActivationSoftmax:
 		result.Softmax()
+	case ActivationSwiGLU:
+		// TODO: Implement CPU SwiGLU (requires splitting and swish)
+		log.Panic("ActivationSwiGLU not implemented on CPU")
 	case ActivationIdentity:
 		// No-op
 	}
@@ -592,4 +595,9 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	wg.Wait()
 	
 	return result
+}
+
+func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
+	// TODO: Implement CPU RoPE
+	log.Panic("ApplyRoPE not implemented on CPU")
 }

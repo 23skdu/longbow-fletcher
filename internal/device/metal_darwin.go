@@ -606,14 +606,36 @@ func (t *MetalTensor) Linear(input, weight, bias Tensor) Tensor {
 	}
 }
 
+// override LinearActivation for SwiGLU if needed
 func (t *MetalTensor) LinearActivation(input, weight, bias Tensor, activation ActivationType) Tensor {
+	if activation == ActivationSwiGLU && t.backend.useFP16 {
+		it := input.(*MetalTensor)
+		wt := weight.(*MetalTensor)
+		bt := bias.(*MetalTensor)
+		r, _ := it.Dims()
+		_, oc2 := wt.Dims()
+		oc := oc2 / 2
+
+		// 1. Linear projection to 2x intermediate size
+		res2i := t.Linear(it, wt, bt).(*MetalTensor)
+		
+		// 2. SwiGLU reduction to 1x intermediate size
+		res := t.backend.NewTensor(r, oc, nil)
+		rst := res.(*MetalTensor)
+		C.Metal_SwiGLU_F16(t.backend.ctx, res2i.buf, C.int(res2i.offset), rst.buf, C.int(rst.offset), C.int(r), C.int(oc))
+		
+		t.backend.PutTensor(res2i)
+		return res
+	}
+	// Normal path or FP32 fallback
+	return t.linearActivationInternal(input, weight, bias, activation)
+}
+
+func (t *MetalTensor) linearActivationInternal(input, weight, bias Tensor, activation ActivationType) Tensor {
 	if t.backend.useFP16 {
 		it := input.(*MetalTensor)
 		wt := weight.(*MetalTensor)
 		bt := bias.(*MetalTensor)
-		
-		// Dims check implicit in C call or helper? 
-		// Dims check:
 		r, _ := it.Dims()
 		_, oc := wt.Dims()
 		res := t.backend.NewTensor(r, oc, nil)
@@ -624,11 +646,10 @@ func (t *MetalTensor) LinearActivation(input, weight, bias Tensor, activation Ac
 			wt.buf, C.int(wt.offset), C.int(wt.cols),
 			bt.buf, C.int(bt.offset),
 			rst.buf, C.int(rst.offset),
-			C.int(activation)) // Enum maps 1:1 if we match indices
+			C.int(activation))
 			
 		return res
 	} else {
-		// Fallback
 		res := t.Linear(input, weight, bias)
 		switch activation {
 		case ActivationGELU:
@@ -666,5 +687,13 @@ func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale flo
 		return result
 	} else {
 		panic("Attention not implemented for Metal FP32")
+	}
+}
+
+func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
+	if t.backend.useFP16 {
+		C.Metal_ApplyRoPE_F16(t.backend.ctx, t.buf, C.int(t.offset), C.int(batchSize), C.int(seqLen), C.int(numHeads), C.int(headDim))
+	} else {
+		panic("ApplyRoPE only supported for Metal FP16")
 	}
 }

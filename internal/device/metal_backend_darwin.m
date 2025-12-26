@@ -38,6 +38,8 @@
 @property(strong) id<MTLComputePipelineState> pipelineSoftmax_F16;
 @property(strong) id<MTLComputePipelineState> pipelineLayerNorm_F16;
 @property(strong) id<MTLComputePipelineState> pipelineAddBias_F16;
+@property(strong) id<MTLComputePipelineState> pipelineRope_F16;
+@property(strong) id<MTLComputePipelineState> pipelineSwiglu_F16;
 
 // Async command batching
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
@@ -192,6 +194,14 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineAddBias_F16 =
       [ctx.device newComputePipelineStateWithFunction:
                       [ctx.library newFunctionWithName:@"add_bias_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineRope_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"rope_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineSwiglu_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"swiglu_kernel_f16"]
                                                 error:&error];
 
   return (__bridge_retained MetalContextRef)ctx;
@@ -1055,6 +1065,51 @@ void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
   runGraph(mc, gctx.graph,
            @{gctx.input : qData, gctx.weight : kData, gctx.bias : vData},
            @{gctx.output : resData});
+}
+
+void Metal_ApplyRoPE_F16(MetalContextRef ctx, MetalBufferRef data, int offData,
+                         int batchSize, int seqLen, int numHeads, int headDim) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc ensureEncoder];
+
+  [mc.currentEncoder setComputePipelineState:mc.pipelineRope_F16];
+  [mc.currentEncoder setBuffer:(__bridge id<MTLBuffer>)data
+                        offset:offData
+                       atIndex:0];
+  [mc.currentEncoder setBytes:&headDim length:sizeof(int) atIndex:1];
+  [mc.currentEncoder setBytes:&numHeads length:sizeof(int) atIndex:2];
+  [mc.currentEncoder setBytes:&seqLen length:sizeof(int) atIndex:3];
+
+  MTLSize gridSize = MTLSizeMake(headDim / 2, numHeads, batchSize * seqLen);
+  NSUInteger maxThreads = mc.pipelineRope_F16.maxTotalThreadsPerThreadgroup;
+  MTLSize threadgroupSize =
+      MTLSizeMake(MIN((NSUInteger)(headDim / 2), maxThreads), 1, 1);
+
+  [mc.currentEncoder dispatchThreads:gridSize
+               threadsPerThreadgroup:threadgroupSize];
+}
+
+void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                      MetalBufferRef output, int offOut, int n, int interSize) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc ensureEncoder];
+
+  [mc.currentEncoder setComputePipelineState:mc.pipelineSwiglu_F16];
+  [mc.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                        offset:offIn
+                       atIndex:0];
+  [mc.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                        offset:offOut
+                       atIndex:1];
+  [mc.currentEncoder setBytes:&interSize length:sizeof(int) atIndex:2];
+
+  MTLSize gridSize = MTLSizeMake(interSize, n, 1);
+  NSUInteger maxThreads = mc.pipelineSwiglu_F16.maxTotalThreadsPerThreadgroup;
+  MTLSize threadgroupSize =
+      MTLSizeMake(MIN((NSUInteger)interSize, maxThreads), 1, 1);
+
+  [mc.currentEncoder dispatchThreads:gridSize
+               threadsPerThreadgroup:threadgroupSize];
 }
 
 void Metal_Synchronize(MetalContextRef ctx) {

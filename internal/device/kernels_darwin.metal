@@ -391,3 +391,53 @@ kernel void add_bias_kernel(device float *component [[ buffer(0) ]],
     uint col = id.y;
     component[row * cols + col] += bias[col];
 }
+
+// ============ Nomic-specific Kernels ============
+
+// RoPE (Rotary Positional Embeddings) FP16
+// Assumes input is (batch*seq, num_heads * head_dim)
+// Grid: (head_dim/2, num_heads, batch*seq)
+kernel void rope_kernel_f16(device half *data [[ buffer(0) ]],
+                            constant int &head_dim [[ buffer(1) ]],
+                            constant int &num_heads [[ buffer(2) ]],
+                            constant int &seq_len [[ buffer(3) ]],
+                            uint3 gid [[ thread_position_in_grid ]]) {
+    uint i = gid.x; // feature pair index (0 to head_dim/2 - 1)
+    uint h = gid.y; // head index
+    uint b_s = gid.z; // (batch * seq) index
+    
+    uint seq_idx = b_s % seq_len;
+    uint offset = b_s * (num_heads * head_dim) + h * head_dim;
+    
+    float theta = (float)seq_idx * pow(10000.0, -2.0 * (float)i / (float)head_dim);
+    float cos_theta = cos(theta);
+    float sin_theta = sin(theta);
+    
+    half x1 = data[offset + i];
+    half x2 = data[offset + i + head_dim/2];
+    
+    data[offset + i] = half((float)x1 * cos_theta - (float)x2 * sin_theta);
+    data[offset + i + head_dim/2] = half((float)x1 * sin_theta + (float)x2 * cos_theta);
+}
+
+// SwiGLU Activation FP16
+// Assumes input is (N, 2*inter_size), output is (N, inter_size)
+// Grid: (inter_size, N)
+kernel void swiglu_kernel_f16(device const half *input [[ buffer(0) ]],
+                              device half *output [[ buffer(1) ]],
+                              constant int &inter_size [[ buffer(2) ]],
+                              uint2 gid [[ thread_position_in_grid ]]) {
+    uint i = gid.x; // index in inter_size
+    uint n = gid.y; // index in N
+    
+    int row_offset_in = n * (2 * inter_size);
+    int row_offset_out = n * inter_size;
+    
+    float x = (float)input[row_offset_in + i];
+    float y = (float)input[row_offset_in + i + inter_size];
+    
+    // Swish(x) = x * sigmoid(x)
+    float swish_x = x / (1.0f + exp(-x));
+    output[row_offset_out + i] = half(swish_x * y);
+}
+

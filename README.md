@@ -2,26 +2,26 @@
 
 **Vector Engine for converting text to vectors for Longbow.**
 
-Fletcher is a high-performance CLI and library for generating vector text embeddings and sending them to a Longbow server. It is designed for maximum throughput and efficiency, leveraging hardware acceleration where available.
+Fletcher is a high-performance transformer-based embedding engine written in pure Go. It is designed for maximum throughput and efficiency, leveraging hardware acceleration (Metal GPU / CGO BLAS) to achieve state-of-the-art performance on local hardware.
 
 ## Key Features
 
-- **High Performance**: Uses CGO and hardware-accelerated BLAS (Accelerate on macOS, OpenBLAS on Linux) for maximum throughput (~8200 vec/s on M3 Pro).
-- **Pure Go Embedding Engine**: Custom BERT-style Transformer implementation using `gonum` for linear algebra. No Python required for the core engine.
-- **SIMD Optimized**: Critical vector operations leverage SIMD loop unrolling and fast math approximations.
-- **Efficient**: Zero-allocation buffer pooling and in-place operations.
-- **Apache Arrow Integration**: Formats embeddings as high-performance Arrow RecordBatches.
-- **Apache Flight Client**: Sends data to Longbow servers using the Flight RPC protocol.
-- **Minimal Docker Image**: Multi-stage build produces a ~15MB image.
+- **Multi-Model Support**: Native support for `bert-tiny` and `nomic-embed-text-v1.5` architectures.
+- **Metal GPU Acceleration**: Hand-coded FP16 kernels for Apple Silicon, achieving **~24,000 vec/s** on M3 Pro.
+- **High-Performance CPU Backend**: Leverages CGO and hardware-accelerated BLAS (Accelerate/OpenBLAS).
+- **Modern Transformer Ops**: Support for **RoPE** (Rotary Positional Embeddings) and **SwiGLU** activation.
+- **Pure Go Inference**: Custom transformer implementation—no Python or PyTorch runtime required.
+- **Apache Arrow & Flight**: Seamless integration with Longbow via high-performance data transport.
+- **Minimal Footprint**: Multi-stage build produces a ~15MB scratch-based Docker image.
 
 ## Performance
 
-Fletcher is significantly faster than standard Python/PyTorch implementations on CPU.
+Fletcher is significantly faster than standard Python/PyTorch implementations on both CPU and GPU.
 
-| Batch Size | Fletcher (CGO/BLAS) | Sentence Transformers (PyTorch CPU) | Relative Performance |
-|------------|---------------------|-------------------------------------|----------------------|
-| 32         | **7,600 vec/s**     | 2,045 vec/s                         | **3.7x Faster**      |
-| 64         | **8,276 vec/s**     | 2,199 vec/s                         | **3.8x Faster**      |
+| Batch Size | Fletcher (CGO/BLAS) | Fletcher (Metal FP16) | PyTorch (CPU) |
+|------------|---------------------|-----------------------|---------------|
+| 32         | 7,600 vec/s         | **~22,000 vec/s**     | 2,045 vec/s   |
+| 64         | 8,276 vec/s         | **~24,000 vec/s**     | 2,199 vec/s   |
 
 *Benchmark on Apple M3 Pro (12 Cores), generating embeddings for `prajjwal1/bert-tiny`.*
 
@@ -50,25 +50,38 @@ docker run --rm longbow-fletcher --help
 
 ### CLI Flags
 
-| Flag        | Default            | Description                                      |
-|-------------|--------------------|--------------------------------------------------|
-| `--vocab`   | `vocab.txt`        | Path to BERT-style WordPiece vocabulary file.    |
-| `--weights` | (none)             | Path to model weights binary (optional).         |
-| `--text`    | (none)             | Text string to embed.                            |
-| `--lorem`   | `0`                | Number of Lorem Ipsum paragraphs to generate.    |
-| `--server`  | (none)             | Longbow server address (e.g., `localhost:3000`). |
-| `--dataset` | `fletcher_dataset` | Target dataset name on the Longbow server.       |
+| Flag        | Default            | Description                                           |
+|-------------|--------------------|-------------------------------------------------------|
+| `--model`   | `bert-tiny`        | Model architecture (`bert-tiny`, `nomic-embed-text`). |
+| `--gpu`     | `false`            | Enable Metal GPU acceleration (macOS only).           |
+| `--vocab`   | `vocab.txt`        | Path to BERT-style WordPiece vocabulary file.         |
+| `--weights` | (none)             | Path to model weights binary.                         |
+| `--text`    | (none)             | Text string to embed.                                 |
+| `--lorem`   | `0`                | Number of Lorem Ipsum paragraphs to generate.         |
+| `--server`  | (none)             | Longbow server address (e.g., `localhost:3000`).      |
+| `--dataset` | `fletcher_dataset` | Target dataset name on the Longbow server.            |
 
 ### Examples
 
-**Generate a single embedding locally:**
+**Use Nomic-Embed-Text with GPU acceleration:**
 
 ```bash
-./bin/fletcher --vocab vocab.txt --text "Hello world"
+./bin/fletcher --model nomic-embed-text --gpu --vocab vocab.txt --weights nomic.bin --text "Hello world"
 ```
 
-**Generate and send 10 Lorem Ipsum paragraphs to Longbow:**
+**Generate and send 100 Lorem Ipsum paragraphs to Longbow:**
 
 ```bash
-./bin/fletcher --vocab vocab.txt --lorem 10 --server localhost:3000 --dataset my_dataset
+./bin/fletcher --vocab vocab.txt --lorem 100 --server localhost:3000 --dataset test_embeddings
 ```
+
+## Documentation
+
+- [Fletcher Usage](docs/fletcher.md)
+- [Model Support](docs/models.md)
+- [GPU Acceleration](docs/gpu.md)
+- [Performance Benchmarks](docs/speedtest.md)
+
+## Support
+
+If you find this project useful, please consider [sponsoring me on GitHub](SUPPORT.md).

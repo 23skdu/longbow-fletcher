@@ -84,6 +84,12 @@ void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
 void Metal_AddBias(MetalContextRef ctx, MetalBufferRef component, int offComp,
                    MetalBufferRef bias, int offBias, int rows, int cols);
 
+// Nomic-specific
+void Metal_ApplyRoPE_F16(MetalContextRef ctx, MetalBufferRef data, int offData,
+                         int batchSize, int seqLen, int numHeads, int headDim);
+void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                      MetalBufferRef output, int offOut, int n, int interSize);
+
 // Matrix Mul (MPS)
 // C = A * B. A (r x inner), B (inner x c), C (r x c)
 // Transpose flags? For now assume standard A x B.

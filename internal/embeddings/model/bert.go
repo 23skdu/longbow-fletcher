@@ -8,25 +8,50 @@ import (
 	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
+type PositionEmbeddingType int
+
+const (
+	PositionalAbsolute PositionEmbeddingType = iota
+	PositionalRoPE
+)
+
 // BertConfig holds the configuration for the BERT model.
 type BertConfig struct {
-	VocabSize            int
-	HiddenSize           int
-	NumHiddenLayers      int
-	NumAttentionHeads    int
-	IntermediateSize     int
+	VocabSize             int
+	HiddenSize            int
+	NumHiddenLayers       int
+	NumAttentionHeads     int
+	IntermediateSize      int
 	MaxPositionEmbeddings int
+	Activation            device.ActivationType
+	PositionEmbedding      PositionEmbeddingType
 }
 
 // DefaultBertTinyConfig returns the configuration for BERT-Tiny.
 func DefaultBertTinyConfig() BertConfig {
 	return BertConfig{
-		VocabSize:            30522,
-		HiddenSize:           128,
-		NumHiddenLayers:      2,
-		NumAttentionHeads:    2,
-		IntermediateSize:     512,
+		VocabSize:             30522,
+		HiddenSize:            128,
+		NumHiddenLayers:       2,
+		NumAttentionHeads:     2,
+		IntermediateSize:      512,
 		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:      PositionalAbsolute,
+	}
+}
+
+// DefaultNomicConfig returns the configuration for nomic-embed-text-v1.5.
+func DefaultNomicConfig() BertConfig {
+	return BertConfig{
+		VocabSize:             30522,
+		HiddenSize:            768,
+		NumHiddenLayers:       12,
+		NumAttentionHeads:     12,
+		IntermediateSize:      3072,
+		MaxPositionEmbeddings: 8192,
+		Activation:            device.ActivationSwiGLU,
+		PositionEmbedding:      PositionalRoPE,
 	}
 }
 
@@ -158,22 +183,24 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 	// 1. Gather Word Embeddings
 	embeddings := e.WordEmbeddings.Gather(inputIDs)
 	
-	// 2. Gather Position Embeddings
-	posIndices := make([]int, totalTokens)
-	idx := 0
-	for _, l := range lengths {
-		for i := 0; i < l; i++ {
-			if i >= e.Config.MaxPositionEmbeddings {
-				posIndices[idx] = e.Config.MaxPositionEmbeddings - 1
-			} else {
-				posIndices[idx] = i
+	// 2. Gather Position Embeddings (Absolute)
+	if e.Config.PositionEmbedding == PositionalAbsolute {
+		posIndices := make([]int, totalTokens)
+		idx := 0
+		for _, l := range lengths {
+			for i := 0; i < l; i++ {
+				if i >= e.Config.MaxPositionEmbeddings {
+					posIndices[idx] = e.Config.MaxPositionEmbeddings - 1
+				} else {
+					posIndices[idx] = i
+				}
+				idx++
 			}
-			idx++
 		}
+		
+		posEmbeds := e.PositionEmbeddings.Gather(posIndices)
+		embeddings.Add(posEmbeds)
 	}
-	
-	posEmbeds := e.PositionEmbeddings.Gather(posIndices)
-	embeddings.Add(posEmbeds)
 	
 	// 3. Token Type Embeddings (Assume 0)
 	typeIndices := make([]int, totalTokens)
@@ -354,12 +381,14 @@ func sumInts(v []int) int {
 
 // BertAttention handles multi-head self-attention.
 type BertAttention struct {
+	Config     BertConfig
 	Self       *BertSelfAttention
 	Output     *BertSelfOutput
 }
 
 func NewBertAttention(config BertConfig, backend device.Backend) *BertAttention {
 	return &BertAttention{
+		Config: config,
 		Self:   NewBertSelfAttention(config, backend),
 		Output: NewBertSelfOutput(config, backend),
 	}
@@ -377,6 +406,7 @@ func (a *BertAttention) ForwardBatch(hiddenStates device.Tensor, lengths []int) 
 
 type BertSelfAttention struct {
 	Backend           device.Backend
+	Config            BertConfig
 	NumAttentionHeads int
 	AttentionHeadSize int
 	AllHeadSize       int
@@ -393,6 +423,7 @@ type BertSelfAttention struct {
 func NewBertSelfAttention(config BertConfig, backend device.Backend) *BertSelfAttention {
 	return &BertSelfAttention{
 		Backend:           backend,
+		Config:            config,
 		NumAttentionHeads: config.NumAttentionHeads,
 		AttentionHeadSize: config.HiddenSize / config.NumAttentionHeads,
 		AllHeadSize:       config.HiddenSize,
@@ -447,6 +478,15 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
 	valueLayer := s.Value.Linear(hiddenStates, s.Value, s.ValueBias)
 	
+	// Apply RoPE if configured
+	if s.Config.PositionEmbedding == PositionalRoPE {
+		batchSize := len(lengths)
+		seqLen := lengths[0] // Assume uniform for RoPE optimization or handle variable
+		s.Backend.Synchronize() // Ensure linear projections are done
+		queryLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
+		keyLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
+	}
+
 	output := s.Backend.NewTensor(r, c, nil)
 	
 	// Fast path: uniform sequence lengths (common case in batched inference)
@@ -569,20 +609,26 @@ func (o *BertSelfOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) d
 
 type BertIntermediate struct {
 	Backend device.Backend
+	Config  BertConfig
 	Dense   device.Tensor
 	Bias    device.Tensor
 }
 
 func NewBertIntermediate(config BertConfig, backend device.Backend) *BertIntermediate {
+	interSize := config.IntermediateSize
+	if config.Activation == device.ActivationSwiGLU {
+		interSize = config.IntermediateSize * 2 // Fused Gate + Up
+	}
 	return &BertIntermediate{
 		Backend: backend,
-		Dense:   backend.NewTensor(config.HiddenSize, config.IntermediateSize, nil),
-		Bias:    backend.NewTensor(1, config.IntermediateSize, nil),
+		Config:  config,
+		Dense:   backend.NewTensor(config.HiddenSize, interSize, nil),
+		Bias:    backend.NewTensor(1, interSize, nil),
 	}
 }
 
 func (i *BertIntermediate) Forward(hiddenStates device.Tensor) device.Tensor {
-	hiddenStates = i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, device.ActivationGELU)
+	hiddenStates = i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, i.Config.Activation)
 	return hiddenStates
 }
 
@@ -599,9 +645,12 @@ type BertOutput struct {
 }
 
 func NewBertOutput(config BertConfig, backend device.Backend) *BertOutput {
+	interSize := config.IntermediateSize
+	// BertOutput always takes the REDUCED intermediate size as input, 
+	// even if SwiGLU used 2x internally.
 	return &BertOutput{
 		Backend:   backend,
-		Dense:     backend.NewTensor(config.IntermediateSize, config.HiddenSize, nil),
+		Dense:     backend.NewTensor(interSize, config.HiddenSize, nil),
 		Bias:      backend.NewTensor(1, config.HiddenSize, nil),
 		LayerNorm: NewLayerNorm(config.HiddenSize, backend),
 	}

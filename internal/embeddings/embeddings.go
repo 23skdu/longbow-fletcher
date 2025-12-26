@@ -17,13 +17,21 @@ type Embedder struct {
 
 // NewEmbedder creates a new embedder.
 // vocabPath and weightsPath are paths to the vocab.txt and model weights binary.
-func NewEmbedder(vocabPath, weightsPath string, useGPU bool) (*Embedder, error) {
+func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string) (*Embedder, error) {
 	tok, err := tokenizer.NewWordPieceTokenizer(vocabPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load tokenizer: %w", err)
 	}
 
-	config := model.DefaultBertTinyConfig()
+	var config model.BertConfig
+	switch modelType {
+	case "bert-tiny":
+		config = model.DefaultBertTinyConfig()
+	case "nomic-embed-text":
+		config = model.DefaultNomicConfig()
+	default:
+		return nil, fmt.Errorf("unknown model type: %s", modelType)
+	}
 	
 	var backend device.Backend
 	if useGPU {
