@@ -129,8 +129,14 @@ func xavierInit(m device.Tensor) {
 // inputIDs is flattened, lengths contains the length of each sequence.
 func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	embeddings := m.Embeddings.ForwardBatch(inputIDs, lengths)
+	
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
-	return m.Pooler.ForwardBatch(hiddenStates, lengths)
+	m.Backend.PutTensor(embeddings)
+	
+	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
+	m.Backend.PutTensor(hiddenStates)
+	
+	return res
 }
 
 // Forward is a legacy wrapper for single sequence compatibility.
@@ -200,12 +206,14 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 		
 		posEmbeds := e.PositionEmbeddings.Gather(posIndices)
 		embeddings.Add(posEmbeds)
+		e.Backend.PutTensor(posEmbeds)
 	}
 	
 	// 3. Token Type Embeddings (Assume 0)
 	typeIndices := make([]int, totalTokens)
 	typeEmbeds := e.TokenTypeEmbeddings.Gather(typeIndices)
 	embeddings.Add(typeEmbeds)
+	e.Backend.PutTensor(typeEmbeds)
 	
 	// 4. Norm + Dropout
 	output := e.LayerNorm.Forward(embeddings)
@@ -250,7 +258,8 @@ func (l *LayerNorm) Forward(input device.Tensor) device.Tensor {
 
 // BertEncoder is a stack of Transformer layers.
 type BertEncoder struct {
-	Layers []*BertLayer
+	Backend device.Backend
+	Layers  []*BertLayer
 }
 
 func NewBertEncoder(config BertConfig, backend device.Backend) *BertEncoder {
@@ -258,7 +267,10 @@ func NewBertEncoder(config BertConfig, backend device.Backend) *BertEncoder {
 	for i := range layers {
 		layers[i] = NewBertLayer(config, backend)
 	}
-	return &BertEncoder{Layers: layers}
+	return &BertEncoder{
+		Backend: backend,
+		Layers:  layers,
+	}
 }
 
 func (e *BertEncoder) Forward(hiddenStates device.Tensor) device.Tensor {
@@ -273,7 +285,9 @@ func (e *BertEncoder) Forward(hiddenStates device.Tensor) device.Tensor {
 
 func (e *BertEncoder) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	for _, layer := range e.Layers {
-		hiddenStates = layer.ForwardBatch(hiddenStates, lengths)
+		nextStates := layer.ForwardBatch(hiddenStates, lengths)
+		e.Backend.PutTensor(hiddenStates)
+		hiddenStates = nextStates
 	}
 	return hiddenStates
 }
@@ -301,8 +315,18 @@ func (l *BertLayer) Forward(hiddenStates device.Tensor) device.Tensor {
 
 func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	selfAttention := l.Attention.ForwardBatch(hiddenStates, lengths)
+	// hiddenStates is NOT released here because it's released by the caller (Encoder)
+
 	intermediate := l.Intermediate.ForwardBatch(selfAttention)
-	return l.Output.ForwardBatch(intermediate, selfAttention)
+	
+	res := l.Output.ForwardBatch(intermediate, selfAttention)
+	
+	// Release intermediates
+	// selfAttention was used by Intermediate and Output, now done.
+	l.Attention.Self.Backend.PutTensor(selfAttention)
+	l.Intermediate.Backend.PutTensor(intermediate)
+	
+	return res
 }
 
 // BertPooler extracts the [CLS] representation.
@@ -359,6 +383,7 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 	
 	// Compute Result = CLS * Dense + Bias + Tanh
 	result := p.Dense.LinearActivation(clsStack, p.Dense, p.Bias, device.ActivationTanh)
+	p.Backend.PutTensor(clsStack)
 	
 	// Check if clsStack needs pooling?
 	// It was created by Gather (NewTensor). 
@@ -595,12 +620,13 @@ func NewBertSelfOutput(config BertConfig, backend device.Backend) *BertSelfOutpu
 }
 
 func (o *BertSelfOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Tensor {
-	hiddenStates = o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	projected := o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	// input hiddenStates is no longer needed after projection
+	o.Backend.PutTensor(hiddenStates)
+
 	// Residual connection in-place
-	// hiddenStates.Add(inputTensor). But inputTensor might not be same backing store?
-	// AddInPlace assume shapes match.
-	hiddenStates.Add(inputTensor)
-	return o.LayerNorm.Forward(hiddenStates)
+	projected.Add(inputTensor)
+	return o.LayerNorm.Forward(projected)
 }
 
 func (o *BertSelfOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) device.Tensor {
@@ -628,8 +654,11 @@ func NewBertIntermediate(config BertConfig, backend device.Backend) *BertInterme
 }
 
 func (i *BertIntermediate) Forward(hiddenStates device.Tensor) device.Tensor {
-	hiddenStates = i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, i.Config.Activation)
-	return hiddenStates
+	res := i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, i.Config.Activation)
+	// input hiddenStates is no longer needed after projection
+	// But wait! hiddenStates is owned by the caller (self-attention output).
+	// We handle that in BertLayer.
+	return res
 }
 
 func (i *BertIntermediate) ForwardBatch(hiddenStates device.Tensor) device.Tensor {
@@ -657,10 +686,13 @@ func NewBertOutput(config BertConfig, backend device.Backend) *BertOutput {
 }
 
 func (o *BertOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Tensor {
-	hiddenStates = o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	projected := o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	// input hiddenStates (intermediate output) is no longer needed
+	o.Backend.PutTensor(hiddenStates)
+
 	// Residual connection in-place
-	hiddenStates.Add(inputTensor)
-	return o.LayerNorm.Forward(hiddenStates)
+	projected.Add(inputTensor)
+	return o.LayerNorm.Forward(projected)
 }
 
 func (o *BertOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) device.Tensor {
