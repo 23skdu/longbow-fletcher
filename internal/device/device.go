@@ -39,7 +39,7 @@ type Tensor interface {
 	
 	// AddBias adds a bias vector to each row of the tensor.
 	// len(bias) must equal tensor columns.
-	AddBias(bias []float64)
+	AddBias(bias Tensor)
 	
 	// Scale scales the tensor by a scalar.
 	Scale(val float64)
@@ -69,7 +69,30 @@ type Tensor interface {
     // Data returns the underlying slice if on CPU, nil otherwise.
     // Dangerous, use with caution.
     Data() []float64
+
+	// Linear performs a fused MatMul + BiasAdd.
+	// equivalent to: t.Mul(input, weight); t.AddBias(bias)
+	// returns result tensor
+	Linear(input, weight, bias Tensor) Tensor
+
+	// LinearActivation performs Linear followed by Activation.
+	LinearActivation(input, weight, bias Tensor, activation ActivationType) Tensor
+
+	// Attention performs fused Scaled Dot Product Attention.
+	// equivalent to: Softmax(Q * K^T * scale) * V
+	// Assumes q, k, v are flattened (Batch*Seq, Hidden)
+	// Returns flattend (Batch*Seq, Hidden)
+	Attention(q, k, v Tensor, batchSize, seqLen int, scale float64) Tensor
 }
+
+type ActivationType int
+
+const (
+	ActivationIdentity ActivationType = iota
+	ActivationGELU
+	ActivationTanh
+	ActivationSoftmax // Usually not fused in Linear, but defined for completeness
+)
 
 // Backend creates tensors and manages device memory.
 type Backend interface {

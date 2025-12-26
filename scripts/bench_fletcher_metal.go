@@ -1,14 +1,29 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"log"
+	"os"
+	"runtime/pprof"
 	"time"
 
 	"github.com/23skdu/longbow-fletcher/internal/device"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 )
 
+var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+
 func main() {
+	flag.Parse()
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
 	// Config matching prajjwal1/bert-tiny
 	config := model.BertConfig{
 		HiddenSize:            128,

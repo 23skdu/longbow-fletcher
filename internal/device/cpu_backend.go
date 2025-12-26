@@ -29,38 +29,10 @@ func (b *CPUBackend) Name() string {
 func (b *CPUBackend) NewTensor(r, c int, data []float64) Tensor {
 	return &CPUTensor{
 		mat: mat.NewDense(r, c, data),
+		backend: b,
 	}
-	size := r * c
-	// Try to get from pool first
-	if v := b.pool.Get(); v != nil {
-		t := v.(*CPUTensor)
-		t.backend = b // Ensure backend is set
-		// Check if capacity is sufficient
-		if cap(t.mat.RawMatrix().Data) >= size {
-			// Reslice the data to the required size
-			t.mat = mat.NewDense(r, c, t.mat.RawMatrix().Data[:size])
-			if len(data) > 0 {
-				copy(t.mat.RawMatrix().Data, data)
-			} else {
-				// If no data provided, zero out the tensor
-				for i := range t.mat.RawMatrix().Data {
-					t.mat.RawMatrix().Data[i] = 0
-				}
-			}
-			return t
-		}
-		// If capacity is not sufficient, discard and fall through to new allocation
-	}
-
-	// If pool didn't provide a suitable tensor, create a new one
-	var m *mat.Dense
-	if len(data) > 0 {
-		m = mat.NewDense(r, c, data)
-	} else {
-		m = mat.NewDense(r, c, nil) // mat.NewDense(r, c, nil) initializes with zeros
-	}
-	return &CPUTensor{mat: m, backend: b}
 }
+
 
 func (b *CPUBackend) GetTensor(r, c int) Tensor {
 	// GetTensor is for getting a zero-initialized tensor from the pool.
@@ -197,16 +169,41 @@ func (t *CPUTensor) AddScalar(val float64) {
 	}
 }
 
-func (t *CPUTensor) AddBias(bias []float64) {
+func (t *CPUTensor) AddBias(bias Tensor) {
 	r, c := t.Dims()
-	if c != len(bias) {
+	br, bc := bias.Dims()
+	
+	// Bias should be a vector of length c.
+	// Either 1xc or cx1.
+	if r == 1 && c == bc {
+		// Single row matching
+	} else if bc != c {
 		panic("AddBias dimension mismatch")
 	}
+	
+	// Get raw slice from bias tensor (assumed CPU)
+	// We could use bias.Data() if available, or ToHost() copy.
+	// Since we are in CPU backend, assume bias is CPUTensor or compatible.
+	var biasData []float64
+	if ct, ok := bias.(*CPUTensor); ok {
+		biasData = ct.mat.RawMatrix().Data
+	} else {
+		// Fallback for cross-device (shouldn't happen in pure CPU run)
+		biasData = bias.ToHost()
+	}
+	
+	if len(biasData) != c {
+		// Check if it's 1xM or Mx1
+		if br * bc != c {
+			panic("AddBias: bias length mismatch")
+		}
+	}
+
 	data := t.mat.RawMatrix().Data
 	// Add bias to each row
 	for i := 0; i < r; i++ {
 		row := data[i*c : (i+1)*c]
-		simd.VecAdd(row, bias)
+		simd.VecAdd(row, biasData)
 	}
 }
 
@@ -303,6 +300,95 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float64) {
 			row[j] = (row[j] - mean) * invStd * gammaData[j] + betaData[j]
 		}
 	}
+}
+
+func (t *CPUTensor) Linear(input, weight, bias Tensor) Tensor {
+	// 1. MatMul: result = input * weight
+	// Output dims: input.rows x weight.cols
+	r, _ := input.Dims()
+	_, wc := weight.Dims()
+	
+	result := t.backend.NewTensor(r, wc, nil)
+	result.Mul(input, weight)
+	
+	// 2. Add Bias
+	if bias != nil {
+		result.AddBias(bias)
+	}
+	
+	return result
+}
+
+func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation ActivationType) Tensor {
+	// 1. Linear
+	result := t.Linear(input, weight, bias)
+	
+	// 2. Activation
+	switch activation {
+	case ActivationGELU:
+		result.Gelu()
+	case ActivationTanh:
+		result.Tanh()
+	case ActivationSoftmax:
+		result.Softmax()
+	case ActivationIdentity:
+		// No-op
+	}
+	
+	return result
+}
+
+
+
+func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float64) Tensor {
+	qt := q.(*CPUTensor)
+	kt := k.(*CPUTensor)
+	vt := v.(*CPUTensor)
+	
+	r, c := qt.Dims()
+	if r != batchSize*seqLen {
+		panic("Attention: dims mismatch")
+	}
+	
+	result := t.backend.NewTensor(r, c, nil)
+	rst := result.(*CPUTensor)
+	
+	// Buffers for intermediate per-sequence calculations
+	// To avoid allocs in loop, we could reuse, but simple loop is fine for now.
+	// We need a temporary score matrix (seqLen x seqLen)
+	
+	for i := 0; i < batchSize; i++ {
+		start := i * seqLen
+		// end unused
+		
+		// Slices (Views)
+		// Use Slice method to handle indexing logic safely
+		qSlice := qt.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
+		kSlice := kt.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
+		// vSlice used in Context calculation, also needs to be *mat.Dense
+		vSlice := vt.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
+		outSlice := rst.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
+		
+		// qSlice * kSlice.T
+		var scores mat.Dense
+		scores.Mul(qSlice, kSlice.T())
+		
+		// Scale
+		scores.Scale(scale, &scores)
+		
+		// Softmax row-wise
+		// Access raw data of scores
+		rows, _ := scores.Dims()
+		for r := 0; r < rows; r++ {
+			row := scores.RawRowView(r)
+			simd.SoftmaxFast(row)
+		}
+		
+		// Context = Scores * V
+		outSlice.Mul(&scores, vSlice)
+	}
+	
+	return result
 }
 
 func (t *CPUTensor) ToHost() []float64 {

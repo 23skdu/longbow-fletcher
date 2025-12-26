@@ -55,6 +55,29 @@ void Metal_Softmax(MetalContextRef ctx, MetalBufferRef input, int offIn,
                    MetalBufferRef result, int offRes, int rows, int cols);
 void Metal_Softmax_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                        MetalBufferRef result, int offRes, int rows, int cols);
+void Metal_LayerNorm_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                         MetalBufferRef gamma, int offGamma,
+                         MetalBufferRef beta, int offBeta,
+                         MetalBufferRef result, int offRes, int rows, int cols,
+                         float eps);
+void Metal_AddBias_F16(MetalContextRef ctx, MetalBufferRef matrix, int offMat,
+                       MetalBufferRef bias, int offBias, MetalBufferRef result,
+                       int offRes, int rows, int cols);
+void Metal_Linear_Graph(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        int rows, int inCols, MetalBufferRef weight,
+                        int offWeight, int outCols, MetalBufferRef bias,
+                        int offBias, MetalBufferRef result, int offRes);
+void Metal_LinearActivation_Graph(MetalContextRef ctx, MetalBufferRef input,
+                                  int offIn, int rows, int inCols,
+                                  MetalBufferRef weight, int offWeight,
+                                  int outCols, MetalBufferRef bias, int offBias,
+                                  MetalBufferRef result, int offRes,
+                                  int activationType);
+void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
+                           MetalBufferRef k, int offK, MetalBufferRef v,
+                           int offV, MetalBufferRef result, int offRes,
+                           int batchSize, int seqLen, int hiddenSize,
+                           float scale);
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   MetalBufferRef indices, int offIndices, MetalBufferRef output,
                   int offOut, int indicesCount, int cols);

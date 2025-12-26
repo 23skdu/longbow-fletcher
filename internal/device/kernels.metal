@@ -100,6 +100,29 @@ kernel void add_tanh_kernel(device const float *a [[ buffer(0) ]],
     result[index] = tanh(a[index] + b[index]);
 }
 
+// FP16 Add Bias (add vector b to each row of A)
+kernel void add_bias_kernel_f16(device half *matrix [[ buffer(0) ]],
+                                device const half *bias [[ buffer(1) ]],
+                                device half *result [[ buffer(2) ]],
+                                constant int &cols [[ buffer(3) ]],
+                                uint2 gid [[ thread_position_in_grid ]]) {
+    // Note: matrix is rows*cols. Bias is size cols.
+    // We launch a 2D grid: (cols, rows).
+    // gid.x is col index, gid.y is row index.
+    
+    // We don't have rows arg here, gid check handles bounds implicitly if grid is sized right.
+    // Wait, let's pass dimensions to check bounds.
+    
+    // Actually, simple is best: 1D flat ? 
+    // Bias add is row-dependent. index % cols == bias element. Or better: (index / cols) = row. 
+    // (index % cols) = col.
+    // But division is slow.
+    // 2D dispatch is better.
+    
+    int index = gid.y * cols + gid.x;
+    result[index] = matrix[index] + bias[gid.x];
+}
+
 // Optimized LayerNorm with threadgroup parallel reduction
 // Each threadgroup processes ONE row
 // Threads within the group cooperate on reduction using threadgroup memory
@@ -163,6 +186,69 @@ kernel void layernorm_kernel(device const float *input [[ buffer(0) ]],
     // Phase 3: Normalize (each thread handles its elements)
     for (int i = tid; i < cols; i += tg_size) {
         output[offset + i] = (input[offset + i] - mean) * inv_std * gamma[i] + beta[i];
+    }
+}
+
+// FP16 LayerNorm: half I/O, float accumulation for stability
+kernel void layernorm_kernel_f16(device const half *input [[ buffer(0) ]],
+                                 device const half *gamma [[ buffer(1) ]],
+                                 device const half *beta [[ buffer(2) ]],
+                                 device half *output [[ buffer(3) ]],
+                                 constant int &cols [[ buffer(4) ]],
+                                 constant float &eps [[ buffer(5) ]],
+                                 uint row_idx [[ threadgroup_position_in_grid ]],
+                                 uint tid [[ thread_index_in_threadgroup ]],
+                                 uint tg_size [[ threads_per_threadgroup ]]) {
+    
+    threadgroup float shared_sum[256];
+    threadgroup float shared_sq_sum[256];
+    
+    int offset = row_idx * cols;
+    
+    // Phase 1: Sum
+    float local_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        local_sum += float(input[offset + i]);
+    }
+    shared_sum[tid] = local_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float mean = shared_sum[0] / float(cols);
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // Phase 2: Variance
+    float local_sq_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        float diff = float(input[offset + i]) - mean;
+        local_sq_sum += diff * diff;
+    }
+    shared_sq_sum[tid] = local_sq_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sq_sum[tid] += shared_sq_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float variance = shared_sq_sum[0] / float(cols);
+    float inv_std = 1.0 / sqrt(variance + eps);
+    
+    // Phase 3: Normalize and store as half
+    for (int i = tid; i < cols; i += tg_size) {
+        float norm = (float(input[offset + i]) - mean) * inv_std;
+        output[offset + i] = half(norm * float(gamma[i]) + float(beta[i]));
     }
 }
 

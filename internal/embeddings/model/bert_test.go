@@ -29,7 +29,7 @@ func TestBertModelForward(t *testing.T) {
 		for j := 0; j < config.HiddenSize; j++ {
 			model.Pooler.Dense.Set(i, j, 1.0)
 		}
-		model.Pooler.Bias[i] = 0.1
+		model.Pooler.Bias.Set(0, i, 0.1)
 	}
 
 	inputIDs := []int{1, 2, 3}

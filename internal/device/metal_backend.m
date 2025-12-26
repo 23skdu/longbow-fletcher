@@ -2,6 +2,18 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
+
+@interface GraphContext : NSObject
+@property(strong) MPSGraph *graph;
+@property(strong) MPSGraphTensor *input;
+@property(strong) MPSGraphTensor *weight;
+@property(strong) MPSGraphTensor *bias;
+@property(strong) MPSGraphTensor *output;
+@end
+
+@implementation GraphContext
+@end
 
 @interface MetalWrapper : NSObject
 @property(strong) id<MTLDevice> device;
@@ -24,12 +36,17 @@
 @property(strong) id<MTLComputePipelineState> pipelineTanh_F16;
 @property(strong) id<MTLComputePipelineState> pipelineGelu_F16;
 @property(strong) id<MTLComputePipelineState> pipelineSoftmax_F16;
+@property(strong) id<MTLComputePipelineState> pipelineLayerNorm_F16;
+@property(strong) id<MTLComputePipelineState> pipelineAddBias_F16;
 
 // Async command batching
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
 @property(strong) id<MTLComputeCommandEncoder> currentEncoder;
 // Track last MPS buffer for synchronization
 @property(strong) id<MTLCommandBuffer> lastMPSBuffer;
+// Cache for compiled MPSGraph executables
+// Cache for compiled MPSGraph executables (stores GraphContext)
+@property(strong) NSMutableDictionary<NSString *, GraphContext *> *graphCache;
 @end
 
 @implementation MetalWrapper
@@ -75,6 +92,7 @@
 
 MetalContextRef Metal_Init(const char *libSource) {
   MetalWrapper *ctx = [[MetalWrapper alloc] init];
+  ctx.graphCache = [NSMutableDictionary dictionary];
   ctx.device = MTLCreateSystemDefaultDevice();
   if (!ctx.device) {
     printf("Error: Metal device not found\n");
@@ -158,6 +176,14 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineSoftmax_F16 =
       [ctx.device newComputePipelineStateWithFunction:
                       [ctx.library newFunctionWithName:@"softmax_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineLayerNorm_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"layernorm_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineAddBias_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"add_bias_kernel_f16"]
                                                 error:&error];
 
   return (__bridge_retained MetalContextRef)ctx;
@@ -437,6 +463,65 @@ void Metal_Softmax(MetalContextRef ctx, MetalBufferRef input, int offIn,
                    threadsPerThreadgroup:threadgroupSize];
 }
 
+void Metal_LayerNorm_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                         MetalBufferRef gamma, int offGamma,
+                         MetalBufferRef beta, int offBeta,
+                         MetalBufferRef result, int offRes, int rows, int cols,
+                         float eps) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  [c ensureEncoder];
+
+  [c.currentEncoder setComputePipelineState:c.pipelineLayerNorm_F16];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)gamma
+                       offset:offGamma
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)beta
+                       offset:offBeta
+                      atIndex:2];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:3];
+  [c.currentEncoder setBytes:&cols length:sizeof(int) atIndex:4];
+  [c.currentEncoder setBytes:&eps length:sizeof(float) atIndex:5];
+
+  MTLSize threadgroupSize = MTLSizeMake(256, 1, 1);
+  MTLSize threadgroupsPerGrid = MTLSizeMake(rows, 1, 1);
+
+  [c.currentEncoder dispatchThreadgroups:threadgroupsPerGrid
+                   threadsPerThreadgroup:threadgroupSize];
+}
+
+void Metal_AddBias_F16(MetalContextRef ctx, MetalBufferRef matrix, int offMat,
+                       MetalBufferRef bias, int offBias, MetalBufferRef result,
+                       int offRes, int rows, int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  [c ensureEncoder];
+
+  [c.currentEncoder setComputePipelineState:c.pipelineAddBias_F16];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)matrix
+                       offset:offMat
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)bias
+                       offset:offBias
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:2];
+  [c.currentEncoder setBytes:&cols length:sizeof(int) atIndex:3];
+
+  // 2D dispatch: (cols, rows)
+  MTLSize gridSize = MTLSizeMake(cols, rows, 1);
+  NSUInteger w = c.pipelineAddBias_F16.threadExecutionWidth;
+  NSUInteger h = c.pipelineAddBias_F16.maxTotalThreadsPerThreadgroup / w;
+  MTLSize threadgroupSize = MTLSizeMake(w, h, 1);
+
+  [c.currentEncoder dispatchThreads:gridSize
+              threadsPerThreadgroup:threadgroupSize];
+}
+
 // FP16 Softmax for 2x performance
 void Metal_Softmax_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                        MetalBufferRef result, int offRes, int rows, int cols) {
@@ -695,6 +780,273 @@ void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
 
   [buffer commit];
   // Don't wait - let GPU pipeline run asynchronously
+}
+
+// Helper to run graph with inputs
+void runGraph(MetalWrapper *mc, MPSGraph *graph,
+              NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *feeds,
+              NSDictionary<MPSGraphTensor *, MPSGraphTensorData *> *results) {
+  [graph runWithMTLCommandQueue:mc.commandQueue
+                          feeds:feeds
+               targetOperations:nil
+              resultsDictionary:results];
+  // Async execution
+}
+
+void Metal_Linear_Graph(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        int rows, int inCols, MetalBufferRef weight,
+                        int offWeight, int outCols, MetalBufferRef bias,
+                        int offBias, MetalBufferRef result, int offRes) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc flush];
+
+  NSString *key =
+      [NSString stringWithFormat:@"L_%d_%d_%d", rows, inCols, outCols];
+  GraphContext *gctx = mc.graphCache[key];
+
+  if (!gctx) {
+    gctx = [[GraphContext alloc] init];
+    gctx.graph = [[MPSGraph alloc] init];
+
+    gctx.input = [gctx.graph placeholderWithShape:@[ @(rows), @(inCols) ]
+                                         dataType:MPSDataTypeFloat16
+                                             name:nil];
+    gctx.weight = [gctx.graph placeholderWithShape:@[ @(inCols), @(outCols) ]
+                                          dataType:MPSDataTypeFloat16
+                                              name:nil];
+    gctx.bias = [gctx.graph placeholderWithShape:@[ @(outCols) ]
+                                        dataType:MPSDataTypeFloat16
+                                            name:nil];
+
+    MPSGraphTensor *matmul =
+        [gctx.graph matrixMultiplicationWithPrimaryTensor:gctx.input
+                                          secondaryTensor:gctx.weight
+                                                     name:nil];
+    gctx.output = [gctx.graph additionWithPrimaryTensor:matmul
+                                        secondaryTensor:gctx.bias
+                                                   name:nil];
+
+    mc.graphCache[key] = gctx;
+  }
+
+  MPSGraphTensorData *inputData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)input
+                  shape:@[ @(rows), @(inCols) ]
+               dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *weightData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)weight
+                  shape:@[ @(inCols), @(outCols) ]
+               dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *biasData =
+      [[MPSGraphTensorData alloc] initWithMTLBuffer:(__bridge id<MTLBuffer>)bias
+                                              shape:@[ @(outCols) ]
+                                           dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *resultData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)result
+                  shape:@[ @(rows), @(outCols) ]
+               dataType:MPSDataTypeFloat16];
+
+  runGraph(
+      mc, gctx.graph,
+      @{gctx.input : inputData, gctx.weight : weightData, gctx.bias : biasData},
+      @{gctx.output : resultData});
+}
+
+void Metal_LinearActivation_Graph(MetalContextRef ctx, MetalBufferRef input,
+                                  int offIn, int rows, int inCols,
+                                  MetalBufferRef weight, int offWeight,
+                                  int outCols, MetalBufferRef bias, int offBias,
+                                  MetalBufferRef result, int offRes,
+                                  int activationType) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc flush];
+
+  NSString *key = [NSString stringWithFormat:@"LA_%d_%d_%d_%d", rows, inCols,
+                                             outCols, activationType];
+  GraphContext *gctx = mc.graphCache[key];
+
+  if (!gctx) {
+    gctx = [[GraphContext alloc] init];
+    gctx.graph = [[MPSGraph alloc] init];
+
+    gctx.input = [gctx.graph placeholderWithShape:@[ @(rows), @(inCols) ]
+                                         dataType:MPSDataTypeFloat16
+                                             name:nil];
+    gctx.weight = [gctx.graph placeholderWithShape:@[ @(inCols), @(outCols) ]
+                                          dataType:MPSDataTypeFloat16
+                                              name:nil];
+    gctx.bias = [gctx.graph placeholderWithShape:@[ @(outCols) ]
+                                        dataType:MPSDataTypeFloat16
+                                            name:nil];
+
+    MPSGraphTensor *curr =
+        [gctx.graph matrixMultiplicationWithPrimaryTensor:gctx.input
+                                          secondaryTensor:gctx.weight
+                                                     name:nil];
+    curr = [gctx.graph additionWithPrimaryTensor:curr
+                                 secondaryTensor:gctx.bias
+                                            name:nil];
+
+    if (activationType == 1) { // GELU
+      MPSGraphTensor *const0_5 =
+          [gctx.graph constantWithScalar:0.5 dataType:MPSDataTypeFloat16];
+      MPSGraphTensor *const0_707 =
+          [gctx.graph constantWithScalar:0.70710678
+                                dataType:MPSDataTypeFloat16];
+      MPSGraphTensor *one = [gctx.graph constantWithScalar:1.0
+                                                  dataType:MPSDataTypeFloat16];
+
+      MPSGraphTensor *inner =
+          [gctx.graph multiplicationWithPrimaryTensor:curr
+                                      secondaryTensor:const0_707
+                                                 name:nil];
+      MPSGraphTensor *erfVal = [gctx.graph erfWithTensor:inner name:nil];
+      MPSGraphTensor *add = [gctx.graph additionWithPrimaryTensor:one
+                                                  secondaryTensor:erfVal
+                                                             name:nil];
+      MPSGraphTensor *scale =
+          [gctx.graph multiplicationWithPrimaryTensor:curr
+                                      secondaryTensor:const0_5
+                                                 name:nil];
+      curr = [gctx.graph multiplicationWithPrimaryTensor:scale
+                                         secondaryTensor:add
+                                                    name:nil];
+    } else if (activationType == 2) { // Tanh
+      curr = [gctx.graph tanhWithTensor:curr name:nil];
+    } else if (activationType == 3) { // Softmax
+      curr = [gctx.graph softMaxWithTensor:curr axis:-1 name:nil];
+    }
+    gctx.output = curr;
+
+    mc.graphCache[key] = gctx;
+  }
+
+  MPSGraphTensorData *inputData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)input
+                  shape:@[ @(rows), @(inCols) ]
+               dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *weightData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)weight
+                  shape:@[ @(inCols), @(outCols) ]
+               dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *biasData =
+      [[MPSGraphTensorData alloc] initWithMTLBuffer:(__bridge id<MTLBuffer>)bias
+                                              shape:@[ @(outCols) ]
+                                           dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *resultData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)result
+                  shape:@[ @(rows), @(outCols) ]
+               dataType:MPSDataTypeFloat16];
+
+  runGraph(
+      mc, gctx.graph,
+      @{gctx.input : inputData, gctx.weight : weightData, gctx.bias : biasData},
+      @{gctx.output : resultData});
+}
+
+void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
+                           MetalBufferRef k, int offK, MetalBufferRef v,
+                           int offV, MetalBufferRef result, int offRes,
+                           int batchSize, int seqLen, int hiddenSize,
+                           float scale) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc flush];
+
+  NSString *key = [NSString
+      stringWithFormat:@"Att_%d_%d_%d", batchSize, seqLen, hiddenSize];
+  GraphContext *gctx = mc.graphCache[key]; // Reuse GraphContext
+
+  if (!gctx) {
+    gctx = [[GraphContext alloc] init];
+    gctx.graph = [[MPSGraph alloc] init];
+
+    // Placeholders (Flattened inputs)
+    gctx.input = [gctx.graph
+        placeholderWithShape:@[ @(batchSize * seqLen), @(hiddenSize) ]
+                    dataType:MPSDataTypeFloat16
+                        name:nil]; // Q
+    gctx.weight = [gctx.graph
+        placeholderWithShape:@[ @(batchSize * seqLen), @(hiddenSize) ]
+                    dataType:MPSDataTypeFloat16
+                        name:nil]; // K
+    gctx.bias = [gctx.graph
+        placeholderWithShape:@[ @(batchSize * seqLen), @(hiddenSize) ]
+                    dataType:MPSDataTypeFloat16
+                        name:nil]; // V
+
+    // Reshape to (Batch, Seq, Hidden)
+    MPSGraphTensor *q3d =
+        [gctx.graph reshapeTensor:gctx.input
+                        withShape:@[ @(batchSize), @(seqLen), @(hiddenSize) ]
+                             name:nil];
+    MPSGraphTensor *k3d =
+        [gctx.graph reshapeTensor:gctx.weight
+                        withShape:@[ @(batchSize), @(seqLen), @(hiddenSize) ]
+                             name:nil];
+    MPSGraphTensor *v3d =
+        [gctx.graph reshapeTensor:gctx.bias
+                        withShape:@[ @(batchSize), @(seqLen), @(hiddenSize) ]
+                             name:nil];
+
+    // Transpose K -> (Batch, Hidden, Seq)
+    MPSGraphTensor *kT = [gctx.graph transposeTensor:k3d
+                                           dimension:-1
+                                       withDimension:-2
+                                                name:nil];
+
+    // Q * K^T -> (Batch, Seq, Seq)
+    MPSGraphTensor *scores =
+        [gctx.graph matrixMultiplicationWithPrimaryTensor:q3d
+                                          secondaryTensor:kT
+                                                     name:nil];
+
+    // Scale
+    MPSGraphTensor *scaleTensor =
+        [gctx.graph constantWithScalar:scale dataType:MPSDataTypeFloat16];
+    scores = [gctx.graph multiplicationWithPrimaryTensor:scores
+                                         secondaryTensor:scaleTensor
+                                                    name:nil];
+
+    // Softmax
+    scores = [gctx.graph softMaxWithTensor:scores axis:-1 name:nil];
+
+    // Context = Scores * V -> (Batch, Seq, Hidden)
+    MPSGraphTensor *context =
+        [gctx.graph matrixMultiplicationWithPrimaryTensor:scores
+                                          secondaryTensor:v3d
+                                                     name:nil];
+
+    // Reshape back to (Batch*Seq, Hidden)
+    gctx.output =
+        [gctx.graph reshapeTensor:context
+                        withShape:@[ @(batchSize * seqLen), @(hiddenSize) ]
+                             name:nil];
+
+    mc.graphCache[key] = gctx;
+  }
+
+  NSArray *shape = @[ @(batchSize * seqLen), @(hiddenSize) ];
+
+  MPSGraphTensorData *qData =
+      [[MPSGraphTensorData alloc] initWithMTLBuffer:(__bridge id<MTLBuffer>)q
+                                              shape:shape
+                                           dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *kData =
+      [[MPSGraphTensorData alloc] initWithMTLBuffer:(__bridge id<MTLBuffer>)k
+                                              shape:shape
+                                           dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *vData =
+      [[MPSGraphTensorData alloc] initWithMTLBuffer:(__bridge id<MTLBuffer>)v
+                                              shape:shape
+                                           dataType:MPSDataTypeFloat16];
+  MPSGraphTensorData *resData = [[MPSGraphTensorData alloc]
+      initWithMTLBuffer:(__bridge id<MTLBuffer>)result
+                  shape:shape
+               dataType:MPSDataTypeFloat16];
+
+  runGraph(mc, gctx.graph,
+           @{gctx.input : qData, gctx.weight : kData, gctx.bias : vData},
+           @{gctx.output : resData});
 }
 
 void Metal_Synchronize(MetalContextRef ctx) {

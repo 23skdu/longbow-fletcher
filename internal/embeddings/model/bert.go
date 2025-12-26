@@ -282,14 +282,14 @@ func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) devi
 type BertPooler struct {
 	Backend device.Backend
 	Dense   device.Tensor
-	Bias    []float64
+	Bias    device.Tensor
 }
 
 func NewBertPooler(config BertConfig, backend device.Backend) *BertPooler {
 	return &BertPooler{
 		Backend: backend,
 		Dense:   backend.NewTensor(config.HiddenSize, config.HiddenSize, nil),
-		Bias:    make([]float64, config.HiddenSize),
+		Bias:    backend.NewTensor(1, config.HiddenSize, nil), // Zero initialized
 	}
 }
 
@@ -301,34 +301,15 @@ func (p *BertPooler) Forward(hiddenStates device.Tensor) device.Tensor {
 	_, h := hiddenStates.Dims()
 	clsToken := hiddenStates.Slice(0, 1, 0, h)
 	
-	r, _ := p.Dense.Dims()
-	output := p.Backend.NewTensor(1, r, nil)
-	
-	// output = clsToken * Dense + Bias
-	// clsToken is 1xH. Dense is HxH. Output is 1xH.
-	// Wait, standard is Dense * Input^T?
-	// NewBertPooler creates Dense HxH.
-	// Original code: output.MulVec(p.Dense, clsVec).
-	// If p.Dense is HxH, and clsVec is H. Result is H.
-	// If we use matrices: 1xH * HxH -> 1xH.
-	// So output.Mul(clsToken, p.Dense).
-	
-	output.Mul(clsToken, p.Dense)
-	
-	output.Mul(clsToken, p.Dense)
-	
-	// Add bias and Tanh
-	if len(p.Bias) > 0 {
-		output.AddBias(p.Bias)
-	}
-	output.Tanh()
+	// output = clsToken * Dense + Bias + Tanh
+	output := p.Dense.LinearActivation(clsToken, p.Dense, p.Bias, device.ActivationTanh)
 	
 	return output
 }
 
 func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Tensor {
 	batchSize := len(lengths)
-	_, c := output.Dims()
+
 	
 	// Construct indices for CLS tokens (index 0 of each sequence).
 	// Sequences are stacked in `output`.
@@ -349,14 +330,8 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 	// Dense dims: (Hidden, Hidden)
 	// clsStack dims: (BatchSize, Hidden)
 	
-	result := p.Backend.NewTensor(batchSize, c, nil)
-	result.Mul(clsStack, p.Dense)
-	
-	// Add bias and Tanh
-	if len(p.Bias) > 0 {
-		result.AddBias(p.Bias)
-	}
-	result.Tanh()
+	// Compute Result = CLS * Dense + Bias + Tanh
+	result := p.Dense.LinearActivation(clsStack, p.Dense, p.Bias, device.ActivationTanh)
 	
 	// Check if clsStack needs pooling?
 	// It was created by Gather (NewTensor). 
@@ -410,9 +385,9 @@ type BertSelfAttention struct {
 	Key   device.Tensor
 	Value device.Tensor
 
-	QueryBias []float64
-	KeyBias   []float64
-	ValueBias []float64
+	QueryBias device.Tensor
+	KeyBias   device.Tensor
+	ValueBias device.Tensor
 }
 
 func NewBertSelfAttention(config BertConfig, backend device.Backend) *BertSelfAttention {
@@ -424,9 +399,9 @@ func NewBertSelfAttention(config BertConfig, backend device.Backend) *BertSelfAt
 		Query:             backend.NewTensor(config.HiddenSize, config.HiddenSize, nil),
 		Key:               backend.NewTensor(config.HiddenSize, config.HiddenSize, nil),
 		Value:             backend.NewTensor(config.HiddenSize, config.HiddenSize, nil),
-		QueryBias:         make([]float64, config.HiddenSize),
-		KeyBias:           make([]float64, config.HiddenSize),
-		ValueBias:         make([]float64, config.HiddenSize),
+		QueryBias:         backend.NewTensor(1, config.HiddenSize, nil),
+		KeyBias:           backend.NewTensor(1, config.HiddenSize, nil),
+		ValueBias:         backend.NewTensor(1, config.HiddenSize, nil),
 	}
 }
 
@@ -434,9 +409,10 @@ func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 	r, _ := hiddenStates.Dims()
 	
 	// Q, K, V Projections - use backend buffers
-	queryLayer := projectPooled(s.Backend, hiddenStates, s.Query, s.QueryBias)
-	keyLayer := projectPooled(s.Backend, hiddenStates, s.Key, s.KeyBias)
-	valueLayer := projectPooled(s.Backend, hiddenStates, s.Value, s.ValueBias)
+	// Q, K, V Projections - use backend buffers
+	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
+	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
+	valueLayer := s.Value.Linear(hiddenStates, s.Value, s.ValueBias)
 
 	// attentionScores = Q * K^T / sqrt(d_k)
 	attentionScores := s.Backend.GetTensor(r, r)
@@ -466,9 +442,10 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	r, c := hiddenStates.Dims()
 	
 	// 1. Project Q, K, V for the entire batch at once
-	queryLayer := projectPooled(s.Backend, hiddenStates, s.Query, s.QueryBias)
-	keyLayer := projectPooled(s.Backend, hiddenStates, s.Key, s.KeyBias)
-	valueLayer := projectPooled(s.Backend, hiddenStates, s.Value, s.ValueBias)
+	// 1. Project Q, K, V for the entire batch at once
+	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
+	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
+	valueLayer := s.Value.Linear(hiddenStates, s.Value, s.ValueBias)
 	
 	output := s.Backend.NewTensor(r, c, nil)
 	
@@ -485,33 +462,16 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	
 	batchSize := len(lengths)
 	
-	if allSameLength && s.Backend.Name() != "CPU" {
-		// Optimized GPU path for uniform sequence lengths
-		// Process each sequence efficiently with minimal allocation
+	if allSameLength {
+		// Optimized GPU/Graph path for uniform sequence lengths
 		scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
 		
-		for i := 0; i < batchSize; i++ {
-			start := i * seqLen
-			endIdx := start + seqLen
-			
-			seqQ := queryLayer.Slice(start, endIdx, 0, c)
-			seqK := keyLayer.Slice(start, endIdx, 0, c)
-			seqV := valueLayer.Slice(start, endIdx, 0, c)
-			
-			// Compute Attention Scores (seqLen x seqLen)
-			attentionScores := s.Backend.GetTensor(seqLen, seqLen)
-			seqKT := seqK.T()
-			attentionScores.Mul(seqQ, seqKT)
-			
-			attentionScores.Scale(scale)
-			attentionScores.Softmax()
-			
-			// Context: (seqLen x hidden)
-			outSlice := output.Slice(start, endIdx, 0, c)
-			outSlice.Mul(attentionScores, seqV)
-			
-			s.Backend.PutTensor(attentionScores)
-		}
+		// Use Fused Attention Graph (Batch MatMul + Softmax + Context)
+		// Returns (Batch*Seq, Hidden)
+		contextLayer := queryLayer.Attention(queryLayer, keyLayer, valueLayer, batchSize, seqLen, scale)
+		
+		// Result is the output
+		output = contextLayer
 	} else {
 		// Variable length path or CPU path
 		useParallel := s.Backend.Name() == "CPU"
@@ -581,7 +541,7 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 type BertSelfOutput struct {
 	Backend   device.Backend
 	Dense     device.Tensor
-	Bias      []float64
+	Bias      device.Tensor
 	LayerNorm *LayerNorm
 }
 
@@ -589,13 +549,13 @@ func NewBertSelfOutput(config BertConfig, backend device.Backend) *BertSelfOutpu
 	return &BertSelfOutput{
 		Backend:   backend,
 		Dense:     backend.NewTensor(config.HiddenSize, config.HiddenSize, nil),
-		Bias:      make([]float64, config.HiddenSize),
+		Bias:      backend.NewTensor(1, config.HiddenSize, nil),
 		LayerNorm: NewLayerNorm(config.HiddenSize, backend),
 	}
 }
 
 func (o *BertSelfOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Tensor {
-	hiddenStates = projectPooled(o.Backend, hiddenStates, o.Dense, o.Bias)
+	hiddenStates = o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
 	// Residual connection in-place
 	// hiddenStates.Add(inputTensor). But inputTensor might not be same backing store?
 	// AddInPlace assume shapes match.
@@ -610,20 +570,19 @@ func (o *BertSelfOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) d
 type BertIntermediate struct {
 	Backend device.Backend
 	Dense   device.Tensor
-	Bias    []float64
+	Bias    device.Tensor
 }
 
 func NewBertIntermediate(config BertConfig, backend device.Backend) *BertIntermediate {
 	return &BertIntermediate{
 		Backend: backend,
 		Dense:   backend.NewTensor(config.HiddenSize, config.IntermediateSize, nil),
-		Bias:    make([]float64, config.IntermediateSize),
+		Bias:    backend.NewTensor(1, config.IntermediateSize, nil),
 	}
 }
 
 func (i *BertIntermediate) Forward(hiddenStates device.Tensor) device.Tensor {
-	hiddenStates = projectPooledInter(i.Backend, hiddenStates, i.Dense, i.Bias)
-	hiddenStates.Gelu()
+	hiddenStates = i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, device.ActivationGELU)
 	return hiddenStates
 }
 
@@ -635,7 +594,7 @@ func (i *BertIntermediate) ForwardBatch(hiddenStates device.Tensor) device.Tenso
 type BertOutput struct {
 	Backend   device.Backend
 	Dense     device.Tensor
-	Bias      []float64
+	Bias      device.Tensor
 	LayerNorm *LayerNorm
 }
 
@@ -643,13 +602,13 @@ func NewBertOutput(config BertConfig, backend device.Backend) *BertOutput {
 	return &BertOutput{
 		Backend:   backend,
 		Dense:     backend.NewTensor(config.IntermediateSize, config.HiddenSize, nil),
-		Bias:      make([]float64, config.HiddenSize),
+		Bias:      backend.NewTensor(1, config.HiddenSize, nil),
 		LayerNorm: NewLayerNorm(config.HiddenSize, backend),
 	}
 }
 
 func (o *BertOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Tensor {
-	hiddenStates = projectPooled(o.Backend, hiddenStates, o.Dense, o.Bias)
+	hiddenStates = o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
 	// Residual connection in-place
 	hiddenStates.Add(inputTensor)
 	return o.LayerNorm.Forward(hiddenStates)
@@ -661,7 +620,7 @@ func (o *BertOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) devic
 
 // Helpers
 
-func projectPooled(backend device.Backend, input, weight device.Tensor, bias []float64) device.Tensor {
+func projectPooled(backend device.Backend, input, weight, bias device.Tensor) device.Tensor {
 	r, _ := input.Dims()
 	_, wc := weight.Dims()
 	
@@ -676,7 +635,7 @@ func projectPooled(backend device.Backend, input, weight device.Tensor, bias []f
 }
 
 // projectPooledInter uses the same pool strategy as standard project
-func projectPooledInter(backend device.Backend, input, weight device.Tensor, bias []float64) device.Tensor {
+func projectPooledInter(backend device.Backend, input, weight, bias device.Tensor) device.Tensor {
 	// Re-use logic
 	return projectPooled(backend, input, weight, bias)
 }

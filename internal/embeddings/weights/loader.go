@@ -57,14 +57,14 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 		if err := l.loadDense(file, layer.Intermediate.Dense); err != nil {
 			return fmt.Errorf("failed to load intermediate dense for layer %d: %w", i, err)
 		}
-		if err := l.loadSlice(file, layer.Intermediate.Bias); err != nil {
+		if err := l.loadDense(file, layer.Intermediate.Bias); err != nil {
 			return fmt.Errorf("failed to load intermediate bias for layer %d: %w", i, err)
 		}
 		// Output
 		if err := l.loadDense(file, layer.Output.Dense); err != nil {
 			return fmt.Errorf("failed to load output dense for layer %d: %w", i, err)
 		}
-		if err := l.loadSlice(file, layer.Output.Bias); err != nil {
+		if err := l.loadDense(file, layer.Output.Bias); err != nil {
 			return fmt.Errorf("failed to load output bias for layer %d: %w", i, err)
 		}
 		if err := l.loadLayerNorm(file, layer.Output.LayerNorm); err != nil {
@@ -76,7 +76,7 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 	if err := l.loadDense(file, l.Model.Pooler.Dense); err != nil {
 		return fmt.Errorf("failed to load pooler dense: %w", err)
 	}
-	if err := l.loadSlice(file, l.Model.Pooler.Bias); err != nil {
+	if err := l.loadDense(file, l.Model.Pooler.Bias); err != nil {
 		return fmt.Errorf("failed to load pooler bias: %w", err)
 	}
 
@@ -85,15 +85,49 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 
 func (l *Loader) loadDense(r io.Reader, d device.Tensor) error {
 	rows, cols := d.Dims()
-	for i := 0; i < rows; i++ {
-		for j := 0; j < cols; j++ {
-			var f32 float32
-			if err := binary.Read(r, binary.LittleEndian, &f32); err != nil {
-				return err
-			}
-			d.Set(i, j, float64(f32))
+	size := rows * cols
+	data := make([]float64, size)
+	
+	// Read everything into a slice first (bulk read)
+	if err := binary.Read(r, binary.LittleEndian, data); err != nil {
+		// Fallback to reading float32 one by one if bulk read fails (e.g. alignment/type)?
+		// Since we target float32 on disk but float64 in mem, binary.Read into []float64 won't work directly
+		// if file has float32s.
+		// We have to read float32s then convert.
+		
+		// Reset assumption: File has float32.
+		f32s := make([]float32, size)
+		if err := binary.Read(r, binary.LittleEndian, f32s); err != nil {
+			return err
+		}
+		
+		for i, v := range f32s {
+			data[i] = float64(v)
+		}
+	} else {
+		// If binary.Read worked directly, it means it expected float64s in file? 
+		// No, binary.Read reads into data based on data type.
+		// If we passed []float64, it expects 64-bit floats in file.
+		// But our model file likely comes from PyTorch/HuggingFace which is float32 (or less).
+		// So we MUST read float32.
+		
+		// The previous loop implementation read float32:
+		// var f32 float32; binary.Read(...)
+		
+		// So let's re-implement efficiently:
+		// Read all float32s in one go
+		f32s := make([]float32, size)
+		if err := binary.Read(r, binary.LittleEndian, f32s); err != nil {
+			return err
+		}
+		
+		for i, v := range f32s {
+			data[i] = float64(v)
 		}
 	}
+
+	// Bulk upload to device
+	d.CopyFromFloat64(data)
 	return nil
 }
 
@@ -119,19 +153,19 @@ func (l *Loader) loadSelfAttention(r io.Reader, sa *model.BertSelfAttention) err
 	if err := l.loadDense(r, sa.Query); err != nil {
 		return err
 	}
-	if err := l.loadSlice(r, sa.QueryBias); err != nil {
+	if err := l.loadDense(r, sa.QueryBias); err != nil {
 		return err
 	}
 	if err := l.loadDense(r, sa.Key); err != nil {
 		return err
 	}
-	if err := l.loadSlice(r, sa.KeyBias); err != nil {
+	if err := l.loadDense(r, sa.KeyBias); err != nil {
 		return err
 	}
 	if err := l.loadDense(r, sa.Value); err != nil {
 		return err
 	}
-	if err := l.loadSlice(r, sa.ValueBias); err != nil {
+	if err := l.loadDense(r, sa.ValueBias); err != nil {
 		return err
 	}
 	return nil
@@ -141,7 +175,7 @@ func (l *Loader) loadSelfOutput(r io.Reader, so *model.BertSelfOutput) error {
 	if err := l.loadDense(r, so.Dense); err != nil {
 		return err
 	}
-	if err := l.loadSlice(r, so.Bias); err != nil {
+	if err := l.loadDense(r, so.Bias); err != nil {
 		return err
 	}
 	return l.loadLayerNorm(r, so.LayerNorm)

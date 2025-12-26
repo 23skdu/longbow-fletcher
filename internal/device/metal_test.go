@@ -127,9 +127,10 @@ func TestMetalBackend_AddBias(t *testing.T) {
 		4, 5, 6,
 	}
 	bias := []float64{10, 20, 30}
+	biasTensor := b.NewTensor(1, cols, bias)
 	
 	tensor := b.NewTensor(rows, cols, data)
-	tensor.AddBias(bias)
+	tensor.AddBias(biasTensor)
 	
 	out := tensor.ToHost()
 	expected := []float64{

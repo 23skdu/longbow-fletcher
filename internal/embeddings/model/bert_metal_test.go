@@ -9,7 +9,7 @@ import (
 
 func TestBertModel_Forward_Metal(t *testing.T) {
 	// Setup Metal Backend
-	backend := device.NewMetalBackend()
+	backend := device.NewMetalBackendFP16()
 	if backend == nil {
 		t.Fatal("Failed to create Metal backend")
 	}

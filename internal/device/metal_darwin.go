@@ -3,7 +3,7 @@
 package device
 
 /*
-#cgo LDFLAGS: -framework Metal -framework Foundation -framework MetalPerformanceShaders
+#cgo LDFLAGS: -framework Metal -framework Foundation -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph
 #cgo CFLAGS: -fobjc-arc
 #include "metal_bridge.h"
 #include <stdlib.h>
@@ -462,33 +462,27 @@ func (t *MetalTensor) Scale(val float64) {
 	}
 }
 
-func (t *MetalTensor) AddBias(bias []float64) {
-	// Upload bias to temp buffer
-	// Or cache bias?
-	// For now temp buffer.
-	// Optimization: Keep bias on device.
-	// But signature takes []float64.
-	// BertModel loads bias as []float64 usually? 
-	// Wait, BertModel stores biases as []float64 in some structs (e.g. QueryBias), but as Tensor in others?
-	// QueryBias is []float64.
-	
-	biasSize := len(bias) * 4
-	biasBuf := C.Metal_Alloc(t.backend.ctx, C.int(biasSize))
-	defer C.Metal_FreeBuffer(t.backend.ctx, biasBuf)
-	
-	f32 := make([]float32, len(bias))
-	for i, v := range bias {
-		f32[i] = float32(v)
-	}
-	C.Metal_CopyToDevice(biasBuf, 0, unsafe.Pointer(&f32[0]), C.int(biasSize))
-	
-	// Check dim
-	_, cols := t.Dims()
-	if cols != len(bias) {
-		panic("AddBias dim mismatch")
+func (t *MetalTensor) AddBias(bias Tensor) {
+	// Cast bias to MetalTensor
+	bt, ok := bias.(*MetalTensor)
+	if !ok {
+		panic("AddBias: bias must be MetalTensor")
 	}
 	
-	C.Metal_AddBias(t.backend.ctx, t.buf, C.int(t.offset), biasBuf, 0, C.int(t.rows), C.int(cols))
+	// Verify dimensions (bias must match rows or cols depending on logic, effectively cols)
+	// Bias dims should be equal to t.cols
+	if bt.rows * bt.cols != t.cols {
+		panic("AddBias: bias dimension mismatch")
+	}
+	
+	if t.backend.useFP16 {
+		// Use FP16 kernel with persistent bias tensor
+		// Assume Metal_AddBias_F16 supports broadcasting or similar logic as Metal_AddBias
+		C.Metal_AddBias_F16(t.backend.ctx, t.buf, C.int(t.offset), bt.buf, C.int(bt.offset), t.buf, C.int(t.offset), C.int(t.rows), C.int(t.cols))
+	} else {
+		// FP32 Path
+		C.Metal_AddBias(t.backend.ctx, t.buf, C.int(t.offset), bt.buf, C.int(bt.offset), C.int(t.rows), C.int(t.cols))
+	}
 }
 
 func (t *MetalTensor) Softmax() {
@@ -569,7 +563,123 @@ func (t *MetalTensor) LayerNorm(gamma, beta Tensor, eps float64) {
 	bt, ok2 := beta.(*MetalTensor)
 	if !ok1 || !ok2 { panic("Mixed backend LayerNorm") }
 	
-	C.Metal_LayerNorm(t.backend.ctx, 
-		t.buf, C.int(t.offset), gt.buf, C.int(gt.offset), bt.buf, C.int(bt.offset), t.buf, C.int(t.offset),
-		C.int(t.rows), C.int(t.cols), C.float(eps))
+	if t.backend.useFP16 {
+		C.Metal_LayerNorm_F16(t.backend.ctx, 
+			t.buf, C.int(t.offset), gt.buf, C.int(gt.offset), bt.buf, C.int(bt.offset), t.buf, C.int(t.offset),
+			C.int(t.rows), C.int(t.cols), C.float(eps))
+	} else {
+		C.Metal_LayerNorm(t.backend.ctx, 
+			t.buf, C.int(t.offset), gt.buf, C.int(gt.offset), bt.buf, C.int(bt.offset), t.buf, C.int(t.offset),
+			C.int(t.rows), C.int(t.cols), C.float(eps))
+	}
+}
+
+func (t *MetalTensor) Linear(input, weight, bias Tensor) Tensor {
+	it := input.(*MetalTensor)
+	wt := weight.(*MetalTensor)
+	
+	// Check dimensions
+	r, ic := it.Dims()
+	wic, oc := wt.Dims()
+	
+	if ic != wic {
+		panic("Linear dimension mismatch")
+	}
+	
+	// Create Result
+	res := t.backend.NewTensor(r, oc, nil)
+	rst := res.(*MetalTensor)
+	
+	if t.backend.useFP16 {
+		// Use MPSGraph Fused Op
+		var bt *MetalTensor
+		if bias != nil {
+			bt = bias.(*MetalTensor)
+		} else {
+			// Zero bias if nil? 
+			// Graph expects bias. Create dummy zero bias?
+			// For high perf, caller should ensure bias exists (BertModel does).
+			// If nil, maybe just Mul?
+			// Let's panic for now or handle gracefully.
+			panic("Linear requires bias for now")
+		}
+		
+		C.Metal_Linear_Graph(t.backend.ctx, 
+			it.buf, C.int(it.offset), C.int(it.rows), C.int(it.cols),
+			wt.buf, C.int(wt.offset), C.int(wt.cols),
+			bt.buf, C.int(bt.offset),
+			rst.buf, C.int(rst.offset))
+			
+		return res
+	} else {
+		// Fallback FP32
+		res.Mul(input, weight)
+		if bias != nil {
+			res.AddBias(bias)
+		}
+		return res
+	}
+}
+
+func (t *MetalTensor) LinearActivation(input, weight, bias Tensor, activation ActivationType) Tensor {
+	if t.backend.useFP16 {
+		it := input.(*MetalTensor)
+		wt := weight.(*MetalTensor)
+		bt := bias.(*MetalTensor)
+		
+		// Dims check implicit in C call or helper? 
+		// Dims check:
+		r, _ := it.Dims()
+		_, oc := wt.Dims()
+		res := t.backend.NewTensor(r, oc, nil)
+		rst := res.(*MetalTensor)
+		
+		C.Metal_LinearActivation_Graph(t.backend.ctx,
+			it.buf, C.int(it.offset), C.int(it.rows), C.int(it.cols),
+			wt.buf, C.int(wt.offset), C.int(wt.cols),
+			bt.buf, C.int(bt.offset),
+			rst.buf, C.int(rst.offset),
+			C.int(activation)) // Enum maps 1:1 if we match indices
+			
+		return res
+	} else {
+		// Fallback
+		res := t.Linear(input, weight, bias)
+		switch activation {
+		case ActivationGELU:
+			res.Gelu()
+		case ActivationTanh:
+			res.Tanh()
+		case ActivationSoftmax:
+			res.Softmax()
+		}
+		return res
+	}
+}
+
+func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float64) Tensor {
+	if t.backend.useFP16 {
+		qt := q.(*MetalTensor)
+		kt := k.(*MetalTensor)
+		vt := v.(*MetalTensor)
+		
+		r, c := qt.Dims()
+		if r != batchSize*seqLen {
+			panic("Attention: dims mismatch")
+		}
+		
+		result := t.backend.NewTensor(r, c, nil)
+		rst := result.(*MetalTensor)
+		
+		C.Metal_Attention_Graph(t.backend.ctx,
+			qt.buf, C.int(qt.offset),
+			kt.buf, C.int(kt.offset),
+			vt.buf, C.int(vt.offset),
+			rst.buf, C.int(rst.offset),
+			C.int(batchSize), C.int(seqLen), C.int(c), C.float(scale))
+			
+		return result
+	} else {
+		panic("Attention not implemented for Metal FP32")
+	}
 }
