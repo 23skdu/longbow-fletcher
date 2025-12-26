@@ -292,13 +292,13 @@ void Metal_LayerNorm(MetalContextRef ctx, MetalBufferRef input, int offIn,
   [c.currentEncoder setBytes:&cols length:sizeof(int) atIndex:4];
   [c.currentEncoder setBytes:&eps length:sizeof(float) atIndex:5];
 
-  MTLSize gridSize = MTLSizeMake(rows, 1, 1);
-  NSUInteger threadGroupSize =
-      MIN(rows, c.pipelineLayerNorm.maxTotalThreadsPerThreadgroup);
-  MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+  // Dispatch one threadgroup per row, with 256 threads per group for parallel
+  // reduction
+  MTLSize threadgroupSize = MTLSizeMake(256, 1, 1);
+  MTLSize threadgroupsPerGrid = MTLSizeMake(rows, 1, 1);
 
-  [c.currentEncoder dispatchThreads:gridSize
-              threadsPerThreadgroup:threadgroupSize];
+  [c.currentEncoder dispatchThreadgroups:threadgroupsPerGrid
+                   threadsPerThreadgroup:threadgroupSize];
 }
 
 void Metal_Softmax(MetalContextRef ctx, MetalBufferRef input, int offIn,
@@ -315,13 +315,13 @@ void Metal_Softmax(MetalContextRef ctx, MetalBufferRef input, int offIn,
                       atIndex:1];
   [c.currentEncoder setBytes:&cols length:sizeof(int) atIndex:2];
 
-  MTLSize gridSize = MTLSizeMake(rows, 1, 1);
-  NSUInteger threadGroupSize =
-      MIN(rows, c.pipelineSoftmax.maxTotalThreadsPerThreadgroup);
-  MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+  // Dispatch one threadgroup per row, with 256 threads per group for parallel
+  // reduction
+  MTLSize threadgroupSize = MTLSizeMake(256, 1, 1);
+  MTLSize threadgroupsPerGrid = MTLSizeMake(rows, 1, 1);
 
-  [c.currentEncoder dispatchThreads:gridSize
-              threadsPerThreadgroup:threadgroupSize];
+  [c.currentEncoder dispatchThreadgroups:threadgroupsPerGrid
+                   threadsPerThreadgroup:threadgroupSize];
 }
 
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
