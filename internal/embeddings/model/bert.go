@@ -466,11 +466,12 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	
 	output := s.Backend.NewTensor(r, c, nil)
 	
-	// 2 & 3. Compute Attention Scores and Context per sequence in parallel
-	var wg sync.WaitGroup
-	currentIdx := 0
+	// 2 & 3. Compute Attention Scores and Context per sequence
+	// GPU backends handle parallelism internally - use serial execution
+	// CPU backends benefit from Go's goroutine parallelism
+	useParallel := s.Backend.Name() == "CPU"
 	
-	// We need to capture the start index for each goroutine
+	currentIdx := 0
 	type job struct {
 		start int
 		len   int
@@ -480,48 +481,58 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 		jobs[i] = job{start: currentIdx, len: l}
 		currentIdx += l
 	}
-
-	for _, j := range jobs {
-		wg.Add(1)
-		// Capture loop variables
-		start, length := j.start, j.len
+	
+	// Attention computation function (same logic for serial/parallel)
+	computeAttention := func(start, length int) {
+		endIdx := start + length
 		
-		go func() {
-			defer wg.Done()
-			
-			endIdx := start + length
-			
-			// Slice projected layers (View)
-			seqQ := queryLayer.Slice(start, endIdx, 0, c)
-			seqK := keyLayer.Slice(start, endIdx, 0, c)
-			seqV := valueLayer.Slice(start, endIdx, 0, c)
-			
-			// Compute Attention Scores
-			attentionScores := s.Backend.GetTensor(length, length)
-			seqKT := seqK.T()
-			attentionScores.Mul(seqQ, seqKT)
-			
-			scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
-			attentionScores.Scale(scale)
-			
-			// Softmax in-place
-			attentionScores.Softmax()
-			
-			// Compute Context Layer
-			seqContext := s.Backend.GetTensor(length, s.AllHeadSize)
-			seqContext.Mul(attentionScores, seqV)
-			
-			// Copy result to output (Write to distinct rows)
-			outSlice := output.Slice(start, endIdx, 0, c)
-			outSlice.Copy(seqContext)
-			
-			// Return seq buffers
-			s.Backend.PutTensor(attentionScores)
-			s.Backend.PutTensor(seqContext)
-		}()
+		// Slice projected layers (View)
+		seqQ := queryLayer.Slice(start, endIdx, 0, c)
+		seqK := keyLayer.Slice(start, endIdx, 0, c)
+		seqV := valueLayer.Slice(start, endIdx, 0, c)
+		
+		// Compute Attention Scores
+		attentionScores := s.Backend.GetTensor(length, length)
+		seqKT := seqK.T()
+		attentionScores.Mul(seqQ, seqKT)
+		
+		scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
+		attentionScores.Scale(scale)
+		
+		// Softmax in-place
+		attentionScores.Softmax()
+		
+		// Compute Context Layer
+		seqContext := s.Backend.GetTensor(length, s.AllHeadSize)
+		seqContext.Mul(attentionScores, seqV)
+		
+		// Copy result to output (Write to distinct rows)
+		outSlice := output.Slice(start, endIdx, 0, c)
+		outSlice.Copy(seqContext)
+		
+		// Return seq buffers
+		s.Backend.PutTensor(attentionScores)
+		s.Backend.PutTensor(seqContext)
 	}
 	
-	wg.Wait()
+	if useParallel {
+		// CPU: Use goroutines for parallelism
+		var wg sync.WaitGroup
+		for _, j := range jobs {
+			wg.Add(1)
+			start, length := j.start, j.len
+			go func() {
+				defer wg.Done()
+				computeAttention(start, length)
+			}()
+		}
+		wg.Wait()
+	} else {
+		// GPU: Serial execution (GPU handles parallelism)
+		for _, j := range jobs {
+			computeAttention(j.start, j.len)
+		}
+	}
 	
 	// Return projected layers
 	s.Backend.PutTensor(queryLayer)
