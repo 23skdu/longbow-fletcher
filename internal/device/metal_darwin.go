@@ -12,7 +12,9 @@ import "C"
 import (
 	_ "embed"
 	"fmt"
+	"math"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -30,9 +32,18 @@ type bufferPoolEntry struct {
 }
 
 type MetalBackend struct {
-	ctx    C.MetalContextRef
-	pool   []bufferPoolEntry // Simple pool of GPU buffers
-	useFP16 bool             // Use FP16 precision for 2x GPU performance
+	ctx        C.MetalContextRef
+	mu         sync.Mutex
+	buckets    map[int][]bufferPoolEntry // Pooled GPU buffers, organized by size buckets
+	useFP16    bool                      // Use FP16 precision for 2x GPU performance
+}
+
+func getBucket(size int) int {
+	if size <= 0 {
+		return 0
+	}
+	// Use log2 to determine bucket. E.g., 1-2 bytes -> bucket 1, 3-4 bytes -> bucket 2, 5-8 bytes -> bucket 3, etc.
+	return int(math.Ceil(math.Log2(float64(size))))
 }
 
 func NewMetalBackend() *MetalBackend {
@@ -44,7 +55,11 @@ func NewMetalBackend() *MetalBackend {
 		panic("Failed to initialize Metal backend")
 	}
 	
-	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64), useFP16: false}
+	return &MetalBackend{
+		ctx:     ctx,
+		buckets: make(map[int][]bufferPoolEntry),
+		useFP16: false,
+	}
 }
 
 // NewMetalBackendFP16 creates a Metal backend using FP16 precision for 2x GPU performance
@@ -57,7 +72,11 @@ func NewMetalBackendFP16() *MetalBackend {
 		panic("Failed to initialize Metal backend")
 	}
 	
-	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64), useFP16: true}
+	return &MetalBackend{
+		ctx:     ctx,
+		buckets: make(map[int][]bufferPoolEntry),
+		useFP16: true,
+	}
 }
 
 func (b *MetalBackend) Name() string {
@@ -170,25 +189,49 @@ func float16ToFloat32(h uint16) float32 {
 }
 
 func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
-	// Find a buffer of exact size or slightly larger (up to 2x)
-	for i, entry := range b.pool {
-		if entry.size >= sizeBytes && entry.size <= sizeBytes*2 {
-			// Remove from pool and return
-			b.pool = append(b.pool[:i], b.pool[i+1:]...)
-			return entry.buf
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	bucket := getBucket(sizeBytes)
+	
+	// Check current bucket and larger buckets (up to 2 levels higher)
+	for i := bucket; i <= bucket+2; i++ {
+		list := b.buckets[i]
+		if len(list) > 0 {
+			// Find best fit in this bucket
+			bestIdx := -1
+			for idx, entry := range list {
+				if entry.size >= sizeBytes {
+					if bestIdx == -1 || entry.size < list[bestIdx].size {
+						bestIdx = idx
+					}
+				}
+			}
+			
+			if bestIdx != -1 {
+				buf := list[bestIdx].buf
+				b.buckets[i] = append(list[:bestIdx], list[bestIdx+1:]...)
+				return buf
+			}
 		}
 	}
 	return nil
 }
 
 func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
-	// Limit pool size
-	if len(b.pool) >= 128 {
-		// Pool full, free the oldest entry
-		C.Metal_FreeBuffer(b.ctx, b.pool[0].buf)
-		b.pool = b.pool[1:]
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	bucket := getBucket(sizeBytes)
+	list := b.buckets[bucket]
+	
+	// Limit bucket size
+	if len(list) >= 32 {
+		C.Metal_FreeBuffer(b.ctx, list[0].buf)
+		list = list[1:]
 	}
-	b.pool = append(b.pool, bufferPoolEntry{buf: buf, size: sizeBytes})
+	
+	b.buckets[bucket] = append(list, bufferPoolEntry{buf: buf, size: sizeBytes})
 }
 
 func (b *MetalBackend) GetTensor(r, c int) Tensor {
@@ -196,8 +239,18 @@ func (b *MetalBackend) GetTensor(r, c int) Tensor {
 }
 
 func (b *MetalBackend) PutTensor(t Tensor) {
-	// Tensor will be returned to pool via finalizer
-	// Optionally we could force return here if needed
+	mt, ok := t.(*MetalTensor)
+	if !ok || mt.buf == nil {
+		return
+	}
+
+	// Only return if we own it and it's not a slice
+	if mt.ownsBuffer && mt.offset == 0 {
+		b.returnToPool(mt.buf, mt.sizeBytes)
+		mt.buf = nil // Prevent double-return
+		mt.ownsBuffer = false
+		runtime.SetFinalizer(mt, nil)
+	}
 }
 
 func (b *MetalBackend) Synchronize() {

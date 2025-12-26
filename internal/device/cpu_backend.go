@@ -506,8 +506,24 @@ func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation Acti
 	case ActivationSoftmax:
 		result.Softmax()
 	case ActivationSwiGLU:
-		// TODO: Implement CPU SwiGLU (requires splitting and swish)
-		log.Panic("ActivationSwiGLU not implemented on CPU")
+		// Result of Linear is (N, 2 * interSize)
+		r, c := result.Dims()
+		interSize := c / 2
+		output := t.backend.GetTensor(r, interSize)
+		ot := output.(*CPUTensor)
+		rt := result.(*CPUTensor)
+		
+		for n := 0; n < r; n++ {
+			for i := 0; i < interSize; i++ {
+				x := rt.data[n*c + i]
+				y := rt.data[n*c + i + interSize]
+				// Swish(x) = x * sigmoid(x)
+				swishX := x / (1.0 + float32(math.Exp(float64(-x))))
+				ot.data[n*interSize + i] = swishX * y
+			}
+		}
+		t.backend.PutTensor(result)
+		return output
 	case ActivationIdentity:
 		// No-op
 	}
@@ -598,6 +614,48 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 }
 
 func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
-	// TODO: Implement CPU RoPE
-	log.Panic("ApplyRoPE not implemented on CPU")
+	if t.trans {
+		panic("ApplyRoPE on transposed")
+	}
+	
+	totalRows := batchSize * seqLen
+	var wg sync.WaitGroup
+	rowsPerWorker := (totalRows + numWorkers - 1) / numWorkers
+	
+	for w := 0; w < numWorkers; w++ {
+		startRow := w * rowsPerWorker
+		endRow := startRow + rowsPerWorker
+		if startRow >= totalRows {
+			break
+		}
+		if endRow > totalRows {
+			endRow = totalRows
+		}
+		
+		wg.Add(1)
+		go func(sRow, eRow int) {
+			defer wg.Done()
+			for r := sRow; r < eRow; r++ {
+				seqIdx := r % seqLen
+				rowOffset := r * (numHeads * headDim)
+				
+				for h := 0; h < numHeads; h++ {
+					headOffset := rowOffset + h * headDim
+					
+					for i := 0; i < headDim/2; i++ {
+						theta := float64(seqIdx) * math.Pow(10000.0, -2.0*float64(i)/float64(headDim))
+						cosTheta := float32(math.Cos(theta))
+						sinTheta := float32(math.Sin(theta))
+						
+						x1 := t.data[headOffset + i]
+						x2 := t.data[headOffset + headDim/2 + i]
+						
+						t.data[headOffset + i] = x1*cosTheta - x2*sinTheta
+						t.data[headOffset + headDim/2 + i] = x1*sinTheta + x2*cosTheta
+					}
+				}
+			}
+		}(startRow, endRow)
+	}
+	wg.Wait()
 }
