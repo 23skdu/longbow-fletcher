@@ -3,6 +3,8 @@ package embeddings
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"sync"
 
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
@@ -72,45 +74,109 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string) (
 // EmbedBatch generates embeddings for a batch of texts.
 // It processes texts in internal batches of 128 to prevent VRAM exhaustion on GPUs.
 func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
-	const internalBatchSize = 128
-	allResults := make([][]float32, 0, len(texts))
+	if len(texts) == 0 {
+		return nil
+	}
 
-	for i := 0; i < len(texts); i += internalBatchSize {
-		end := i + internalBatchSize
+	// 1. Parallel Tokenization
+	type tokenizedResult struct {
+		ids []int
+		len int
+	}
+	results := make([]tokenizedResult, len(texts))
+	numWorkers := runtime.NumCPU()
+	if numWorkers > 16 {
+		numWorkers = 16 // Cap at 16 workers for tokenization
+	}
+	
+	var wg sync.WaitGroup
+	chunkSize := (len(texts) + numWorkers - 1) / numWorkers
+	for w := 0; w < numWorkers; w++ {
+		start := w * chunkSize
+		if start >= len(texts) {
+			break
+		}
+		end := start + chunkSize
 		if end > len(texts) {
 			end = len(texts)
 		}
+		
+		wg.Add(1)
+		go func(s, eIdx int) {
+			defer wg.Done()
+			for i := s; i < eIdx; i++ {
+				_, ids := e.tokenizer.Tokenize(texts[i])
+				results[i] = tokenizedResult{
+					ids: ids,
+					len: len(ids) + 2, // [CLS] + [SEP]
+				}
+			}
+		}(start, end)
+	}
+	wg.Wait()
 
-		batchTexts := texts[i:end]
-		inputs := make([]int, 0, len(batchTexts)*32)
-		lengths := make([]int, len(batchTexts))
+	const internalBatchSize = 128
+	allResults := make([][]float32, len(texts))
+	
+	// 2. Sequential GPU Processing (with parallel extraction)
+	for i := 0; i < len(texts); i += internalBatchSize {
+		batchEnd := i + internalBatchSize
+		if batchEnd > len(texts) {
+			batchEnd = len(texts)
+		}
 
-		for j, text := range batchTexts {
-			_, ids := e.tokenizer.Tokenize(text)
+		batchCount := batchEnd - i
+		totalTokens := 0
+		for j := i; j < batchEnd; j++ {
+			totalTokens += results[j].len
+		}
 
-			// Add [CLS] and [SEP]
+		inputs := make([]int, 0, totalTokens)
+		lengths := make([]int, batchCount)
+
+		for j := 0; j < batchCount; j++ {
+			res := results[i+j]
 			inputs = append(inputs, 101) // [CLS]
-			inputs = append(inputs, ids...)
+			inputs = append(inputs, res.ids...)
 			inputs = append(inputs, 102) // [SEP]
-
-			lengths[j] = len(ids) + 2
+			lengths[j] = res.len
 		}
 
 		// Forward Pass for this batch
 		outputMatrix := e.model.ForwardBatch(inputs, lengths)
 
-		// Extract rows
-		r, c := outputMatrix.Dims()
-		if r != len(batchTexts) {
-			continue
-		}
-
+		// 3. Parallel Extraction
 		data := outputMatrix.ToHost()
-		for j := 0; j < r; j++ {
-			row := make([]float32, c)
-			copy(row, data[j*c:(j+1)*c])
-			allResults = append(allResults, row)
+		_, c := outputMatrix.Dims()
+		
+		extractWG := sync.WaitGroup{}
+		extractWorkers := 4 // Small number for data extraction
+		if batchCount < extractWorkers {
+			extractWorkers = batchCount
 		}
+		
+		eSize := (batchCount + extractWorkers - 1) / extractWorkers
+		for w := 0; w < extractWorkers; w++ {
+			eStart := w * eSize
+			if eStart >= batchCount {
+				break
+			}
+			eEnd := eStart + eSize
+			if eEnd > batchCount {
+				eEnd = batchCount
+			}
+			
+			extractWG.Add(1)
+			go func(s, end int) {
+				defer extractWG.Done()
+				for j := s; j < end; j++ {
+					row := make([]float32, c)
+					copy(row, data[j*c:(j+1)*c])
+					allResults[i+j] = row
+				}
+			}(eStart, eEnd)
+		}
+		extractWG.Wait()
 		
 		e.model.Backend.PutTensor(outputMatrix)
 	}
