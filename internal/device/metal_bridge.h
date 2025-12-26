@@ -36,10 +36,17 @@ void Metal_AddScalar(MetalContextRef ctx, MetalBufferRef a, int offA, float val,
                      MetalBufferRef result, int offRes, int count);
 void Metal_Scale(MetalContextRef ctx, MetalBufferRef a, int offA, float val,
                  MetalBufferRef result, int offRes, int count);
+void Metal_Scale_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                     uint16_t val, MetalBufferRef result, int offRes,
+                     int count);
 void Metal_Tanh(MetalContextRef ctx, MetalBufferRef a, int offA,
                 MetalBufferRef result, int offRes, int count);
+void Metal_Tanh_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                    MetalBufferRef result, int offRes, int count);
 void Metal_Gelu(MetalContextRef ctx, MetalBufferRef a, int offA,
                 MetalBufferRef result, int offRes, int count);
+void Metal_Gelu_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                    MetalBufferRef result, int offRes, int count);
 void Metal_LayerNorm(MetalContextRef ctx, MetalBufferRef input, int offIn,
                      MetalBufferRef gamma, int offGamma, MetalBufferRef beta,
                      int offBeta, MetalBufferRef result, int offRes, int rows,

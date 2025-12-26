@@ -7,6 +7,7 @@
 @property(strong) id<MTLDevice> device;
 @property(strong) id<MTLCommandQueue> commandQueue;
 @property(strong) id<MTLLibrary> library;
+// FP32 Pipelines
 @property(strong) id<MTLComputePipelineState> pipelineAdd;
 @property(strong) id<MTLComputePipelineState> pipelineAddScalar;
 @property(strong) id<MTLComputePipelineState> pipelineScale;
@@ -16,6 +17,12 @@
 @property(strong) id<MTLComputePipelineState> pipelineSoftmax;
 @property(strong) id<MTLComputePipelineState> pipelineGather;
 @property(strong) id<MTLComputePipelineState> pipelineAddBias;
+// FP16 Pipelines (for 2x GPU performance)
+@property(strong) id<MTLComputePipelineState> pipelineAdd_F16;
+@property(strong) id<MTLComputePipelineState> pipelineAddScalar_F16;
+@property(strong) id<MTLComputePipelineState> pipelineScale_F16;
+@property(strong) id<MTLComputePipelineState> pipelineTanh_F16;
+@property(strong) id<MTLComputePipelineState> pipelineGelu_F16;
 
 // Async command batching
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
@@ -124,6 +131,28 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineAddBias =
       [ctx.device newComputePipelineStateWithFunction:
                       [ctx.library newFunctionWithName:@"add_bias_kernel"]
+                                                error:&error];
+
+  // Initialize FP16 pipelines
+  ctx.pipelineAdd_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"add_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineAddScalar_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"add_scalar_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineScale_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"scale_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineTanh_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"tanh_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineGelu_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"gelu_kernel_f16"]
                                                 error:&error];
 
   return (__bridge_retained MetalContextRef)ctx;
@@ -243,6 +272,29 @@ void Metal_Scale(MetalContextRef ctx, MetalBufferRef a, int offA, float val,
               threadsPerThreadgroup:threadgroupSize];
 }
 
+// FP16 Scale for 2x performance
+void Metal_Scale_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                     uint16_t val, MetalBufferRef result, int offRes,
+                     int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  [c ensureEncoder];
+
+  [c.currentEncoder setComputePipelineState:c.pipelineScale_F16];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)a offset:offA atIndex:0];
+  [c.currentEncoder setBytes:&val length:sizeof(uint16_t) atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:2];
+
+  MTLSize gridSize = MTLSizeMake(count, 1, 1);
+  NSUInteger threadGroupSize =
+      MIN(512, c.pipelineScale_F16.maxTotalThreadsPerThreadgroup);
+  MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+
+  [c.currentEncoder dispatchThreads:gridSize
+              threadsPerThreadgroup:threadgroupSize];
+}
+
 void Metal_Tanh(MetalContextRef ctx, MetalBufferRef a, int offA,
                 MetalBufferRef result, int offRes, int count) {
   MetalWrapper *c = (__bridge MetalWrapper *)ctx;
@@ -277,6 +329,48 @@ void Metal_Gelu(MetalContextRef ctx, MetalBufferRef a, int offA,
   MTLSize gridSize = MTLSizeMake(count, 1, 1);
   NSUInteger threadGroupSize =
       MIN(512, c.pipelineGelu.maxTotalThreadsPerThreadgroup);
+  MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+
+  [c.currentEncoder dispatchThreads:gridSize
+              threadsPerThreadgroup:threadgroupSize];
+}
+
+// FP16 Tanh for 2x performance
+void Metal_Tanh_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                    MetalBufferRef result, int offRes, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  [c ensureEncoder];
+
+  [c.currentEncoder setComputePipelineState:c.pipelineTanh_F16];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)a offset:offA atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:1];
+
+  MTLSize gridSize = MTLSizeMake(count, 1, 1);
+  NSUInteger threadGroupSize =
+      MIN(512, c.pipelineTanh_F16.maxTotalThreadsPerThreadgroup);
+  MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
+
+  [c.currentEncoder dispatchThreads:gridSize
+              threadsPerThreadgroup:threadgroupSize];
+}
+
+// FP16 Gelu for 2x performance
+void Metal_Gelu_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                    MetalBufferRef result, int offRes, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  [c ensureEncoder];
+
+  [c.currentEncoder setComputePipelineState:c.pipelineGelu_F16];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)a offset:offA atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:1];
+
+  MTLSize gridSize = MTLSizeMake(count, 1, 1);
+  NSUInteger threadGroupSize =
+      MIN(512, c.pipelineGelu_F16.maxTotalThreadsPerThreadgroup);
   MTLSize threadgroupSize = MTLSizeMake(threadGroupSize, 1, 1);
 
   [c.currentEncoder dispatchThreads:gridSize

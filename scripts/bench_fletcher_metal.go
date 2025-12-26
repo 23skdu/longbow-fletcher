@@ -19,7 +19,7 @@ func main() {
 		MaxPositionEmbeddings: 512,
 	}
 
-	backend := device.NewMetalBackend() // Using FP32 for stability
+	backend := device.NewMetalBackend() // Using FP32 (FP16 Softmax/LayerNorm not yet implemented)
 	bertModel := model.NewBertModelWithBackend(config, backend)
 
 	seqLen := 50 // ~50 tokens per sentence to match Python

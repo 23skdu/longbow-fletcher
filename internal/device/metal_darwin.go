@@ -252,15 +252,23 @@ func (t *MetalTensor) At(i, j int) float64 {
 }
 
 func (t *MetalTensor) Set(i, j int, v float64) {
-	// Calculate linear index
 	var idx int
 	if t.trans {
 		idx = j*t.cols + i 
 	} else {
 		idx = i*t.cols + j
 	}
-	// We pass offset to MetalOps.
-	C.Metal_SetAt(t.buf, C.int(t.offset + idx*4), C.float(v)) // idx*4 because offset is in bytes
+	
+	if t.backend.useFP16 {
+		// FP16: 2 bytes per element - use conversion and direct memory write
+		f16Val := float32ToFloat16(float32(v))
+		byteOffset := t.offset + idx*2
+		// Write FP16 value via Metal_CopyToDevice
+		C.Metal_CopyToDevice(t.buf, C.int(byteOffset), unsafe.Pointer(&f16Val), 2)
+	} else {
+		// FP32: 4 bytes per element
+		C.Metal_SetAt(t.buf, C.int(t.offset + idx*4), C.float(v))
+	}
 }
 
 func (t *MetalTensor) rawHostCopy() []float32 {
@@ -421,7 +429,12 @@ func (t *MetalTensor) AddScalar(val float64) {
 
 func (t *MetalTensor) Scale(val float64) {
 	size := t.rows * t.cols
-	C.Metal_Scale(t.backend.ctx, t.buf, C.int(t.offset), C.float(val), t.buf, C.int(t.offset), C.int(size))
+	if t.backend.useFP16 {
+		f16Val := float32ToFloat16(float32(val))
+		C.Metal_Scale_F16(t.backend.ctx, t.buf, C.int(t.offset), C.uint16_t(f16Val), t.buf, C.int(t.offset), C.int(size))
+	} else {
+		C.Metal_Scale(t.backend.ctx, t.buf, C.int(t.offset), C.float(val), t.buf, C.int(t.offset), C.int(size))
+	}
 }
 
 func (t *MetalTensor) AddBias(bias []float64) {
