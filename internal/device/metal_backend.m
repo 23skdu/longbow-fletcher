@@ -20,6 +20,8 @@
 // Async command batching
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
 @property(strong) id<MTLComputeCommandEncoder> currentEncoder;
+// Track last MPS buffer for synchronization
+@property(strong) id<MTLCommandBuffer> lastMPSBuffer;
 @end
 
 @implementation MetalWrapper
@@ -45,6 +47,18 @@
       [self.currentCommandBuffer commit];
       [self.currentCommandBuffer waitUntilCompleted];
       self.currentCommandBuffer = nil;
+    }
+  }
+}
+
+- (void)fullSync {
+  @synchronized(self) {
+    // First flush compute encoder
+    [self flush];
+    // Then wait for any pending MPS operations
+    if (self.lastMPSBuffer) {
+      [self.lastMPSBuffer waitUntilCompleted];
+      self.lastMPSBuffer = nil;
     }
   }
 }
@@ -429,7 +443,8 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                 resultMatrix:matC];
 
   [buffer commit];
-  [buffer waitUntilCompleted];
+  // Store for sync in flush
+  mc.lastMPSBuffer = buffer;
 }
 
 void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
@@ -500,10 +515,10 @@ void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
   }
 
   [buffer commit];
-  [buffer waitUntilCompleted];
+  // Don't wait - let GPU pipeline run asynchronously
 }
 
 void Metal_Synchronize(MetalContextRef ctx) {
   MetalWrapper *wrapper = (__bridge MetalWrapper *)ctx;
-  [wrapper flush];
+  [wrapper fullSync];
 }
