@@ -226,6 +226,66 @@ kernel void softmax_kernel(device const float *input [[ buffer(0) ]],
     }
 }
 
+// FP16 Softmax with half precision I/O, float reductions for accuracy
+kernel void softmax_kernel_f16(device const half *input [[ buffer(0) ]],
+                               device half *output [[ buffer(1) ]],
+                               constant int &cols [[ buffer(2) ]],
+                               uint row_idx [[ threadgroup_position_in_grid ]],
+                               uint tid [[ thread_index_in_threadgroup ]],
+                               uint tg_size [[ threads_per_threadgroup ]]) {
+    
+    threadgroup float shared_max[256];
+    threadgroup float shared_sum[256];
+    
+    int offset = row_idx * cols;
+    
+    // Phase 1: Find max (use float for accuracy)
+    float local_max = -1e38;
+    for (int i = tid; i < cols; i += tg_size) {
+        float v = float(input[offset + i]);
+        if (v > local_max) local_max = v;
+    }
+    shared_max[tid] = local_max;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_max[tid] = max(shared_max[tid], shared_max[tid + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float max_val = shared_max[0];
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // Phase 2: Compute exp and sum (float for accuracy)
+    float local_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        float val = exp(float(input[offset + i]) - max_val);
+        output[offset + i] = half(val);
+        local_sum += val;
+    }
+    shared_sum[tid] = local_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float inv_sum = 1.0 / shared_sum[0];
+    
+    // Phase 3: Normalize and store as half
+    for (int i = tid; i < cols; i += tg_size) {
+        output[offset + i] = half(float(output[offset + i]) * inv_sum);
+    }
+}
+
 kernel void gather_kernel(device const float *table [[ buffer(0) ]],
                           device float *output [[ buffer(1) ]],
                           device const int *indices [[ buffer(2) ]],

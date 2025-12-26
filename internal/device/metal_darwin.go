@@ -490,7 +490,11 @@ func (t *MetalTensor) Softmax() {
 		panic("Softmax on transposed tensor not supported yet")
 	}
 	
-	C.Metal_Softmax(t.backend.ctx, t.buf, C.int(t.offset), t.buf, C.int(t.offset), C.int(t.rows), C.int(t.cols))
+	if t.backend.useFP16 {
+		C.Metal_Softmax_F16(t.backend.ctx, t.buf, C.int(t.offset), t.buf, C.int(t.offset), C.int(t.rows), C.int(t.cols))
+	} else {
+		C.Metal_Softmax(t.backend.ctx, t.buf, C.int(t.offset), t.buf, C.int(t.offset), C.int(t.rows), C.int(t.cols))
+	}
 }
 
 func (t *MetalTensor) Gather(indices []int) Tensor {

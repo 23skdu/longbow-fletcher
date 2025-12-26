@@ -53,6 +53,8 @@ void Metal_LayerNorm(MetalContextRef ctx, MetalBufferRef input, int offIn,
                      int cols, float eps);
 void Metal_Softmax(MetalContextRef ctx, MetalBufferRef input, int offIn,
                    MetalBufferRef result, int offRes, int rows, int cols);
+void Metal_Softmax_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                       MetalBufferRef result, int offRes, int rows, int cols);
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   MetalBufferRef indices, int offIndices, MetalBufferRef output,
                   int offOut, int indicesCount, int cols);

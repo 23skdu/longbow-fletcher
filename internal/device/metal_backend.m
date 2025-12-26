@@ -23,6 +23,7 @@
 @property(strong) id<MTLComputePipelineState> pipelineScale_F16;
 @property(strong) id<MTLComputePipelineState> pipelineTanh_F16;
 @property(strong) id<MTLComputePipelineState> pipelineGelu_F16;
+@property(strong) id<MTLComputePipelineState> pipelineSoftmax_F16;
 
 // Async command batching
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
@@ -153,6 +154,10 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineGelu_F16 =
       [ctx.device newComputePipelineStateWithFunction:
                       [ctx.library newFunctionWithName:@"gelu_kernel_f16"]
+                                                error:&error];
+  ctx.pipelineSoftmax_F16 =
+      [ctx.device newComputePipelineStateWithFunction:
+                      [ctx.library newFunctionWithName:@"softmax_kernel_f16"]
                                                 error:&error];
 
   return (__bridge_retained MetalContextRef)ctx;
@@ -425,6 +430,28 @@ void Metal_Softmax(MetalContextRef ctx, MetalBufferRef input, int offIn,
 
   // Dispatch one threadgroup per row, with 256 threads per group for parallel
   // reduction
+  MTLSize threadgroupSize = MTLSizeMake(256, 1, 1);
+  MTLSize threadgroupsPerGrid = MTLSizeMake(rows, 1, 1);
+
+  [c.currentEncoder dispatchThreadgroups:threadgroupsPerGrid
+                   threadsPerThreadgroup:threadgroupSize];
+}
+
+// FP16 Softmax for 2x performance
+void Metal_Softmax_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                       MetalBufferRef result, int offRes, int rows, int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  [c ensureEncoder];
+
+  [c.currentEncoder setComputePipelineState:c.pipelineSoftmax_F16];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:1];
+  [c.currentEncoder setBytes:&cols length:sizeof(int) atIndex:2];
+
   MTLSize threadgroupSize = MTLSizeMake(256, 1, 1);
   MTLSize threadgroupsPerGrid = MTLSizeMake(rows, 1, 1);
 
