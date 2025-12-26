@@ -39,6 +39,26 @@ kernel void gelu_kernel(device const float *a [[ buffer(0) ]],
     result[index] = 0.5 * x * (1.0 + tanh(inner));
 }
 
+// Fused Add+GELU kernel to reduce dispatch overhead
+kernel void add_gelu_kernel(device const float *a [[ buffer(0) ]],
+                            device const float *b [[ buffer(1) ]],
+                            device float *result [[ buffer(2) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    float x = a[index] + b[index];
+    float c1 = 0.7978845608;
+    float c2 = 0.044715;
+    float inner = c1 * (x + c2 * x * x * x);
+    result[index] = 0.5 * x * (1.0 + tanh(inner));
+}
+
+// Fused Add+Tanh kernel
+kernel void add_tanh_kernel(device const float *a [[ buffer(0) ]],
+                            device const float *b [[ buffer(1) ]],
+                            device float *result [[ buffer(2) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    result[index] = tanh(a[index] + b[index]);
+}
+
 // Optimized LayerNorm with threadgroup parallel reduction
 // Each threadgroup processes ONE row
 // Threads within the group cooperate on reduction using threadgroup memory
