@@ -8,25 +8,50 @@ import (
 	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
+type PositionEmbeddingType int
+
+const (
+	PositionalAbsolute PositionEmbeddingType = iota
+	PositionalRoPE
+)
+
 // BertConfig holds the configuration for the BERT model.
 type BertConfig struct {
-	VocabSize            int
-	HiddenSize           int
-	NumHiddenLayers      int
-	NumAttentionHeads    int
-	IntermediateSize     int
+	VocabSize             int
+	HiddenSize            int
+	NumHiddenLayers       int
+	NumAttentionHeads     int
+	IntermediateSize      int
 	MaxPositionEmbeddings int
+	Activation            device.ActivationType
+	PositionEmbedding      PositionEmbeddingType
 }
 
 // DefaultBertTinyConfig returns the configuration for BERT-Tiny.
 func DefaultBertTinyConfig() BertConfig {
 	return BertConfig{
-		VocabSize:            30522,
-		HiddenSize:           128,
-		NumHiddenLayers:      2,
-		NumAttentionHeads:    2,
-		IntermediateSize:     512,
+		VocabSize:             30522,
+		HiddenSize:            128,
+		NumHiddenLayers:       2,
+		NumAttentionHeads:     2,
+		IntermediateSize:      512,
 		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:      PositionalAbsolute,
+	}
+}
+
+// DefaultNomicConfig returns the configuration for nomic-embed-text-v1.5.
+func DefaultNomicConfig() BertConfig {
+	return BertConfig{
+		VocabSize:             30522,
+		HiddenSize:            768,
+		NumHiddenLayers:       12,
+		NumAttentionHeads:     12,
+		IntermediateSize:      3072,
+		MaxPositionEmbeddings: 8192,
+		Activation:            device.ActivationSwiGLU,
+		PositionEmbedding:      PositionalRoPE,
 	}
 }
 
@@ -104,8 +129,14 @@ func xavierInit(m device.Tensor) {
 // inputIDs is flattened, lengths contains the length of each sequence.
 func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	embeddings := m.Embeddings.ForwardBatch(inputIDs, lengths)
+	
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
-	return m.Pooler.ForwardBatch(hiddenStates, lengths)
+	m.Backend.PutTensor(embeddings)
+	
+	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
+	m.Backend.PutTensor(hiddenStates)
+	
+	return res
 }
 
 // Forward is a legacy wrapper for single sequence compatibility.
@@ -158,27 +189,31 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 	// 1. Gather Word Embeddings
 	embeddings := e.WordEmbeddings.Gather(inputIDs)
 	
-	// 2. Gather Position Embeddings
-	posIndices := make([]int, totalTokens)
-	idx := 0
-	for _, l := range lengths {
-		for i := 0; i < l; i++ {
-			if i >= e.Config.MaxPositionEmbeddings {
-				posIndices[idx] = e.Config.MaxPositionEmbeddings - 1
-			} else {
-				posIndices[idx] = i
+	// 2. Gather Position Embeddings (Absolute)
+	if e.Config.PositionEmbedding == PositionalAbsolute {
+		posIndices := make([]int, totalTokens)
+		idx := 0
+		for _, l := range lengths {
+			for i := 0; i < l; i++ {
+				if i >= e.Config.MaxPositionEmbeddings {
+					posIndices[idx] = e.Config.MaxPositionEmbeddings - 1
+				} else {
+					posIndices[idx] = i
+				}
+				idx++
 			}
-			idx++
 		}
+		
+		posEmbeds := e.PositionEmbeddings.Gather(posIndices)
+		embeddings.Add(posEmbeds)
+		e.Backend.PutTensor(posEmbeds)
 	}
-	
-	posEmbeds := e.PositionEmbeddings.Gather(posIndices)
-	embeddings.Add(posEmbeds)
 	
 	// 3. Token Type Embeddings (Assume 0)
 	typeIndices := make([]int, totalTokens)
 	typeEmbeds := e.TokenTypeEmbeddings.Gather(typeIndices)
 	embeddings.Add(typeEmbeds)
+	e.Backend.PutTensor(typeEmbeds)
 	
 	// 4. Norm + Dropout
 	output := e.LayerNorm.Forward(embeddings)
@@ -223,7 +258,8 @@ func (l *LayerNorm) Forward(input device.Tensor) device.Tensor {
 
 // BertEncoder is a stack of Transformer layers.
 type BertEncoder struct {
-	Layers []*BertLayer
+	Backend device.Backend
+	Layers  []*BertLayer
 }
 
 func NewBertEncoder(config BertConfig, backend device.Backend) *BertEncoder {
@@ -231,7 +267,10 @@ func NewBertEncoder(config BertConfig, backend device.Backend) *BertEncoder {
 	for i := range layers {
 		layers[i] = NewBertLayer(config, backend)
 	}
-	return &BertEncoder{Layers: layers}
+	return &BertEncoder{
+		Backend: backend,
+		Layers:  layers,
+	}
 }
 
 func (e *BertEncoder) Forward(hiddenStates device.Tensor) device.Tensor {
@@ -246,7 +285,9 @@ func (e *BertEncoder) Forward(hiddenStates device.Tensor) device.Tensor {
 
 func (e *BertEncoder) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	for _, layer := range e.Layers {
-		hiddenStates = layer.ForwardBatch(hiddenStates, lengths)
+		nextStates := layer.ForwardBatch(hiddenStates, lengths)
+		e.Backend.PutTensor(hiddenStates)
+		hiddenStates = nextStates
 	}
 	return hiddenStates
 }
@@ -274,8 +315,18 @@ func (l *BertLayer) Forward(hiddenStates device.Tensor) device.Tensor {
 
 func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	selfAttention := l.Attention.ForwardBatch(hiddenStates, lengths)
+	// hiddenStates is NOT released here because it's released by the caller (Encoder)
+
 	intermediate := l.Intermediate.ForwardBatch(selfAttention)
-	return l.Output.ForwardBatch(intermediate, selfAttention)
+	
+	res := l.Output.ForwardBatch(intermediate, selfAttention)
+	
+	// Release intermediates
+	// selfAttention was used by Intermediate and Output, now done.
+	l.Attention.Self.Backend.PutTensor(selfAttention)
+	l.Intermediate.Backend.PutTensor(intermediate)
+	
+	return res
 }
 
 // BertPooler extracts the [CLS] representation.
@@ -332,6 +383,7 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 	
 	// Compute Result = CLS * Dense + Bias + Tanh
 	result := p.Dense.LinearActivation(clsStack, p.Dense, p.Bias, device.ActivationTanh)
+	p.Backend.PutTensor(clsStack)
 	
 	// Check if clsStack needs pooling?
 	// It was created by Gather (NewTensor). 
@@ -354,12 +406,14 @@ func sumInts(v []int) int {
 
 // BertAttention handles multi-head self-attention.
 type BertAttention struct {
+	Config     BertConfig
 	Self       *BertSelfAttention
 	Output     *BertSelfOutput
 }
 
 func NewBertAttention(config BertConfig, backend device.Backend) *BertAttention {
 	return &BertAttention{
+		Config: config,
 		Self:   NewBertSelfAttention(config, backend),
 		Output: NewBertSelfOutput(config, backend),
 	}
@@ -377,6 +431,7 @@ func (a *BertAttention) ForwardBatch(hiddenStates device.Tensor, lengths []int) 
 
 type BertSelfAttention struct {
 	Backend           device.Backend
+	Config            BertConfig
 	NumAttentionHeads int
 	AttentionHeadSize int
 	AllHeadSize       int
@@ -393,6 +448,7 @@ type BertSelfAttention struct {
 func NewBertSelfAttention(config BertConfig, backend device.Backend) *BertSelfAttention {
 	return &BertSelfAttention{
 		Backend:           backend,
+		Config:            config,
 		NumAttentionHeads: config.NumAttentionHeads,
 		AttentionHeadSize: config.HiddenSize / config.NumAttentionHeads,
 		AllHeadSize:       config.HiddenSize,
@@ -447,6 +503,15 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
 	valueLayer := s.Value.Linear(hiddenStates, s.Value, s.ValueBias)
 	
+	// Apply RoPE if configured
+	if s.Config.PositionEmbedding == PositionalRoPE {
+		batchSize := len(lengths)
+		seqLen := lengths[0] // Assume uniform for RoPE optimization or handle variable
+		s.Backend.Synchronize() // Ensure linear projections are done
+		queryLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
+		keyLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
+	}
+
 	output := s.Backend.NewTensor(r, c, nil)
 	
 	// Fast path: uniform sequence lengths (common case in batched inference)
@@ -555,12 +620,13 @@ func NewBertSelfOutput(config BertConfig, backend device.Backend) *BertSelfOutpu
 }
 
 func (o *BertSelfOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Tensor {
-	hiddenStates = o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	projected := o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	// input hiddenStates is no longer needed after projection
+	o.Backend.PutTensor(hiddenStates)
+
 	// Residual connection in-place
-	// hiddenStates.Add(inputTensor). But inputTensor might not be same backing store?
-	// AddInPlace assume shapes match.
-	hiddenStates.Add(inputTensor)
-	return o.LayerNorm.Forward(hiddenStates)
+	projected.Add(inputTensor)
+	return o.LayerNorm.Forward(projected)
 }
 
 func (o *BertSelfOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) device.Tensor {
@@ -569,21 +635,30 @@ func (o *BertSelfOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) d
 
 type BertIntermediate struct {
 	Backend device.Backend
+	Config  BertConfig
 	Dense   device.Tensor
 	Bias    device.Tensor
 }
 
 func NewBertIntermediate(config BertConfig, backend device.Backend) *BertIntermediate {
+	interSize := config.IntermediateSize
+	if config.Activation == device.ActivationSwiGLU {
+		interSize = config.IntermediateSize * 2 // Fused Gate + Up
+	}
 	return &BertIntermediate{
 		Backend: backend,
-		Dense:   backend.NewTensor(config.HiddenSize, config.IntermediateSize, nil),
-		Bias:    backend.NewTensor(1, config.IntermediateSize, nil),
+		Config:  config,
+		Dense:   backend.NewTensor(config.HiddenSize, interSize, nil),
+		Bias:    backend.NewTensor(1, interSize, nil),
 	}
 }
 
 func (i *BertIntermediate) Forward(hiddenStates device.Tensor) device.Tensor {
-	hiddenStates = i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, device.ActivationGELU)
-	return hiddenStates
+	res := i.Dense.LinearActivation(hiddenStates, i.Dense, i.Bias, i.Config.Activation)
+	// input hiddenStates is no longer needed after projection
+	// But wait! hiddenStates is owned by the caller (self-attention output).
+	// We handle that in BertLayer.
+	return res
 }
 
 func (i *BertIntermediate) ForwardBatch(hiddenStates device.Tensor) device.Tensor {
@@ -599,19 +674,25 @@ type BertOutput struct {
 }
 
 func NewBertOutput(config BertConfig, backend device.Backend) *BertOutput {
+	interSize := config.IntermediateSize
+	// BertOutput always takes the REDUCED intermediate size as input, 
+	// even if SwiGLU used 2x internally.
 	return &BertOutput{
 		Backend:   backend,
-		Dense:     backend.NewTensor(config.IntermediateSize, config.HiddenSize, nil),
+		Dense:     backend.NewTensor(interSize, config.HiddenSize, nil),
 		Bias:      backend.NewTensor(1, config.HiddenSize, nil),
 		LayerNorm: NewLayerNorm(config.HiddenSize, backend),
 	}
 }
 
 func (o *BertOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Tensor {
-	hiddenStates = o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	projected := o.Dense.Linear(hiddenStates, o.Dense, o.Bias)
+	// input hiddenStates (intermediate output) is no longer needed
+	o.Backend.PutTensor(hiddenStates)
+
 	// Residual connection in-place
-	hiddenStates.Add(inputTensor)
-	return o.LayerNorm.Forward(hiddenStates)
+	projected.Add(inputTensor)
+	return o.LayerNorm.Forward(projected)
 }
 
 func (o *BertOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) device.Tensor {

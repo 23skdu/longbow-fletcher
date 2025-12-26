@@ -39,6 +39,8 @@ bin/
 # Profiling
 *.prof
 *.pprof
+cpu.pprof
+mem.pprof
 
 # Logs
 *.log

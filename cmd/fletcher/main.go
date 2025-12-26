@@ -8,11 +8,14 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"context"
+
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	
+	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 )
 
@@ -23,6 +26,9 @@ var (
 	useGPU      = flag.Bool("gpu", false, "Use Metal GPU acceleration")
 	interactive = flag.Bool("interactive", false, "Interactive mode")
 	loremIpsum  = flag.Int("lorem", 0, "Generate N lines of lorem ipsum")
+	modelType   = flag.String("model", "bert-tiny", "Model type (bert-tiny, nomic-embed-text)")
+	serverAddr  = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
+	datasetName = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
 )
 
 func main() {
@@ -37,7 +43,7 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU)
+	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU, *modelType)
 	if err != nil {
 		log.Fatalf("Failed to create embedder: %v", err)
 	}
@@ -106,16 +112,28 @@ func main() {
 	rec := builder.NewRecord()
 	defer rec.Release()
 
-	// print record for verification
-	// fmt.Println(rec)
-	
-	// Create output stream (stdout or file)
-	// Just writing to stdout for now if piped
-	// In real CLI, maybe a flag for output file
-	
-	err = writeArrowStream(os.Stdout, rec)
-	if err != nil {
-		// If stdout is closed or something
+	// If server is provided, send via Flight
+	if *serverAddr != "" {
+		fmt.Printf("Sending %d vectors to Longbow at %s [%s]...\n", len(texts), *serverAddr, *datasetName)
+		flightClient, err := client.NewFlightClient(*serverAddr)
+		if err != nil {
+			log.Fatalf("Failed to connect to Longbow: %v", err)
+		}
+		defer flightClient.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		if err := flightClient.DoPut(ctx, *datasetName, rec); err != nil {
+			log.Fatalf("Flight DoPut failed: %v", err)
+		}
+		fmt.Println("Successfully sent embeddings to Longbow.")
+	} else {
+		// Example: write to Arrow IPC to stdout
+		err = writeArrowStream(os.Stdout, rec)
+		if err != nil {
+			// If stdout is closed or something
+		}
 	}
 }
 

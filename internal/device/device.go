@@ -74,6 +74,10 @@ type Tensor interface {
 	// Assumes q, k, v are flattened (Batch*Seq, Hidden)
 	// Returns flattend (Batch*Seq, Hidden)
 	Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor
+
+	// RoPE applies Rotary Positional Embeddings to this tensor (In-Place).
+	// Assumes tensor is (Batch*Seq, Hidden)
+	ApplyRoPE(batchSize, seqLen, numHeads, headDim int)
 }
 
 type ActivationType int
@@ -83,6 +87,7 @@ const (
 	ActivationGELU
 	ActivationTanh
 	ActivationSoftmax // Usually not fused in Linear, but defined for completeness
+	ActivationSwiGLU  // Fused Swish-Gated Linear Unit
 )
 
 // Backend creates tensors and manages device memory.

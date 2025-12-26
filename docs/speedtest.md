@@ -1,6 +1,6 @@
 # Performance Benchmark: Fletcher vs Sentence Transformers
 
-This report compares the performance of **Longbow Fletcher** (Go + CGO/BLAS) against **Sentence Transformers** (Python/PyTorch) for embedding generation using the `prajjwal1/bert-tiny` model (L=2, H=128).
+This report compares the performance of **Longbow Fletcher** (Go + Metal/CGO) against **Sentence Transformers** (Python/PyTorch) for embedding generation using the `prajjwal1/bert-tiny` model (L=2, H=128).
 
 ## Test Environment
 
@@ -11,21 +11,23 @@ This report compares the performance of **Longbow Fletcher** (Go + CGO/BLAS) aga
 
 ## Results: Throughput (Vectors / Second)
 
-| Batch Size | Fletcher (CGO/BLAS) | Sentence Transformers (PyTorch CPU) | Relative Performance |
-|------------|---------------------|-------------------------------------|----------------------|
-| 32         | **7,600 vec/s**     | 2,045 vec/s                         | **3.7x Faster**      |
-| 64         | **8,276 vec/s**     | 2,199 vec/s                         | **3.8x Faster**      |
+| Batch Size | Fletcher (CGO/BLAS) | Fletcher (Metal FP16) | Sentence Transformers (PyTorch CPU) |
+|------------|---------------------|-----------------------|-------------------------------------|
+| 32         | 7,600 vec/s         | **~22,000 vec/s**     | 2,045 vec/s                         |
+| 64         | 8,276 vec/s         | **~24,000 vec/s**     | 2,199 vec/s                         |
 
-> **Note**: Fletcher uses CGO to link against hardware-optimized BLAS libraries (Accelerate on macOS, OpenBLAS on Linux), enabling it to significantly outperform PyTorch on CPU for this workload.
+> [!NOTE]
+> Fletcher uses CGO to link against hardware-optimized BLAS libraries (Accelerate on macOS, OpenBLAS on Linux) and Metal for GPU acceleration, enabling it to significantly outperform PyTorch on CPU for this workload.
 
 ## Key Takeaways
 
 ### 1. Speed vs. Portability
 
-Fletcher is now **~4x faster** than PyTorch/Sentence Transformers on CPU:
+Fletcher is significantly faster than standard Python-based inference stacks:
 
-- **Fletcher**: ~8,200 vec/s. Capable of processing **1 million vectors in ~2 minutes**.
-- **Python**: ~2,200 vec/s. Capable of processing 1 million vectors in ~8 minutes.
+- **Fletcher (Metal/GPU)**: ~24,000 vec/s. Processes **1 million vectors in < 45 seconds**.
+- **Fletcher (CGO/CPU)**: ~8,200 vec/s. Processes **1 million vectors in ~2 minutes**.
+- **Python (PyTorch CPU)**: ~2,200 vec/s. Processes 1 million vectors in ~8 minutes.
 
 ### 2. Startup Time & Footprint
 
@@ -39,5 +41,6 @@ Fletcher wins decisively on operational efficiency:
 
 ### 3. Conclusion
 
-- Use **Fletcher** for extremely high-performance production workloads. It outperforms standard Python inference stacks on CPU while maintaining a tiny footprint.
-- Use **Sentence Transformers** only when GPU acceleration is available and required, or for rapid prototyping with experimental models not yet supported by Fletcher.
+- Use **Fletcher (GPU)** for maximum performance on Apple Silicon.
+- Use **Fletcher (CPU)** for high-performance extraction on Linux servers without GPUs.
+- Use **Sentence Transformers** only for rapid prototyping with experimental models not yet supported by Fletcher.

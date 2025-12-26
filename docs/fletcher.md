@@ -4,8 +4,9 @@ Fletcher is a high-performance CLI for generating vector text embeddings and sen
 
 ## Key Features
 
-- **High Performance**: Uses CGO and hardware-accelerated BLAS (Accelerate on macOS, OpenBLAS on Linux) for maximum throughput (~8200 vec/s on M3 Pro).
-- **SIMD Optimized**: Critical vector operations leverage SIMD loop unrolling and fast math approximations.
+- **Multi-Model Support**: Support for BERT-Tiny and Nomic-Embed-Text architectures.
+- **GPU Accelerated**: Native Metal support for Apple Silicon (~24,000 vec/s).
+- **High Performance**: Uses CGO and hardware-accelerated BLAS (Accelerate/OpenBLAS).
 - **Efficient**: Zero-allocation buffer pooling and in-place operations.
 
 ## Installation
@@ -26,14 +27,16 @@ docker run --rm longbow-fletcher --help
 
 ## CLI Flags
 
-| Flag        | Default            | Description                                      |
-|-------------|--------------------|--------------------------------------------------|
-| `--vocab`   | `vocab.txt`        | Path to BERT-style WordPiece vocabulary file.    |
-| `--weights` | (none)             | Path to model weights binary (optional).         |
-| `--text`    | (none)             | Text string to embed.                            |
-| `--lorem`   | `0`                | Number of Lorem Ipsum paragraphs to generate.    |
-| `--server`  | (none)             | Longbow server address (e.g., `localhost:3000`). |
-| `--dataset` | `fletcher_dataset` | Target dataset name on the Longbow server.       |
+| Flag        | Default            | Description                                           |
+|-------------|--------------------|-------------------------------------------------------|
+| `--model`   | `bert-tiny`        | Model architecture (`bert-tiny`, `nomic-embed-text`). |
+| `--gpu`     | `false`            | Enable Metal GPU acceleration (macOS only).           |
+| `--vocab`   | `vocab.txt`        | Path to BERT-style WordPiece vocabulary file.         |
+| `--weights` | (none)             | Path to model weights binary.                         |
+| `--text`    | (none)             | Text string to embed.                                 |
+| `--lorem`   | `0`                | Number of Lorem Ipsum paragraphs to generate.         |
+| `--server`  | (none)             | Longbow server address (e.g., `localhost:3000`).      |
+| `--dataset` | `fletcher_dataset` | Target dataset name on the Longbow server.            |
 
 ## Examples
 
@@ -41,6 +44,12 @@ docker run --rm longbow-fletcher --help
 
 ```bash
 ./bin/fletcher --vocab vocab.txt --text "Hello world"
+```
+
+### Use Nomic-Embed-Text with GPU
+
+```bash
+./bin/fletcher --model nomic-embed-text --gpu --vocab vocab.txt --weights nomic.bin --text "Hello world"
 ```
 
 ### Generate and send 10 Lorem Ipsum paragraphs to Longbow
