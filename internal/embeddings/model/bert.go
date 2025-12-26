@@ -466,71 +466,101 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	
 	output := s.Backend.NewTensor(r, c, nil)
 	
-	// 2 & 3. Compute Attention Scores and Context per sequence
-	// GPU backends handle parallelism internally - use serial execution
-	// CPU backends benefit from Go's goroutine parallelism
-	useParallel := s.Backend.Name() == "CPU"
-	
-	currentIdx := 0
-	type job struct {
-		start int
-		len   int
-	}
-	jobs := make([]job, len(lengths))
-	for i, l := range lengths {
-		jobs[i] = job{start: currentIdx, len: l}
-		currentIdx += l
-	}
-	
-	// Attention computation function (same logic for serial/parallel)
-	computeAttention := func(start, length int) {
-		endIdx := start + length
-		
-		// Slice projected layers (View)
-		seqQ := queryLayer.Slice(start, endIdx, 0, c)
-		seqK := keyLayer.Slice(start, endIdx, 0, c)
-		seqV := valueLayer.Slice(start, endIdx, 0, c)
-		
-		// Compute Attention Scores
-		attentionScores := s.Backend.GetTensor(length, length)
-		seqKT := seqK.T()
-		attentionScores.Mul(seqQ, seqKT)
-		
-		scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
-		attentionScores.Scale(scale)
-		
-		// Softmax in-place
-		attentionScores.Softmax()
-		
-		// Compute Context Layer
-		seqContext := s.Backend.GetTensor(length, s.AllHeadSize)
-		seqContext.Mul(attentionScores, seqV)
-		
-		// Copy result to output (Write to distinct rows)
-		outSlice := output.Slice(start, endIdx, 0, c)
-		outSlice.Copy(seqContext)
-		
-		// Return seq buffers
-		s.Backend.PutTensor(attentionScores)
-		s.Backend.PutTensor(seqContext)
-	}
-	
-	if useParallel {
-		// CPU: Use goroutines for parallelism
-		var wg sync.WaitGroup
-		for _, j := range jobs {
-			wg.Add(1)
-			start, length := j.start, j.len
-			go func() {
-				defer wg.Done()
-				computeAttention(start, length)
-			}()
+	// Fast path: uniform sequence lengths (common case in batched inference)
+	// This allows computing attention for all sequences without per-seq loop
+	allSameLength := true
+	seqLen := lengths[0]
+	for _, l := range lengths {
+		if l != seqLen {
+			allSameLength = false
+			break
 		}
-		wg.Wait()
+	}
+	
+	batchSize := len(lengths)
+	
+	if allSameLength && s.Backend.Name() != "CPU" {
+		// Optimized GPU path for uniform sequence lengths
+		// Process each sequence efficiently with minimal allocation
+		scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
+		
+		for i := 0; i < batchSize; i++ {
+			start := i * seqLen
+			endIdx := start + seqLen
+			
+			seqQ := queryLayer.Slice(start, endIdx, 0, c)
+			seqK := keyLayer.Slice(start, endIdx, 0, c)
+			seqV := valueLayer.Slice(start, endIdx, 0, c)
+			
+			// Compute Attention Scores (seqLen x seqLen)
+			attentionScores := s.Backend.GetTensor(seqLen, seqLen)
+			seqKT := seqK.T()
+			attentionScores.Mul(seqQ, seqKT)
+			
+			attentionScores.Scale(scale)
+			attentionScores.Softmax()
+			
+			// Context: (seqLen x hidden)
+			outSlice := output.Slice(start, endIdx, 0, c)
+			outSlice.Mul(attentionScores, seqV)
+			
+			s.Backend.PutTensor(attentionScores)
+		}
 	} else {
-		// GPU: Serial execution (GPU handles parallelism)
-		for _, j := range jobs {
-			computeAttention(j.start, j.len)
+		// Variable length path or CPU path
+		useParallel := s.Backend.Name() == "CPU"
+		
+		currentIdx := 0
+		type job struct {
+			start int
+			len   int
+		}
+		jobs := make([]job, len(lengths))
+		for i, l := range lengths {
+			jobs[i] = job{start: currentIdx, len: l}
+			currentIdx += l
+		}
+		
+		computeAttention := func(start, length int) {
+			endIdx := start + length
+			
+			seqQ := queryLayer.Slice(start, endIdx, 0, c)
+			seqK := keyLayer.Slice(start, endIdx, 0, c)
+			seqV := valueLayer.Slice(start, endIdx, 0, c)
+			
+			attentionScores := s.Backend.GetTensor(length, length)
+			seqKT := seqK.T()
+			attentionScores.Mul(seqQ, seqKT)
+			
+			scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
+			attentionScores.Scale(scale)
+			attentionScores.Softmax()
+			
+			seqContext := s.Backend.GetTensor(length, s.AllHeadSize)
+			seqContext.Mul(attentionScores, seqV)
+			
+			outSlice := output.Slice(start, endIdx, 0, c)
+			outSlice.Copy(seqContext)
+			
+			s.Backend.PutTensor(attentionScores)
+			s.Backend.PutTensor(seqContext)
+		}
+		
+		if useParallel {
+			var wg sync.WaitGroup
+			for _, j := range jobs {
+				wg.Add(1)
+				start, length := j.start, j.len
+				go func() {
+					defer wg.Done()
+					computeAttention(start, length)
+				}()
+			}
+			wg.Wait()
+		} else {
+			for _, j := range jobs {
+				computeAttention(j.start, j.len)
+			}
 		}
 	}
 	

@@ -27,7 +27,7 @@ func main() {
 	// Benchmark function
 	benchmark := func(nVectors int) {
 		// Generate input
-		batchSize := 64
+		batchSize := 128 // Larger batch for better GPU utilization
 		numBatches := nVectors / batchSize
 
 		// Warmup

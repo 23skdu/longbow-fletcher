@@ -63,6 +63,14 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   MetalBufferRef b, int offB, bool transB, MetalBufferRef c,
                   int offC, int M, int N, int K);
 
+// Batched MatMul for attention: process multiple sequences at once
+// Assumes uniform matrix sizes. batchCount = number of independent MatMuls.
+// strideA/B/C = byte offset between consecutive matrices in the batch
+void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
+                         int strideA, bool transA, MetalBufferRef b, int offB,
+                         int strideB, bool transB, MetalBufferRef c, int offC,
+                         int strideC, int M, int N, int K, int batchCount);
+
 void Metal_Synchronize(MetalContextRef ctx);
 
 #ifdef __cplusplus

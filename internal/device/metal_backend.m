@@ -432,6 +432,77 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
   [buffer waitUntilCompleted];
 }
 
+void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
+                         int strideA, bool transA, MetalBufferRef b, int offB,
+                         int strideB, bool transB, MetalBufferRef c, int offC,
+                         int strideC, int M, int N, int K, int batchCount) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+
+  // Flush before MPS
+  [mc flush];
+
+  id<MTLCommandBuffer> buffer = [mc.commandQueue commandBuffer];
+
+  // Create descriptors with batch info
+  MPSMatrixDescriptor *descA = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transA ? K : M)
+                       columns:(transA ? M : K)rowBytes:(transA ? M : K) *
+                               sizeof(float)
+                      dataType:MPSDataTypeFloat32];
+
+  MPSMatrixDescriptor *descB = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transB ? N : K)
+                       columns:(transB ? K : N)rowBytes:(transB ? K : N) *
+                               sizeof(float)
+                      dataType:MPSDataTypeFloat32];
+
+  MPSMatrixDescriptor *descC =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:N
+                                           rowBytes:N * sizeof(float)
+                                           dataType:MPSDataTypeFloat32];
+
+  // Create multiply operation
+  MPSMatrixMultiplication *mul =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:transA
+                                       transposeRight:transB
+                                           resultRows:M
+                                        resultColumns:N
+                                      interiorColumns:K
+                                                alpha:1.0
+                                                 beta:0.0];
+
+  // Process batches - MPS doesn't have native batch support,
+  // but we can encode multiple operations to one command buffer
+  for (int i = 0; i < batchCount; i++) {
+    int batchOffA = offA + i * strideA;
+    int batchOffB = offB + i * strideB;
+    int batchOffC = offC + i * strideC;
+
+    MPSMatrix *matA =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)a
+                                   offset:batchOffA
+                               descriptor:descA];
+    MPSMatrix *matB =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)b
+                                   offset:batchOffB
+                               descriptor:descB];
+    MPSMatrix *matC =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)c
+                                   offset:batchOffC
+                               descriptor:descC];
+
+    [mul encodeToCommandBuffer:buffer
+                    leftMatrix:matA
+                   rightMatrix:matB
+                  resultMatrix:matC];
+  }
+
+  [buffer commit];
+  [buffer waitUntilCompleted];
+}
+
 void Metal_Synchronize(MetalContextRef ctx) {
   MetalWrapper *wrapper = (__bridge MetalWrapper *)ctx;
   [wrapper flush];
