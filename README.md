@@ -1,3 +1,5 @@
+<img width="1024" height="565" alt="image" src="https://github.com/user-attachments/assets/80f12325-820a-44f5-917f-769eb9155176" />
+
 # Longbow Fletcher
 
 **Vector Engine for converting text to vectors for Longbow.**
