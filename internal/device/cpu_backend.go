@@ -613,6 +613,16 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	return result
 }
 
+func (t *CPUTensor) ExtractTo(dest [][]float32, start int) {
+	r, c := t.Dims()
+	data := t.ToHost() // Handles transpose if necessary
+	for i := 0; i < r; i++ {
+		row := make([]float32, c)
+		copy(row, data[i*c:(i+1)*c])
+		dest[start+i] = row
+	}
+}
+
 func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	if t.trans {
 		panic("ApplyRoPE on transposed")

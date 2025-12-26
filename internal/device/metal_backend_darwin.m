@@ -246,6 +246,11 @@ void Metal_Memset(MetalBufferRef buf, int offset, int value, int size) {
   memset([buffer contents] + offset, value, size);
 }
 
+void *Metal_GetBufferContents(MetalBufferRef buf) {
+  id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)buf;
+  return [buffer contents];
+}
+
 void Metal_SetAt(MetalBufferRef buf, int offset, float val) {
   id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)buf;
   float *ptr = (float *)((char *)[buffer contents] + offset);

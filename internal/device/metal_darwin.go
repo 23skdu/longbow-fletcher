@@ -341,22 +341,53 @@ func (t *MetalTensor) rawHostCopy() []float32 {
 	return raw
 }
 
-// ToHost copies data back to CPU.
-func (t *MetalTensor) ToHost() []float32 {
-	// rawHostCopy gives us the physical buffer contents corresponding to this tensor view.
-	// If t.trans, we need to handle it.
+func (t *MetalTensor) Data() []float32 {
+	t.backend.Synchronize()
 	
+	ptr := C.Metal_GetBufferContents(t.buf)
+	if ptr == nil {
+		return nil
+	}
+	
+	size := t.rows * t.cols
+	if t.backend.useFP16 {
+		// FP16 data. We still need to convert it to FP32 for the Go layers, 
+		// but we can do it more efficiently than ToHost().
+		// For now, ToHost is safer if it's FP16. 
+		// But let's provide a way to get raw host access if it were FP32.
+		if !t.backend.useFP16 {
+			// This branch is only for documentation of the logic, 
+			// the actual check is below.
+		}
+		return nil // Force ToHost for FP16 for now to handle conversion
+	}
+	
+	// FP32 path: direct slice header trick
+	// We must use the offset.
+	dataPtr := unsafe.Pointer(uintptr(ptr) + uintptr(t.offset))
+	return (*[1 << 30]float32)(dataPtr)[:size:size]
+}
+
+// ToHost copies data back to CPU features.
+func (t *MetalTensor) ToHost() []float32 {
+	// If it's FP32 and not transposed, we can use zero-copy then copy.
+	if !t.backend.useFP16 && !t.trans {
+		d := t.Data()
+		if d != nil {
+			out := make([]float32, len(d))
+			copy(out, d)
+			return out
+		}
+	}
+	
+	// Otherwise (FP16 or transposed), use the robust rawHostCopy
 	raw := t.rawHostCopy()
 	
-	// If transposed, we must shuffle.
 	if t.trans {
 		rows, cols := t.cols, t.rows // logical dimensions
 		out := make([]float32, len(raw))
 		for i := 0; i < rows; i++ {
 			for j := 0; j < cols; j++ {
-				// Logical (i,j) maps to physical (j,i)
-				// Physical buffer is t.rows x t.cols
-				// So, raw[j*t.cols + i] is the element at physical (j,i)
 				out[i*cols+j] = raw[j*t.cols+i]
 			}
 		}
@@ -364,11 +395,6 @@ func (t *MetalTensor) ToHost() []float32 {
 	}
 	
 	return raw
-}
-
-func (t *MetalTensor) Data() []float32 {
-	// Return nil to indicate data is on device
-	return nil
 }
 
 // CopyFromFloat32 copies []float32 data to GPU in a single bulk operation.
@@ -741,6 +767,68 @@ func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale flo
 	} else {
 		panic("Attention not implemented for Metal FP32")
 	}
+}
+
+func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
+	t.backend.Synchronize()
+	ptr := C.Metal_GetBufferContents(t.buf)
+	if ptr == nil {
+		return
+	}
+	
+	r, c := t.rows, t.cols
+	if t.trans {
+		// Fallback to ToHost for transposed
+		data := t.ToHost()
+		for i := 0; i < r; i++ {
+			row := make([]float32, c)
+			copy(row, data[i*c:(i+1)*c])
+			dest[start+i] = row
+		}
+		return
+	}
+
+	dataPtr := uintptr(ptr) + uintptr(t.offset)
+	numWorkers := 4
+	if r < numWorkers {
+		numWorkers = r
+	}
+	
+	chunkSize := (r + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wStart := w * chunkSize
+		if wStart >= r {
+			break
+		}
+		wEnd := wStart + chunkSize
+		if wEnd > r {
+			wEnd = r
+		}
+		
+		wg.Add(1)
+		go func(s, e int) {
+			defer wg.Done()
+			if t.backend.useFP16 {
+				for i := s; i < e; i++ {
+					row := make([]float32, c)
+					rowRaw := (*[1 << 30]uint16)(unsafe.Pointer(dataPtr + uintptr(i*c*2)))[:c:c]
+					for j := 0; j < c; j++ {
+						row[j] = float16ToFloat32(rowRaw[j])
+					}
+					dest[start+i] = row
+				}
+			} else {
+				for i := s; i < e; i++ {
+					row := make([]float32, c)
+					rowRaw := (*[1 << 30]float32)(unsafe.Pointer(dataPtr + uintptr(i*c*4)))[:c:c]
+					copy(row, rowRaw)
+					dest[start+i] = row
+				}
+			}
+		}(wStart, wEnd)
+	}
+	wg.Wait()
 }
 
 func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
