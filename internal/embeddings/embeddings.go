@@ -66,7 +66,12 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float64 {
 	}
 	
 	results := make([][]float64, r)
-	data := outputMatrix.RawMatrix().Data
+	data := outputMatrix.Data()
+	
+	// If data is nil (GPU), we need ToHost call
+	if data == nil {
+		data = outputMatrix.ToHost()
+	}
 	
 	for i := 0; i < r; i++ {
 		row := make([]float64, c)

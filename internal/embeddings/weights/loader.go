@@ -7,7 +7,7 @@ import (
 	"os"
 
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
-	"gonum.org/v1/gonum/mat"
+	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
 // Loader handles loading model weights from binary files.
@@ -83,7 +83,7 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 	return nil
 }
 
-func (l *Loader) loadDense(r io.Reader, d *mat.Dense) error {
+func (l *Loader) loadDense(r io.Reader, d device.Tensor) error {
 	rows, cols := d.Dims()
 	for i := 0; i < rows; i++ {
 		for j := 0; j < cols; j++ {
@@ -109,10 +109,10 @@ func (l *Loader) loadSlice(r io.Reader, s []float64) error {
 }
 
 func (l *Loader) loadLayerNorm(r io.Reader, ln *model.LayerNorm) error {
-	if err := l.loadSlice(r, ln.Gamma); err != nil {
+	if err := l.loadDense(r, ln.Gamma); err != nil {
 		return err
 	}
-	return l.loadSlice(r, ln.Beta)
+	return l.loadDense(r, ln.Beta)
 }
 
 func (l *Loader) loadSelfAttention(r io.Reader, sa *model.BertSelfAttention) error {

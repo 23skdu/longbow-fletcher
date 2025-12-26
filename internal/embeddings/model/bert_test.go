@@ -40,7 +40,7 @@ func TestBertModelForward(t *testing.T) {
 	require.Equal(t, config.HiddenSize, c)
 	
 	// Check if output is not all zeros
-	data := output.RawMatrix().Data
+	data := output.ToHost()
 	hasNonZero := false
 	for _, v := range data {
 		if v != 0 {

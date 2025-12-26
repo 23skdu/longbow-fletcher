@@ -32,6 +32,6 @@ go.work.sum
 # .vscode/
 
 # Fletcher binaries
-fletcher
-fletcher_cgo
+/fletcher
+/fletcher_cgo
 bin/
