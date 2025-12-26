@@ -78,6 +78,9 @@ type Tensor interface {
 	// RoPE applies Rotary Positional Embeddings to this tensor (In-Place).
 	// Assumes tensor is (Batch*Seq, Hidden)
 	ApplyRoPE(batchSize, seqLen, numHeads, headDim int)
+	
+	// ExtractTo parallelizes the transfer and row-splitting of the tensor into a pre-allocated slice of slices.
+	ExtractTo(destination [][]float32, startRow int)
 }
 
 type ActivationType int

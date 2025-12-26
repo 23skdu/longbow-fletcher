@@ -12,7 +12,9 @@ import "C"
 import (
 	_ "embed"
 	"fmt"
+	"math"
 	"runtime"
+	"sync"
 	"unsafe"
 )
 
@@ -30,9 +32,18 @@ type bufferPoolEntry struct {
 }
 
 type MetalBackend struct {
-	ctx    C.MetalContextRef
-	pool   []bufferPoolEntry // Simple pool of GPU buffers
-	useFP16 bool             // Use FP16 precision for 2x GPU performance
+	ctx        C.MetalContextRef
+	mu         sync.Mutex
+	buckets    map[int][]bufferPoolEntry // Pooled GPU buffers, organized by size buckets
+	useFP16    bool                      // Use FP16 precision for 2x GPU performance
+}
+
+func getBucket(size int) int {
+	if size <= 0 {
+		return 0
+	}
+	// Use log2 to determine bucket. E.g., 1-2 bytes -> bucket 1, 3-4 bytes -> bucket 2, 5-8 bytes -> bucket 3, etc.
+	return int(math.Ceil(math.Log2(float64(size))))
 }
 
 func NewMetalBackend() *MetalBackend {
@@ -44,7 +55,11 @@ func NewMetalBackend() *MetalBackend {
 		panic("Failed to initialize Metal backend")
 	}
 	
-	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64), useFP16: false}
+	return &MetalBackend{
+		ctx:     ctx,
+		buckets: make(map[int][]bufferPoolEntry),
+		useFP16: false,
+	}
 }
 
 // NewMetalBackendFP16 creates a Metal backend using FP16 precision for 2x GPU performance
@@ -57,7 +72,11 @@ func NewMetalBackendFP16() *MetalBackend {
 		panic("Failed to initialize Metal backend")
 	}
 	
-	return &MetalBackend{ctx: ctx, pool: make([]bufferPoolEntry, 0, 64), useFP16: true}
+	return &MetalBackend{
+		ctx:     ctx,
+		buckets: make(map[int][]bufferPoolEntry),
+		useFP16: true,
+	}
 }
 
 func (b *MetalBackend) Name() string {
@@ -170,25 +189,49 @@ func float16ToFloat32(h uint16) float32 {
 }
 
 func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
-	// Find a buffer of exact size or slightly larger (up to 2x)
-	for i, entry := range b.pool {
-		if entry.size >= sizeBytes && entry.size <= sizeBytes*2 {
-			// Remove from pool and return
-			b.pool = append(b.pool[:i], b.pool[i+1:]...)
-			return entry.buf
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	bucket := getBucket(sizeBytes)
+	
+	// Check current bucket and larger buckets (up to 2 levels higher)
+	for i := bucket; i <= bucket+2; i++ {
+		list := b.buckets[i]
+		if len(list) > 0 {
+			// Find best fit in this bucket
+			bestIdx := -1
+			for idx, entry := range list {
+				if entry.size >= sizeBytes {
+					if bestIdx == -1 || entry.size < list[bestIdx].size {
+						bestIdx = idx
+					}
+				}
+			}
+			
+			if bestIdx != -1 {
+				buf := list[bestIdx].buf
+				b.buckets[i] = append(list[:bestIdx], list[bestIdx+1:]...)
+				return buf
+			}
 		}
 	}
 	return nil
 }
 
 func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
-	// Limit pool size
-	if len(b.pool) >= 128 {
-		// Pool full, free the oldest entry
-		C.Metal_FreeBuffer(b.ctx, b.pool[0].buf)
-		b.pool = b.pool[1:]
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	bucket := getBucket(sizeBytes)
+	list := b.buckets[bucket]
+	
+	// Limit bucket size
+	if len(list) >= 32 {
+		C.Metal_FreeBuffer(b.ctx, list[0].buf)
+		list = list[1:]
 	}
-	b.pool = append(b.pool, bufferPoolEntry{buf: buf, size: sizeBytes})
+	
+	b.buckets[bucket] = append(list, bufferPoolEntry{buf: buf, size: sizeBytes})
 }
 
 func (b *MetalBackend) GetTensor(r, c int) Tensor {
@@ -196,8 +239,18 @@ func (b *MetalBackend) GetTensor(r, c int) Tensor {
 }
 
 func (b *MetalBackend) PutTensor(t Tensor) {
-	// Tensor will be returned to pool via finalizer
-	// Optionally we could force return here if needed
+	mt, ok := t.(*MetalTensor)
+	if !ok || mt.buf == nil {
+		return
+	}
+
+	// Only return if we own it and it's not a slice
+	if mt.ownsBuffer && mt.offset == 0 {
+		b.returnToPool(mt.buf, mt.sizeBytes)
+		mt.buf = nil // Prevent double-return
+		mt.ownsBuffer = false
+		runtime.SetFinalizer(mt, nil)
+	}
 }
 
 func (b *MetalBackend) Synchronize() {
@@ -288,22 +341,53 @@ func (t *MetalTensor) rawHostCopy() []float32 {
 	return raw
 }
 
-// ToHost copies data back to CPU.
-func (t *MetalTensor) ToHost() []float32 {
-	// rawHostCopy gives us the physical buffer contents corresponding to this tensor view.
-	// If t.trans, we need to handle it.
+func (t *MetalTensor) Data() []float32 {
+	t.backend.Synchronize()
 	
+	ptr := C.Metal_GetBufferContents(t.buf)
+	if ptr == nil {
+		return nil
+	}
+	
+	size := t.rows * t.cols
+	if t.backend.useFP16 {
+		// FP16 data. We still need to convert it to FP32 for the Go layers, 
+		// but we can do it more efficiently than ToHost().
+		// For now, ToHost is safer if it's FP16. 
+		// But let's provide a way to get raw host access if it were FP32.
+		if !t.backend.useFP16 {
+			// This branch is only for documentation of the logic, 
+			// the actual check is below.
+		}
+		return nil // Force ToHost for FP16 for now to handle conversion
+	}
+	
+	// FP32 path: direct slice header trick
+	// We must use the offset.
+	dataPtr := unsafe.Pointer(uintptr(ptr) + uintptr(t.offset))
+	return (*[1 << 30]float32)(dataPtr)[:size:size]
+}
+
+// ToHost copies data back to CPU features.
+func (t *MetalTensor) ToHost() []float32 {
+	// If it's FP32 and not transposed, we can use zero-copy then copy.
+	if !t.backend.useFP16 && !t.trans {
+		d := t.Data()
+		if d != nil {
+			out := make([]float32, len(d))
+			copy(out, d)
+			return out
+		}
+	}
+	
+	// Otherwise (FP16 or transposed), use the robust rawHostCopy
 	raw := t.rawHostCopy()
 	
-	// If transposed, we must shuffle.
 	if t.trans {
 		rows, cols := t.cols, t.rows // logical dimensions
 		out := make([]float32, len(raw))
 		for i := 0; i < rows; i++ {
 			for j := 0; j < cols; j++ {
-				// Logical (i,j) maps to physical (j,i)
-				// Physical buffer is t.rows x t.cols
-				// So, raw[j*t.cols + i] is the element at physical (j,i)
 				out[i*cols+j] = raw[j*t.cols+i]
 			}
 		}
@@ -311,11 +395,6 @@ func (t *MetalTensor) ToHost() []float32 {
 	}
 	
 	return raw
-}
-
-func (t *MetalTensor) Data() []float32 {
-	// Return nil to indicate data is on device
-	return nil
 }
 
 // CopyFromFloat32 copies []float32 data to GPU in a single bulk operation.
@@ -688,6 +767,68 @@ func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale flo
 	} else {
 		panic("Attention not implemented for Metal FP32")
 	}
+}
+
+func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
+	t.backend.Synchronize()
+	ptr := C.Metal_GetBufferContents(t.buf)
+	if ptr == nil {
+		return
+	}
+	
+	r, c := t.rows, t.cols
+	if t.trans {
+		// Fallback to ToHost for transposed
+		data := t.ToHost()
+		for i := 0; i < r; i++ {
+			row := make([]float32, c)
+			copy(row, data[i*c:(i+1)*c])
+			dest[start+i] = row
+		}
+		return
+	}
+
+	dataPtr := uintptr(ptr) + uintptr(t.offset)
+	numWorkers := 4
+	if r < numWorkers {
+		numWorkers = r
+	}
+	
+	chunkSize := (r + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wStart := w * chunkSize
+		if wStart >= r {
+			break
+		}
+		wEnd := wStart + chunkSize
+		if wEnd > r {
+			wEnd = r
+		}
+		
+		wg.Add(1)
+		go func(s, e int) {
+			defer wg.Done()
+			if t.backend.useFP16 {
+				for i := s; i < e; i++ {
+					row := make([]float32, c)
+					rowRaw := (*[1 << 30]uint16)(unsafe.Pointer(dataPtr + uintptr(i*c*2)))[:c:c]
+					for j := 0; j < c; j++ {
+						row[j] = float16ToFloat32(rowRaw[j])
+					}
+					dest[start+i] = row
+				}
+			} else {
+				for i := s; i < e; i++ {
+					row := make([]float32, c)
+					rowRaw := (*[1 << 30]float32)(unsafe.Pointer(dataPtr + uintptr(i*c*4)))[:c:c]
+					copy(row, rowRaw)
+					dest[start+i] = row
+				}
+			}
+		}(wStart, wEnd)
+	}
+	wg.Wait()
 }
 
 func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {

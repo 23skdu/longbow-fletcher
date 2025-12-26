@@ -115,10 +115,13 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 	}
 	wg.Wait()
 
-	const internalBatchSize = 128
+	const internalBatchSize = 512
 	allResults := make([][]float32, len(texts))
 	
-	// 2. Sequential GPU Processing (with parallel extraction)
+	// 2. Double-buffered GPU Processing
+	var prevOutput device.Tensor
+	var prevBatchIdx int
+
 	for i := 0; i < len(texts); i += internalBatchSize {
 		batchEnd := i + internalBatchSize
 		if batchEnd > len(texts) {
@@ -142,43 +145,24 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 			lengths[j] = res.len
 		}
 
-		// Forward Pass for this batch
-		outputMatrix := e.model.ForwardBatch(inputs, lengths)
+		// Start GPU for current batch
+		// forward pass is largely async until ExtractTo/ToHost is called
+		currentOutput := e.model.ForwardBatch(inputs, lengths)
 
-		// 3. Parallel Extraction
-		data := outputMatrix.ToHost()
-		_, c := outputMatrix.Dims()
-		
-		extractWG := sync.WaitGroup{}
-		extractWorkers := 4 // Small number for data extraction
-		if batchCount < extractWorkers {
-			extractWorkers = batchCount
+		// While GPU handles current batch, CPU extracts results from PREVIOUS batch
+		if prevOutput != nil {
+			prevOutput.ExtractTo(allResults, prevBatchIdx)
+			e.model.Backend.PutTensor(prevOutput)
 		}
-		
-		eSize := (batchCount + extractWorkers - 1) / extractWorkers
-		for w := 0; w < extractWorkers; w++ {
-			eStart := w * eSize
-			if eStart >= batchCount {
-				break
-			}
-			eEnd := eStart + eSize
-			if eEnd > batchCount {
-				eEnd = batchCount
-			}
-			
-			extractWG.Add(1)
-			go func(s, end int) {
-				defer extractWG.Done()
-				for j := s; j < end; j++ {
-					row := make([]float32, c)
-					copy(row, data[j*c:(j+1)*c])
-					allResults[i+j] = row
-				}
-			}(eStart, eEnd)
-		}
-		extractWG.Wait()
-		
-		e.model.Backend.PutTensor(outputMatrix)
+
+		prevOutput = currentOutput
+		prevBatchIdx = i
+	}
+
+	// Handle the final batch
+	if prevOutput != nil {
+		prevOutput.ExtractTo(allResults, prevBatchIdx)
+		e.model.Backend.PutTensor(prevOutput)
 	}
 
 	return allResults

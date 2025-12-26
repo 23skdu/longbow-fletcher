@@ -23,6 +23,7 @@ void Metal_CopyToDevice(MetalBufferRef buf, int offset, const void *data,
                         int size);
 void Metal_CopyToHost(MetalBufferRef buf, int offset, void *data, int size);
 void Metal_Memset(MetalBufferRef buf, int offset, int value, int size);
+void *Metal_GetBufferContents(MetalBufferRef buf);
 // Index is absolute or relative? Let's say relative to buffer. But here we take
 // buf directly. Let's keep SetAt absolute for now or add offset. Better:
 // Metal_SetAt(buf, offset, val).
