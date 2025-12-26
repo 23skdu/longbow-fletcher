@@ -24,7 +24,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o fletcher ./cmd/fletche
 FROM alpine:latest
 
 # Install runtime dependencies
-RUN apk add --no-cache libopenblas libstdc++
+RUN apk add --no-cache openblas libstdc++
 
 WORKDIR /app
 

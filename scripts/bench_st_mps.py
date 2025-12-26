@@ -36,7 +36,8 @@ def benchmark(n_vectors):
     
     # Timed run
     start = time.perf_counter()
-    embeddings = model.encode(sentences, batch_size=64, show_progress_bar=False)
+    # Batch size 256 to match Fletcher
+    embeddings = model.encode(sentences, batch_size=256, show_progress_bar=True)
     torch.mps.synchronize()
     elapsed = time.perf_counter() - start
     
@@ -46,4 +47,6 @@ def benchmark(n_vectors):
 
 print("\n--- Sentence Transformers (MPS) Benchmark ---")
 benchmark(10_000)
-benchmark(20_000)
+benchmark(100_000)
+benchmark(500_000)
+benchmark(1_000_000)

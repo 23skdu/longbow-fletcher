@@ -3,72 +3,63 @@ package device
 // Tensor represents a multi-dimensional array of data that can be resident
 // on different devices (CPU, Metal GPU, CUDA GPU).
 type Tensor interface {
-	// Dims returns the dimensions of the tensor (rows, cols).
-	Dims() (r, c int)
+	// Dims returns the dimensions (rows, cols) of the tensor.
+	Dims() (int, int)
 	
 	// At returns the value at (i, j).
-	// Note: This forces a sync to CPU if the tensor is on GPU, so use sparingly!
-	At(i, j int) float64
+	// This is often slow and should be used for debugging or infrequent access.
+	At(i, j int) float32
 	
 	// Set sets the value at (i, j).
-	// Note: Use sparingly for performance.
-	Set(i, j int, v float64)
+	Set(i, j int, v float32)
 	
-	// Copy transfers data from another tensor to this one.
+	// Data returns the underlying slice if available on CPU (nil if on GPU).
+	Data() []float32
+	
+	// ToHost copies the data to a Go slice (float32).
+	ToHost() []float32
+	
+	// CopyFromFloat32 copies data from a Go slice (float32) to the tensor.
+	CopyFromFloat32(data []float32)
+	
+	// Operations
+	
+	// Copy copies content from another tensor.
 	Copy(from Tensor)
-
-	// Slice returns a view of the tensor.
+	
+	// Slice creates a view of the tensor.
 	Slice(i, k, j, l int) Tensor
-
-	// T returns the transpose of the tensor.
-	// Depending on backend, this might be a view or a copy.
+	
+	// T returns the transpose view.
 	T() Tensor
-
-	// Mul performs matrix multiplication: receiver = a * b.
+	
+	// Mul performs matrix multiplication: result = this * other
+	// In-place update of this tensor? No, usually Mul(a, b) -> writes to this.
+	// Convention: t.Mul(a, b) means t = a * b
 	Mul(a, b Tensor)
 	
-	// MulVec performs matrix-vector multiplication: result = matrix * vector
-	// where the receiver is the result vector.
-	// MulVec(m Tensor, v Tensor)
-
-	// Add performs element-wise addition: receiver += other.
+	// Add performs element-wise addition: t = t + other
 	Add(other Tensor)
+			
+	// AddScalar performs: t = t + val
+	AddScalar(val float32)
 	
-	// AddScalar adds a scalar to each element of the tensor.
-	AddScalar(val float64)
+	// Scale performs: t = t * val
+	Scale(val float32)
 	
-	// AddBias adds a bias vector to each row of the tensor.
-	// len(bias) must equal tensor columns.
+	// AddBias adds a bias vector (broadcasted) to each row/col.
 	AddBias(bias Tensor)
 	
-	// Scale scales the tensor by a scalar.
-	Scale(val float64)
-	
-	// Softmax applies Softmax function in-place row-wise.
+	// Activation functions (In-Place)
 	Softmax()
-	
-	// Gelu applies GELU activation in-place.
 	Gelu()
-	
-	// Tanh applies Tanh activation in-place.
 	Tanh()
 	
-	// LayerNorm applies Layer Normalization in-place.
-	LayerNorm(gamma, beta Tensor, eps float64)
+	// LayerNorm performs layer normalization (In-Place).
+	LayerNorm(gamma, beta Tensor, eps float32)
 	
-	// Gather gathers rows based on indices.
+	// Gather collects rows based on indices. Returns new Tensor.
 	Gather(indices []int) Tensor
-	
-	// ToHost copies the data back to a Go slice (row-major).
-	ToHost() []float64
-
-	// CopyFromFloat64 copies a []float64 slice to the tensor in bulk.
-	// This is much more efficient than using Set() for each element.
-	CopyFromFloat64(data []float64)
-
-    // Data returns the underlying slice if on CPU, nil otherwise.
-    // Dangerous, use with caution.
-    Data() []float64
 
 	// Linear performs a fused MatMul + BiasAdd.
 	// equivalent to: t.Mul(input, weight); t.AddBias(bias)
@@ -82,7 +73,7 @@ type Tensor interface {
 	// equivalent to: Softmax(Q * K^T * scale) * V
 	// Assumes q, k, v are flattened (Batch*Seq, Hidden)
 	// Returns flattend (Batch*Seq, Hidden)
-	Attention(q, k, v Tensor, batchSize, seqLen int, scale float64) Tensor
+	Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor
 }
 
 type ActivationType int
@@ -97,7 +88,7 @@ const (
 // Backend creates tensors and manages device memory.
 type Backend interface {
 	Name() string
-	NewTensor(r, c int, data []float64) Tensor
+	NewTensor(r, c int, data []float32) Tensor
 	
 	// GetTensor gets a tensor from the pool or creates a new one.
 	GetTensor(r, c int) Tensor
@@ -105,5 +96,6 @@ type Backend interface {
 	// PutTensor returns a tensor to the pool.
 	PutTensor(t Tensor)
 	
-	Synchronize() // Block until all queued operations are complete
+	// Synchronize() // Block until all queued operations are complete
+	Synchronize()
 }

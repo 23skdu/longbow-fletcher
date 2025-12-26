@@ -70,7 +70,7 @@
     }
     if (self.currentCommandBuffer) {
       [self.currentCommandBuffer commit];
-      [self.currentCommandBuffer waitUntilCompleted];
+      // Do NOT wait here. Allow overlap.
       self.currentCommandBuffer = nil;
     }
   }
@@ -78,13 +78,21 @@
 
 - (void)fullSync {
   @synchronized(self) {
-    // First flush compute encoder
+    // 1. Flush any pending custom encoding
     [self flush];
-    // Then wait for any pending MPS operations
+
+    // 2. Clear known MPS buffer (if any)
     if (self.lastMPSBuffer) {
-      [self.lastMPSBuffer waitUntilCompleted];
+      // We don't necessarily need to wait on this specifically if we use the
+      // barrier method, but releasing the ref is good.
       self.lastMPSBuffer = nil;
     }
+
+    // 3. Submit a barrier command buffer to ensure all previous work is done.
+    // Metal queues execute command buffers in commit order.
+    id<MTLCommandBuffer> barrier = [self.commandQueue commandBuffer];
+    [barrier commit];
+    [barrier waitUntilCompleted];
   }
 }
 

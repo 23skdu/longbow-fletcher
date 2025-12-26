@@ -9,16 +9,16 @@ import (
 
 func TestMetalBackend_Add(t *testing.T) {
 	b := NewMetalBackend()
-	t1 := b.NewTensor(2, 2, []float64{1, 2, 3, 4})
-	t2 := b.NewTensor(2, 2, []float64{10, 20, 30, 40})
+	t1 := b.NewTensor(2, 2, []float32{1, 2, 3, 4})
+	t2 := b.NewTensor(2, 2, []float32{10, 20, 30, 40})
 	
 	t1.Add(t2)
 	
 	out := t1.ToHost()
-	expected := []float64{11, 22, 33, 44}
+	expected := []float32{11, 22, 33, 44}
 	
 	for i, v := range out {
-		if math.Abs(v - expected[i]) > 1e-5 {
+		if math.Abs(float64(v - expected[i])) > 1e-5 {
 			t.Errorf("Add mismatch at %d: got %f, want %f", i, v, expected[i])
 		}
 	}
@@ -30,11 +30,11 @@ func TestMetalBackend_Mul(t *testing.T) {
 	// B: 3x2
 	// C: 2x2
 	
-	aData := []float64{
+	aData := []float32{
 		1, 2, 3,
 		4, 5, 6,
 	}
-	bData := []float64{
+	bData := []float32{
 		7, 8,
 		9, 10,
 		11, 12,
@@ -53,10 +53,10 @@ func TestMetalBackend_Mul(t *testing.T) {
 	// row 1: 4*8 + 5*10 + 6*12 = 32 + 50 + 72 = 154
 	
 	out := C.ToHost()
-	expected := []float64{58, 64, 139, 154}
+	expected := []float32{58, 64, 139, 154}
 	
 	for i, v := range out {
-		if math.Abs(v - expected[i]) > 1e-4 {
+		if math.Abs(float64(v - expected[i])) > 1e-4 {
 			t.Errorf("Mul mismatch at %d: got %f, want %f", i, v, expected[i])
 		}
 	}
@@ -65,7 +65,7 @@ func TestMetalBackend_Mul(t *testing.T) {
 func TestMetalBackend_Softmax(t *testing.T) {
 	b := NewMetalBackend()
 	// 1x3
-	data := []float64{1.0, 2.0, 3.0}
+	data := []float32{1.0, 2.0, 3.0}
 	tensor := b.NewTensor(1, 3, data)
 	
 	tensor.Softmax()
@@ -79,7 +79,7 @@ func TestMetalBackend_Softmax(t *testing.T) {
 	
 	sum := 0.0
 	for _, v := range out {
-		sum += v
+		sum += float64(v)
 	}
 	
 	if math.Abs(sum - 1.0) > 1e-4 {
@@ -94,7 +94,7 @@ func TestMetalBackend_Softmax(t *testing.T) {
 func TestMetalBackend_LayerNorm(t *testing.T) {
 	b := NewMetalBackend()
 	rows, cols := 2, 4
-	data := []float64{
+	data := []float32{
 		1, 2, 3, 4,
 		10, 20, 30, 40,
 	}
@@ -102,8 +102,8 @@ func TestMetalBackend_LayerNorm(t *testing.T) {
 	// Mean 2: 25. Var 2: 125. Std: ~11.18
 	
 	t1 := b.NewTensor(rows, cols, data)
-	gamma := b.NewTensor(1, cols, []float64{1, 1, 1, 1})
-	beta := b.NewTensor(1, cols, []float64{0, 0, 0, 0})
+	gamma := b.NewTensor(1, cols, []float32{1, 1, 1, 1})
+	beta := b.NewTensor(1, cols, []float32{0, 0, 0, 0})
 	
 	t1.LayerNorm(gamma, beta, 1e-5)
 	
@@ -111,7 +111,7 @@ func TestMetalBackend_LayerNorm(t *testing.T) {
 	
 	// Check first row mean approx 0, std approx 1
 	m1 := 0.0
-	for i := 0; i < 4; i++ { m1 += out[i] }
+	for i := 0; i < 4; i++ { m1 += float64(out[i]) }
 	m1 /= 4
 	
 	if math.Abs(m1) > 1e-3 {
@@ -122,24 +122,24 @@ func TestMetalBackend_LayerNorm(t *testing.T) {
 func TestMetalBackend_AddBias(t *testing.T) {
 	b := NewMetalBackend()
 	rows, cols := 2, 3
-	data := []float64{
+	data := []float32{
 		1, 2, 3,
 		4, 5, 6,
 	}
-	bias := []float64{10, 20, 30}
+	bias := []float32{10, 20, 30}
 	biasTensor := b.NewTensor(1, cols, bias)
 	
 	tensor := b.NewTensor(rows, cols, data)
 	tensor.AddBias(biasTensor)
 	
 	out := tensor.ToHost()
-	expected := []float64{
+	expected := []float32{
 		11, 22, 33,
 		14, 25, 36,
 	}
 	
 	for i, v := range out {
-		if math.Abs(v - expected[i]) > 1e-5 {
+		if math.Abs(float64(v - expected[i])) > 1e-5 {
 			t.Errorf("AddBias mismatch at %d: got %f, want %f", i, v, expected[i])
 		}
 	}
@@ -149,7 +149,7 @@ func TestMetalBackend_SliceInternal(t *testing.T) {
 	// Test the Copy-based Slice implementation
 	b := NewMetalBackend()
 	rows, cols := 4, 2
-	data := []float64{
+	data := []float32{
 		1, 2,
 		3, 4,
 		5, 6,
@@ -166,13 +166,13 @@ func TestMetalBackend_SliceInternal(t *testing.T) {
 	}
 	
 	out := slice.ToHost()
-	expected := []float64{
+	expected := []float32{
 		3, 4,
 		5, 6,
 	}
 	
 	for i, v := range out {
-		if math.Abs(v - expected[i]) > 1e-5 {
+		if math.Abs(float64(v - expected[i])) > 1e-5 {
 			t.Errorf("Slice mismatch at %d: got %f, want %f", i, v, expected[i])
 		}
 	}
@@ -199,9 +199,9 @@ func TestMetalBackend_Gather(t *testing.T) {
 	// 2: [4, 5]
 	// 3: [6, 7]
 	// 4: [8, 9]
-	data := make([]float64, rows*cols)
+	data := make([]float32, rows*cols)
 	for i := range data {
-		data[i] = float64(i)
+		data[i] = float32(i)
 	}
 	table := b.NewTensor(rows, cols, data)
 	
@@ -219,14 +219,14 @@ func TestMetalBackend_Gather(t *testing.T) {
 	}
 	
 	out := gathered.ToHost()
-	expected := []float64{
+	expected := []float32{
 		2, 3,
 		8, 9,
 		0, 1,
 	}
 	
 	for i, v := range out {
-		if math.Abs(v - expected[i]) > 1e-5 {
+		if math.Abs(float64(v - expected[i])) > 1e-5 {
 			t.Errorf("Gather mismatch at %d: got %f, want %f", i, v, expected[i])
 		}
 	}

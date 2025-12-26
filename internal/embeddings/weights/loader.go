@@ -21,7 +21,7 @@ func NewLoader(m *model.BertModel) *Loader {
 }
 
 // LoadFromRawBinary loads weights from a raw binary file where Each matrix/bias 
-// is stored as a sequence of float32/float64 values.
+// is stored as a sequence of float32 values (LittleEndian).
 // This is a simplified implementation for the pure Go CLI.
 func (l *Loader) LoadFromRawBinary(path string) error {
 	file, err := os.Open(path)
@@ -86,59 +86,16 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 func (l *Loader) loadDense(r io.Reader, d device.Tensor) error {
 	rows, cols := d.Dims()
 	size := rows * cols
-	data := make([]float64, size)
+	data := make([]float32, size)
 	
 	// Read everything into a slice first (bulk read)
+	// We assume model files are float32/LittleEndian
 	if err := binary.Read(r, binary.LittleEndian, data); err != nil {
-		// Fallback to reading float32 one by one if bulk read fails (e.g. alignment/type)?
-		// Since we target float32 on disk but float64 in mem, binary.Read into []float64 won't work directly
-		// if file has float32s.
-		// We have to read float32s then convert.
-		
-		// Reset assumption: File has float32.
-		f32s := make([]float32, size)
-		if err := binary.Read(r, binary.LittleEndian, f32s); err != nil {
-			return err
-		}
-		
-		for i, v := range f32s {
-			data[i] = float64(v)
-		}
-	} else {
-		// If binary.Read worked directly, it means it expected float64s in file? 
-		// No, binary.Read reads into data based on data type.
-		// If we passed []float64, it expects 64-bit floats in file.
-		// But our model file likely comes from PyTorch/HuggingFace which is float32 (or less).
-		// So we MUST read float32.
-		
-		// The previous loop implementation read float32:
-		// var f32 float32; binary.Read(...)
-		
-		// So let's re-implement efficiently:
-		// Read all float32s in one go
-		f32s := make([]float32, size)
-		if err := binary.Read(r, binary.LittleEndian, f32s); err != nil {
-			return err
-		}
-		
-		for i, v := range f32s {
-			data[i] = float64(v)
-		}
+		return err
 	}
 
 	// Bulk upload to device
-	d.CopyFromFloat64(data)
-	return nil
-}
-
-func (l *Loader) loadSlice(r io.Reader, s []float64) error {
-	for i := range s {
-		var f32 float32
-		if err := binary.Read(r, binary.LittleEndian, &f32); err != nil {
-			return err
-		}
-		s[i] = float64(f32)
-	}
+	d.CopyFromFloat32(data)
 	return nil
 }
 

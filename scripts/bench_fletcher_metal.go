@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"time"
 
@@ -42,8 +43,11 @@ func main() {
 	// Benchmark function
 	benchmark := func(nVectors int) {
 		// Generate input
-		batchSize := 256 // Even larger batch for better GPU utilization
+		batchSize := 128 // Reduced batch size for safety / lower latency
 		numBatches := nVectors / batchSize
+		if nVectors%batchSize != 0 {
+			numBatches++
+		}
 
 		// Warmup
 		inputIDs := make([]int, batchSize*seqLen)
@@ -61,6 +65,12 @@ func main() {
 		start := time.Now()
 		for b := 0; b < numBatches; b++ {
 			_ = bertModel.ForwardBatch(inputIDs, lengths)
+			
+			// Frequent synchronization and GC to prevent VRAM exhaustion/Lockup
+			if b % 10 == 0 {
+				backend.Synchronize() 
+				runtime.GC() // Force release of Metal buffers held by finalizers
+			}
 		}
 		backend.Synchronize()
 		elapsed := time.Since(start)
@@ -71,5 +81,7 @@ func main() {
 
 	fmt.Println("\n--- Fletcher (Metal) Benchmark ---")
 	benchmark(10_000)
-	benchmark(20_000)
+	benchmark(100_000)
+	benchmark(500_000)
+	// benchmark(1_000_000) // Skipping 1M in single run to avoid test harness GC issues
 }

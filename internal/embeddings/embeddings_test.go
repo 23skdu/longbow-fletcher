@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
+	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
+	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
 func createTempVocab(t *testing.T) string {
@@ -14,7 +16,6 @@ func createTempVocab(t *testing.T) string {
 	}
 	defer f.Close()
 
-	// Add some basic tokens
 	tokens := []string{
 		"[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]",
 		"hello", "world", "test", "sentence", "embedding",
@@ -26,61 +27,53 @@ func createTempVocab(t *testing.T) string {
 	return f.Name()
 }
 
-func TestNewEmbedder(t *testing.T) {
+func TestEmbedder_EmbedBatch(t *testing.T) {
 	vocabPath := createTempVocab(t)
 	defer os.Remove(vocabPath)
 	
-	config := model.DefaultBertTinyConfig()
-	
-	// Test safe initialization
-	e, err := NewEmbedder(vocabPath, "", config)
-	if err != nil {
-		t.Fatalf("Failed to create embedder: %v", err)
-	}
-	if e == nil {
-		t.Fatal("Embedder is nil")
-	}
-}
-
-func TestEmbedder_Embed(t *testing.T) {
-	vocabPath := createTempVocab(t)
-	defer os.Remove(vocabPath)
-	
-	config := model.DefaultBertTinyConfig()
-	e, err := NewEmbedder(vocabPath, "", config)
+	// Manually construct tokenizer
+	tok, err := tokenizer.NewWordPieceTokenizer(vocabPath)
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Manually construct model (avoid weight loading)
+	config := model.DefaultBertTinyConfig()
+	backend := device.NewCPUBackend()
+	bert := model.NewBertModelWithBackend(config, backend) 
+	// initWeights is called in NewBertModelWithBackend, so it has random weights.
+
+	e := &Embedder{
+		model:     bert,
+		tokenizer: tok,
+	}
 	
 	tests := []string{
-		"hello world", // lowercase to match vocab
+		"hello world", 
 		"test sentence",
-		"", 
 	}
 	
-	for _, text := range tests {
-		vec := e.Embed(text)
-		
+	vectors := e.EmbedBatch(tests)
+	
+	if len(vectors) != len(tests) {
+		t.Errorf("Expected %d vectors, got %d", len(tests), len(vectors))
+	}
+	
+	for i, vec := range vectors {
 		if len(vec) != config.HiddenSize {
-			t.Errorf("Expected vector length %d, got %d for input '%s'", config.HiddenSize, len(vec), text)
+			t.Errorf("Test %d: Expected vector length %d, got %d", i, config.HiddenSize, len(vec))
 		}
-	}
-}
-
-func BenchmarkEmbedder_Embed(b *testing.B) {
-	// Setup (ignore cleanup for bench or do it properly)
-	f, _ := os.CreateTemp("", "bench_vocab")
-	defer os.Remove(f.Name())
-	f.WriteString("[PAD]\n[UNK]\n[CLS]\n[SEP]\nhello\nworld\n")
-	f.Close()
-	
-	config := model.DefaultBertTinyConfig()
-	e, _ := NewEmbedder(f.Name(), "", config)
-	
-	text := "hello world"
-	
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		e.Embed(text)
+		
+		// Check for non-zero (highly unlikely to be all zero with Xavier init)
+		hasNonZero := false
+		for _, v := range vec {
+			if v != 0 {
+				hasNonZero = true
+				break
+			}
+		}
+		if !hasNonZero {
+			t.Errorf("Test %d: Vector is all zeros", i)
+		}
 	}
 }

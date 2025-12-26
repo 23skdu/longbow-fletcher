@@ -22,7 +22,7 @@ func TestBertModelForward(t *testing.T) {
 	// Simple random-like initialization
 	for i := 0; i < config.VocabSize; i++ {
 		for j := 0; j < config.HiddenSize; j++ {
-			model.Embeddings.WordEmbeddings.Set(i, j, float64(i+j+1)/100.0)
+			model.Embeddings.WordEmbeddings.Set(i, j, float32(i+j+1)/100.0)
 		}
 	}
 	for i := 0; i < config.HiddenSize; i++ {

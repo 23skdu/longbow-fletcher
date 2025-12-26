@@ -1,43 +1,55 @@
 package embeddings
 
 import (
+	"fmt"
+
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/weights"
+	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
-// Embedder provides high-level text embedding capabilities.
+// Embedder manages the tokenization and model inference.
 type Embedder struct {
-	tokenizer *tokenizer.WordPieceTokenizer
 	model     *model.BertModel
+	tokenizer *tokenizer.WordPieceTokenizer
 }
 
-// NewEmbedder initializes the embedder with vocab and weights.
-func NewEmbedder(vocabPath, weightsPath string, config model.BertConfig) (*Embedder, error) {
-	tk, err := tokenizer.NewWordPieceTokenizer(vocabPath)
+// NewEmbedder creates a new embedder.
+// vocabPath and weightsPath are paths to the vocab.txt and model weights binary.
+func NewEmbedder(vocabPath, weightsPath string, useGPU bool) (*Embedder, error) {
+	tok, err := tokenizer.NewWordPieceTokenizer(vocabPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to load tokenizer: %w", err)
 	}
 
-	m := model.NewBertModel(config)
-	loader := weights.NewLoader(m)
+	config := model.DefaultBertTinyConfig()
 	
-	// Optional: Only load if weightsPath is provided
-	if weightsPath != "" {
-		if err := loader.LoadFromRawBinary(weightsPath); err != nil {
-			return nil, err
-		}
+	var backend device.Backend
+	if useGPU {
+		// NewMetalBackend will fallback or panic if not supported
+		// Ideally we check availability
+		backend = device.NewMetalBackend() // Use FP32 Metal by default, user can call NewMetalBackendFP16 via other means if we exposed it
+		// Or we could expose a config option for FP16
+	} else {
+		backend = device.NewCPUBackend()
+	}
+
+	bert := model.NewBertModelWithBackend(config, backend)
+
+	loader := weights.NewLoader(bert)
+	if err := loader.LoadFromRawBinary(weightsPath); err != nil {
+		return nil, fmt.Errorf("failed to load weights: %w", err)
 	}
 
 	return &Embedder{
-		tokenizer: tk,
-		model:     m,
+		model:     bert,
+		tokenizer: tok,
 	}, nil
 }
 
 // EmbedBatch generates embeddings for a batch of texts.
-// This is significantly faster for multiple inputs as it uses batched matrix operations.
-func (e *Embedder) EmbedBatch(texts []string) [][]float64 {
+func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 	inputs := make([]int, 0, len(texts)*32) // heuristic cap
 	lengths := make([]int, len(texts))
 	
@@ -65,29 +77,19 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float64 {
 		return nil
 	}
 	
-	results := make([][]float64, r)
-	data := outputMatrix.Data()
+	results := make([][]float32, r)
 	
-	// If data is nil (GPU), we need ToHost call
-	if data == nil {
-		data = outputMatrix.ToHost()
-	}
+	// Data() returns nil if on GPU, so using ToHost() which handles both cases
+	// device.Tensor now returns []float32 from ToHost/Data
+	data := outputMatrix.ToHost()
 	
 	for i := 0; i < r; i++ {
-		row := make([]float64, c)
+		// Create row slice
+		// We can share memory if we want zero-copy, but safety first for API
+		row := make([]float32, c)
 		copy(row, data[i*c : (i+1)*c])
 		results[i] = row
 	}
 	
 	return results
-}
-
-// Embed generates an embedding for the given text.
-// For multiple texts, use EmbedBatch for better performance.
-func (e *Embedder) Embed(text string) []float64 {
-	oneBatch := e.EmbedBatch([]string{text})
-	if len(oneBatch) == 0 {
-		return nil
-	}
-	return oneBatch[0]
 }

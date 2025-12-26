@@ -84,20 +84,20 @@ func (m *BertModel) initWeights() {
 }
 
 // xavierInit initializes a matrix with Xavier/Glorot uniform initialization.
-// Uses bulk CopyFromFloat64 for efficient GPU upload (especially FP16).
+// Uses bulk CopyFromFloat32 for efficient GPU upload (especially FP16).
 func xavierInit(m device.Tensor) {
 	r, c := m.Dims()
 	size := r * c
 	limit := math.Sqrt(6.0 / float64(r+c))
 	
 	// Generate all random values in a single slice
-	data := make([]float64, size)
+	data := make([]float32, size)
 	for i := range data {
-		data[i] = (rand.Float64()*2 - 1) * limit
+		data[i] = float32((rand.Float64()*2 - 1) * limit)
 	}
 	
 	// Bulk upload to GPU (single FP16 conversion pass)
-	m.CopyFromFloat64(data)
+	m.CopyFromFloat32(data)
 }
 
 // ForwardBatch performs the forward pass for a batch of sequences.
@@ -199,12 +199,12 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 type LayerNorm struct {
 	Gamma device.Tensor
 	Beta  device.Tensor
-	Eps   float64
+	Eps   float32
 }
 
 func NewLayerNorm(size int, backend device.Backend) *LayerNorm {
 	// Create Gamma with 1s
-	ones := make([]float64, size)
+	ones := make([]float32, size)
 	for i := range ones { ones[i] = 1.0 }
 	
 	return &LayerNorm{
@@ -419,7 +419,7 @@ func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 	keyLayerT := keyLayer.T()
 	attentionScores.Mul(queryLayer, keyLayerT)
 	
-	scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
+	scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
 	attentionScores.Scale(scale)
 	
 	// Softmax in-place
@@ -462,9 +462,9 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	
 	batchSize := len(lengths)
 	
-	if allSameLength {
+	if false && allSameLength {
 		// Optimized GPU/Graph path for uniform sequence lengths
-		scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
+		scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
 		
 		// Use Fused Attention Graph (Batch MatMul + Softmax + Context)
 		// Returns (Batch*Seq, Hidden)
@@ -498,7 +498,7 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 			seqKT := seqK.T()
 			attentionScores.Mul(seqQ, seqKT)
 			
-			scale := 1.0 / math.Sqrt(float64(s.AttentionHeadSize))
+			scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
 			attentionScores.Scale(scale)
 			attentionScores.Softmax()
 			

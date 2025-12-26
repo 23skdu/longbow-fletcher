@@ -9,16 +9,16 @@ func TestCPUBackend_TensorOps(t *testing.T) {
 	backend := NewCPUBackend()
 
 	t.Run("Add", func(t *testing.T) {
-		a := backend.NewTensor(2, 2, []float64{1, 2, 3, 4})
-		b := backend.NewTensor(2, 2, []float64{10, 20, 30, 40})
+		a := backend.NewTensor(2, 2, []float32{1, 2, 3, 4})
+		b := backend.NewTensor(2, 2, []float32{10, 20, 30, 40})
 		
 		a.Add(b)
 		
-		expected := []float64{11, 22, 33, 44}
+		expected := []float32{11, 22, 33, 44}
 		data := a.ToHost()
 		
 		for i, v := range expected {
-			if math.Abs(data[i]-v) > 1e-6 {
+			if math.Abs(float64(data[i]-v)) > 1e-6 {
 				t.Errorf("Add mismatch at %d: got %f, want %f", i, data[i], v)
 			}
 		}
@@ -26,11 +26,11 @@ func TestCPUBackend_TensorOps(t *testing.T) {
 
 	t.Run("Mul", func(t *testing.T) {
 		// A: 2x3, B: 3x2 -> C: 2x2
-		a := backend.NewTensor(2, 3, []float64{
+		a := backend.NewTensor(2, 3, []float32{
 			1, 2, 3,
 			4, 5, 6,
 		})
-		b := backend.NewTensor(3, 2, []float64{
+		b := backend.NewTensor(3, 2, []float32{
 			7, 8,
 			9, 10,
 			11, 12,
@@ -43,24 +43,24 @@ func TestCPUBackend_TensorOps(t *testing.T) {
 		// 1*8 + 2*10 + 3*12 = 8 + 20 + 36 = 64
 		// 4*7 + 5*9 + 6*11 = 28 + 45 + 66 = 139
 		// 4*8 + 5*10 + 6*12 = 32 + 50 + 72 = 154
-		expected := []float64{58, 64, 139, 154}
+		expected := []float32{58, 64, 139, 154}
 		data := c.ToHost()
 		
 		for i, v := range expected {
-			if math.Abs(data[i]-v) > 1e-6 {
+			if math.Abs(float64(data[i]-v)) > 1e-6 {
 				t.Errorf("Mul mismatch at %d: got %f, want %f", i, data[i], v)
 			}
 		}
 	})
 
 	t.Run("Scale", func(t *testing.T) {
-		a := backend.NewTensor(2, 2, []float64{1, 2, 3, 4})
+		a := backend.NewTensor(2, 2, []float32{1, 2, 3, 4})
 		a.Scale(2.0)
 		
-		expected := []float64{2, 4, 6, 8}
+		expected := []float32{2, 4, 6, 8}
 		data := a.ToHost()
 		for i, v := range expected {
-			if math.Abs(data[i]-v) > 1e-6 {
+			if math.Abs(float64(data[i]-v)) > 1e-6 {
 				t.Errorf("Scale mismatch at %d: got %f, want %f", i, data[i], v)
 			}
 		}
@@ -68,9 +68,9 @@ func TestCPUBackend_TensorOps(t *testing.T) {
 	
 	t.Run("LayerNorm", func(t *testing.T) {
 		// 1x4 vector
-		a := backend.NewTensor(1, 4, []float64{1, 2, 3, 4})
-		gamma := backend.NewTensor(1, 4, []float64{1, 1, 1, 1})
-		beta := backend.NewTensor(1, 4, []float64{0, 0, 0, 0})
+		a := backend.NewTensor(1, 4, []float32{1, 2, 3, 4})
+		gamma := backend.NewTensor(1, 4, []float32{1, 1, 1, 1})
+		beta := backend.NewTensor(1, 4, []float32{0, 0, 0, 0})
 		
 		// Mean = 2.5
 		// Variance = ((1-2.5)^2 + (2-2.5)^2 + (3-2.5)^2 + (4-2.5)^2) / 4
@@ -83,13 +83,13 @@ func TestCPUBackend_TensorOps(t *testing.T) {
 		// 3: 0.5 / 1.11803 ≈ 0.44721
 		// 4: 1.5 / 1.11803 ≈ 1.34164
 		
-		a.LayerNorm(gamma, beta, 1e-12)
+		a.LayerNorm(gamma, beta, 1e-6) // increased eps/tol
 		
-		expected := []float64{-1.3416407, -0.4472136, 0.4472136, 1.3416407}
+		expected := []float32{-1.3416407, -0.4472136, 0.4472136, 1.3416407}
 		data := a.ToHost()
 		
 		for i, v := range expected {
-			if math.Abs(data[i]-v) > 1e-5 {
+			if math.Abs(float64(data[i]-v)) > 1e-4 { // Looser tolerance for float32
 				t.Errorf("LayerNorm mismatch at %d: got %f, want %f", i, data[i], v)
 			}
 		}

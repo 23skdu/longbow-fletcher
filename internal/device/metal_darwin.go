@@ -16,7 +16,7 @@ import (
 	"unsafe"
 )
 
-//go:embed kernels.metal
+//go:embed kernels_darwin.metal
 var kernelsSource string
 
 // Check interface compliance
@@ -67,7 +67,7 @@ func (b *MetalBackend) Name() string {
 	return "Metal"
 }
 
-func (b *MetalBackend) NewTensor(r, c int, data []float64) Tensor {
+func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
 	size := r * c // number of elements
 	
 	var sizeBytes int
@@ -82,10 +82,10 @@ func (b *MetalBackend) NewTensor(r, c int, data []float64) Tensor {
 		}
 		
 		if len(data) > 0 {
-			// Convert []float64 to []uint16 (FP16 encoded)
+			// Convert []float32 to []uint16 (FP16 encoded)
 			f16 := make([]uint16, size)
 			for i, v := range data {
-				f16[i] = float32ToFloat16(float32(v))
+				f16[i] = float32ToFloat16(v)
 			}
 			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&f16[0]), C.int(sizeBytes))
 		} else {
@@ -100,11 +100,8 @@ func (b *MetalBackend) NewTensor(r, c int, data []float64) Tensor {
 		}
 		
 		if len(data) > 0 {
-			f32 := make([]float32, size)
-			for i, v := range data {
-				f32[i] = float32(v)
-			}
-			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&f32[0]), C.int(sizeBytes))
+			// Direct copy for FP32
+			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&data[0]), C.int(sizeBytes))
 		} else {
 			C.Metal_Memset(buf, 0, 0, C.int(sizeBytes))
 		}
@@ -225,9 +222,8 @@ func (t *MetalTensor) Dims() (int, int) {
 	return t.rows, t.cols
 }
 
-func (t *MetalTensor) At(i, j int) float64 {
-	// Very slow!
-	// Copy to host
+func (t *MetalTensor) At(i, j int) float32 {
+	// Very slow! CPU readback
 	
 	// Check bounds
 	rows, cols := t.Dims()
@@ -235,8 +231,6 @@ func (t *MetalTensor) At(i, j int) float64 {
 		panic("Index out of bounds")
 	}
 
-	// For prototype, just use ToHost which handles logic?
-	// No, ToHost copies raw buffer for now.
 	raw := t.rawHostCopy()
 	// Raw is typically row-major of physical buffer
 	// Physical buffer is t.rows x t.cols
@@ -248,10 +242,10 @@ func (t *MetalTensor) At(i, j int) float64 {
 	} else {
 		val = raw[i*t.cols + j]
 	}
-	return float64(val)
+	return val
 }
 
-func (t *MetalTensor) Set(i, j int, v float64) {
+func (t *MetalTensor) Set(i, j int, v float32) {
 	var idx int
 	if t.trans {
 		idx = j*t.cols + i 
@@ -261,7 +255,7 @@ func (t *MetalTensor) Set(i, j int, v float64) {
 	
 	if t.backend.useFP16 {
 		// FP16: 2 bytes per element - use conversion and direct memory write
-		f16Val := float32ToFloat16(float32(v))
+		f16Val := float32ToFloat16(v)
 		byteOffset := t.offset + idx*2
 		// Write FP16 value via Metal_CopyToDevice
 		C.Metal_CopyToDevice(t.buf, C.int(byteOffset), unsafe.Pointer(&f16Val), 2)
@@ -295,62 +289,53 @@ func (t *MetalTensor) rawHostCopy() []float32 {
 }
 
 // ToHost copies data back to CPU.
-func (t *MetalTensor) ToHost() []float64 {
+func (t *MetalTensor) ToHost() []float32 {
 	// rawHostCopy gives us the physical buffer contents corresponding to this tensor view.
 	// If t.trans, we need to handle it.
 	
 	raw := t.rawHostCopy()
 	
-	data := make([]float64, len(raw))
-	for i, v := range raw {
-		data[i] = float64(v)
-	}
-	
 	// If transposed, we must shuffle.
 	if t.trans {
 		rows, cols := t.cols, t.rows // logical dimensions
-		out := make([]float64, len(raw))
+		out := make([]float32, len(raw))
 		for i := 0; i < rows; i++ {
 			for j := 0; j < cols; j++ {
 				// Logical (i,j) maps to physical (j,i)
 				// Physical buffer is t.rows x t.cols
 				// So, raw[j*t.cols + i] is the element at physical (j,i)
-				out[i*cols+j] = data[j*t.cols+i]
+				out[i*cols+j] = raw[j*t.cols+i]
 			}
 		}
 		return out
 	}
 	
-	return data
+	return raw
 }
 
-func (t *MetalTensor) Data() []float64 {
+func (t *MetalTensor) Data() []float32 {
 	// Return nil to indicate data is on device
 	return nil
 }
 
-// CopyFromFloat64 copies []float64 data to GPU in a single bulk operation.
+// CopyFromFloat32 copies []float32 data to GPU in a single bulk operation.
 // This is much faster than using Set() for each element.
-func (t *MetalTensor) CopyFromFloat64(data []float64) {
+func (t *MetalTensor) CopyFromFloat32(data []float32) {
 	size := t.rows * t.cols
 	if len(data) != size {
-		panic("CopyFromFloat64: size mismatch")
+		panic("CopyFromFloat32: size mismatch")
 	}
 	
 	if t.backend.useFP16 {
 		// Batch convert to FP16 and upload
 		f16 := make([]uint16, size)
 		for i, v := range data {
-			f16[i] = float32ToFloat16(float32(v))
+			f16[i] = float32ToFloat16(v)
 		}
 		C.Metal_CopyToDevice(t.buf, C.int(t.offset), unsafe.Pointer(&f16[0]), C.int(size*2))
 	} else {
 		// FP32 path
-		f32 := make([]float32, size)
-		for i, v := range data {
-			f32[i] = float32(v)
-		}
-		C.Metal_CopyToDevice(t.buf, C.int(t.offset), unsafe.Pointer(&f32[0]), C.int(size*4))
+		C.Metal_CopyToDevice(t.buf, C.int(t.offset), unsafe.Pointer(&data[0]), C.int(size*4))
 	}
 }
 
@@ -447,15 +432,15 @@ func (t *MetalTensor) Add(other Tensor) {
 	C.Metal_Add(t.backend.ctx, t.buf, C.int(t.offset), ot.buf, C.int(ot.offset), t.buf, C.int(t.offset), C.int(size))
 }
 
-func (t *MetalTensor) AddScalar(val float64) {
+func (t *MetalTensor) AddScalar(val float32) {
 	size := t.rows * t.cols
 	C.Metal_AddScalar(t.backend.ctx, t.buf, C.int(t.offset), C.float(val), t.buf, C.int(t.offset), C.int(size))
 }
 
-func (t *MetalTensor) Scale(val float64) {
+func (t *MetalTensor) Scale(val float32) {
 	size := t.rows * t.cols
 	if t.backend.useFP16 {
-		f16Val := float32ToFloat16(float32(val))
+		f16Val := float32ToFloat16(val)
 		C.Metal_Scale_F16(t.backend.ctx, t.buf, C.int(t.offset), C.uint16_t(f16Val), t.buf, C.int(t.offset), C.int(size))
 	} else {
 		C.Metal_Scale(t.backend.ctx, t.buf, C.int(t.offset), C.float(val), t.buf, C.int(t.offset), C.int(size))
@@ -558,7 +543,7 @@ func (t *MetalTensor) Tanh() {
 	C.Metal_Tanh(t.backend.ctx, t.buf, C.int(t.offset), t.buf, C.int(t.offset), C.int(size))
 }
 
-func (t *MetalTensor) LayerNorm(gamma, beta Tensor, eps float64) {
+func (t *MetalTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	gt, ok1 := gamma.(*MetalTensor)
 	bt, ok2 := beta.(*MetalTensor)
 	if !ok1 || !ok2 { panic("Mixed backend LayerNorm") }
@@ -657,7 +642,7 @@ func (t *MetalTensor) LinearActivation(input, weight, bias Tensor, activation Ac
 	}
 }
 
-func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float64) Tensor {
+func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
 	if t.backend.useFP16 {
 		qt := q.(*MetalTensor)
 		kt := k.(*MetalTensor)

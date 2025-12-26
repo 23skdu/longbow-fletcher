@@ -3,41 +3,83 @@ package device
 import (
 	"log"
 	"math"
-
 	"sync"
+	"runtime"
 
 	"github.com/23skdu/longbow-fletcher/internal/simd"
-	"gonum.org/v1/gonum/mat"
 )
 
 // ensure interface compliance
 var _ Backend = (*CPUBackend)(nil)
 var _ Tensor = (*CPUTensor)(nil)
 
+// numWorkers defines the default parallelism for CPU operations
+var numWorkers = runtime.NumCPU()
+
 type CPUBackend struct{
 	pool sync.Pool
 }
 
 func NewCPUBackend() *CPUBackend {
-	return &CPUBackend{}
+	return &CPUBackend{
+		pool: sync.Pool{
+			New: func() interface{} {
+				// Initialize a new CPUTensor
+				return &CPUTensor{}
+			},
+		},
+	}
 }
 
 func (b *CPUBackend) Name() string {
 	return "CPU"
 }
 
-func (b *CPUBackend) NewTensor(r, c int, data []float64) Tensor {
-	return &CPUTensor{
-		mat: mat.NewDense(r, c, data),
+func (b *CPUBackend) NewTensor(r, c int, data []float32) Tensor {
+	size := r * c
+	t := &CPUTensor{
 		backend: b,
+		rows:    r,
+		cols:    c,
 	}
+	
+	if data == nil {
+		t.data = make([]float32, size)
+	} else {
+		if len(data) != size {
+			panic("NewTensor: provided data length does not match dimensions")
+		}
+		t.data = make([]float32, size)
+		copy(t.data, data)
+	}
+	
+	return t
 }
 
-
 func (b *CPUBackend) GetTensor(r, c int) Tensor {
-	// GetTensor is for getting a zero-initialized tensor from the pool.
-	// It's essentially NewTensor(r, c, nil) but with pooling logic.
-	return b.NewTensor(r, c, nil)
+	// Try to get from pool
+	v := b.pool.Get()
+	ct, ok := v.(*CPUTensor)
+	if !ok || ct == nil {
+		ct = &CPUTensor{}
+	}
+
+	// Initialize/reset the tensor
+	ct.backend = b
+	ct.rows = r
+	ct.cols = c
+	ct.trans = false
+	size := r * c
+	if cap(ct.data) < size {
+		ct.data = make([]float32, size)
+	} else {
+		ct.data = ct.data[:size] // Reslice to correct size
+		// Zero-initialize
+		for i := range ct.data {
+			ct.data[i] = 0.0
+		}
+	}
+	return ct
 }
 
 func (b *CPUBackend) PutTensor(t Tensor) {
@@ -45,12 +87,11 @@ func (b *CPUBackend) PutTensor(t Tensor) {
 	if !ok {
 		return // Don't pool foreign tensors
 	}
-	// Clear the tensor before putting it back to avoid holding references
-	// and to ensure it's zero-initialized when retrieved by GetTensor.
-	data := ct.mat.RawMatrix().Data
-	for i := range data {
-		data[i] = 0
-	}
+	
+	ct.rows = 0
+	ct.cols = 0
+	ct.trans = false
+	// Data is zeroed when retrieved by GetTensor
 	b.pool.Put(ct)
 }
 
@@ -59,97 +100,200 @@ func (b *CPUBackend) Synchronize() {
 }
 
 type CPUTensor struct {
-	mat *mat.Dense // Use gonum/mat for operations
 	backend *CPUBackend
+	data    []float32
+	rows    int
+	cols    int
+	trans   bool // Transposed view flag
 }
 
 func (t *CPUTensor) Dims() (int, int) {
-	return t.mat.Dims()
+	if t.trans {
+		return t.cols, t.rows
+	}
+	return t.rows, t.cols
 }
 
-func (t *CPUTensor) At(i, j int) float64 {
-	return t.mat.At(i, j)
+func (t *CPUTensor) At(i, j int) float32 {
+	if t.trans {
+		// Logical (i, j) -> Physical (j, i)
+		return t.data[j*t.cols+i]
+	}
+	return t.data[i*t.cols+j]
 }
 
-func (t *CPUTensor) Set(i, j int, v float64) {
-	t.mat.Set(i, j, v)
+func (t *CPUTensor) Set(i, j int, v float32) {
+	if t.trans {
+		t.data[j*t.cols+i] = v
+	} else {
+		t.data[i*t.cols+j] = v
+	}
+}
+
+func (t *CPUTensor) Data() []float32 {
+	// If transposed, data is not contiguous in logical order
+	if t.trans {
+		return nil
+	}
+	return t.data
+}
+
+func (t *CPUTensor) ToHost() []float32 {
+	if t.trans {
+		// Need to physical copy to respect transpose
+		rows, cols := t.Dims()
+		out := make([]float32, rows*cols)
+		for i := 0; i < rows; i++ {
+			for j := 0; j < cols; j++ {
+				out[i*cols+j] = t.At(i, j)
+			}
+		}
+		return out
+	}
+	
+	out := make([]float32, len(t.data))
+	copy(out, t.data)
+	return out
+}
+
+func (t *CPUTensor) CopyFromFloat32(data []float32) {
+	if len(data) != len(t.data) {
+		panic("Size mismatch")
+	}
+	copy(t.data, data)
 }
 
 func (t *CPUTensor) Copy(from Tensor) {
 	ft, ok := from.(*CPUTensor)
 	if !ok {
-		// Fallback for cross-device copy (slow)
-		// Or panic? For now, we only support same-device copy in basics
 		log.Panic("Copying between different backends not yet supported directly")
 	}
-	t.mat.Copy(ft.mat)
+	
+	tr, tc := t.Dims()
+	fr, fc := ft.Dims()
+
+	if tr != fr || tc != fc {
+		log.Panicf("Copy: dimension mismatch. Target: %dx%d, Source: %dx%d", tr, tc, fr, fc)
+	}
+
+	if !t.trans && !ft.trans {
+		// Both are non-transposed, direct copy of underlying data
+		copy(t.data, ft.data)
+	} else {
+		// One or both are transposed, element by element copy
+		for i := 0; i < tr; i++ {
+			for j := 0; j < tc; j++ {
+				t.Set(i, j, ft.At(i, j))
+			}
+		}
+	}
 }
 
 func (t *CPUTensor) Slice(i, k, j, l int) Tensor {
-	// mat.Slice returns Matrix interface, need to cast or access
-	// But mat.Dense.Slice returns *mat.Dense (or compatible) usually? 
-	// Actually Dense.Slice(i, k, j, l) returns Matrix, but we know implementation.
-	// Wait, Dense.Slice creates a NEW view.
-	view := t.mat.Slice(i, k, j, l).(*mat.Dense)
-	return &CPUTensor{mat: view}
+	sliceRows := k - i
+	sliceCols := l - j
+
+	if sliceRows <= 0 || sliceCols <= 0 {
+		panic("Slice: invalid dimensions")
+	}
+
+	// This is a copy, not a view.
+	out := t.backend.NewTensor(sliceRows, sliceCols, nil)
+	for rowIdx := 0; rowIdx < sliceRows; rowIdx++ {
+		for colIdx := 0; colIdx < sliceCols; colIdx++ {
+			out.Set(rowIdx, colIdx, t.At(i+rowIdx, j+colIdx))
+		}
+	}
+	return out
 }
 
 func (t *CPUTensor) T() Tensor {
-	// mat.Dense T() returns Matrix.
-	// NOTE: gonum T() is a view, but our Tensor interface implies it behaves like a Tensor.
-	// Operations on T() might be limited in Gonum if it's just a transpose view?
-	// Actually, for matmul it works. But for "in-place" edits it might not support Set?
-	// Gonum's Transpose type allows At, but Set is not guaranteed.
-	// For simplicty, let's create a *copy* if we need a mutable tensor, or wrap a Transpose view?
-	// But our interface demands Mutable Tensor capabilities (Set, Scale).
-	// A Transpose view in Gonum is read-only for Set usually?
-	// Check gonum docs: T() returns Matrix. 
-	// If we need a mutable transpose, we might need a shadow Copy or deal with it.
-	// However, for matmul A * B.T(), we usually just want the view.
-	// Let's implement T as a Copy for safely mutable, OR support read-only views.
-	// Given performance is key, copying is bad.
-	// But `device.Tensor` assumes mutable.
-	// Let's Panic on T() until we verify usage. 
-	// Actually, in Bert, we utilize T() for MatMul input: `keyLayer.T()`.
-	// We only use it for reading in MatMul. 
-	// So we can support a "ViewTensor" that panics on writes?
-	// Simplest for CPU backend now: return a new CPUTensor that IS the transpose (copy).
-	// Wait, making a copy for every attention head is SLOW.
-	// We should support "view" semantics or update interface to allow R/O Tensors.
-	
-	// Better approach for CPU backend: 
-	// Allow `Mul` to take `Tensor` and do type assertion to `mat.Matrix`.
-	// This lets us pass `t.mat.T()` directly to `Mul`.
-	// But `T()` must return `Tensor`.
-	
-	// Hack: We return a *CPUTensor but the internal mat is a Transpose? 
-	// mat.Dense doesn't wrap Transpose.
-	// Let's rely on type assertion in Mul.
-	// But T() return type is Tensor. 
-	// Let's make T() create a Copy for now (correctness > perf for initial refactor),
-	// OR we introduce `TransposeView` type.
-	
-	// REVISION: The usage in Bert is `attentionScores.Mul(queryLayer, keyLayerT)`.
-	// Since `Mul` is on the receiver, `keyLayerT` is an argument.
-	// If we return a wrapper around `mat.Transpose`, `Mul` (gonum) accepts `mat.Matrix`.
-	// So we need a `CPUViewTensor` that wraps `mat.Matrix` (read-only?).
-	
-	r, c := t.mat.Dims()
-	out := mat.NewDense(c, r, nil)
-	out.Copy(t.mat.T())
-	return &CPUTensor{mat: out}
+	return &CPUTensor{
+		backend: t.backend,
+		data:    t.data, // Share data
+		rows:    t.rows,
+		cols:    t.cols,
+		trans:   !t.trans, // Toggle transpose state
+	}
 }
 
 func (t *CPUTensor) Mul(a, b Tensor) {
 	// a and b must be CPUTensors
-	at, ok1 := a.(*CPUTensor)
-	bt, ok2 := b.(*CPUTensor)
+	ma, ok1 := a.(*CPUTensor)
+	mb, ok2 := b.(*CPUTensor)
 	
 	if !ok1 || !ok2 {
 		log.Panic("Mixed backend Mul not supported")
 	}
+
+	ar, ac := ma.Dims()
+	br, bc := mb.Dims()
+
+	if ac != br {
+		log.Panicf("Mul: dimension mismatch. A cols (%d) != B rows (%d)", ac, br)
+	}
+
+	tr, tc := t.Dims()
+	if tr != ar || tc != bc {
+		log.Panicf("Mul: result tensor dimension mismatch. Expected %dx%d, got %dx%d", ar, bc, tr, tc)
+	}
 	
-	t.mat.Mul(at.mat, bt.mat)
+	common := ac // or br
+
+	// Parallel MatMul
+	var wg sync.WaitGroup
+	rowsPerWorker := (ar + numWorkers - 1) / numWorkers
+	
+	for w := 0; w < numWorkers; w++ {
+		startRow := w * rowsPerWorker
+		endRow := startRow + rowsPerWorker
+		if startRow >= ar {
+			break
+		}
+		if endRow > ar {
+			endRow = ar
+		}
+		
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			
+			// For each row in result
+			for i := start; i < end; i++ {
+				// C[i, j] = A[i, :] * B[:, j]
+				
+				// Get row A[i]
+				var rowA []float32
+				if ma.trans {
+					rowA = make([]float32, common)
+					for k := 0; k < common; k++ {
+						rowA[k] = ma.At(i, k)
+					}
+				} else {
+					startA := i * ma.cols
+					rowA = ma.data[startA : startA+ma.cols]
+				}
+				
+				for j := 0; j < bc; j++ {
+					// Get col j of B
+					var colB []float32
+					if mb.trans {
+						startB := j * mb.cols
+						colB = mb.data[startB : startB+mb.cols]
+					} else {
+						colB = make([]float32, common)
+						for k := 0; k < common; k++ {
+							colB[k] = mb.At(k, j)
+						}
+					}
+					
+					val := simd.DotProduct(rowA, colB)
+					t.Set(i, j, val)
+				}
+			}
+		}(startRow, endRow)
+	}
+	wg.Wait()
 }
 
 func (t *CPUTensor) Add(other Tensor) {
@@ -157,120 +301,158 @@ func (t *CPUTensor) Add(other Tensor) {
 	if !ok {
 		log.Panic("Mixed backend Add not supported")
 	}
-	// Use our SIMD optimized AddInPlace
-	simd.VecAdd(t.mat.RawMatrix().Data, ot.mat.RawMatrix().Data)
+
+	tr, tc := t.Dims()
+	or, oc := ot.Dims()
+
+	if tr != or || tc != oc {
+		log.Panicf("Add: dimension mismatch. Target: %dx%d, Other: %dx%d", tr, tc, or, oc)
+	}
+
+	if !t.trans && !ot.trans {
+		simd.VecAdd(t.data, ot.data)
+	} else {
+		for i := 0; i < tr; i++ {
+			for j := 0; j < tc; j++ {
+				t.Set(i, j, t.At(i, j) + ot.At(i, j))
+			}
+		}
+	}
 }
 
-func (t *CPUTensor) AddScalar(val float64) {
-	data := t.mat.RawMatrix().Data
-	// No SIMD for scalar add yet, just loop
-	for i := range data {
-		data[i] += val
+func (t *CPUTensor) AddScalar(val float32) {
+	for i := range t.data {
+		t.data[i] += val
 	}
 }
 
 func (t *CPUTensor) AddBias(bias Tensor) {
+	bt, ok := bias.(*CPUTensor)
+	if !ok { panic("Mixed backend AddBias") }
+	
 	r, c := t.Dims()
 	br, bc := bias.Dims()
 	
-	// Bias should be a vector of length c.
-	// Either 1xc or cx1.
-	if r == 1 && c == bc {
-		// Single row matching
-	} else if bc != c {
-		panic("AddBias dimension mismatch")
+	if br != 1 && bc != 1 {
+		panic("AddBias: bias must be a vector (1xN or Nx1)")
 	}
 	
-	// Get raw slice from bias tensor (assumed CPU)
-	// We could use bias.Data() if available, or ToHost() copy.
-	// Since we are in CPU backend, assume bias is CPUTensor or compatible.
-	var biasData []float64
-	if ct, ok := bias.(*CPUTensor); ok {
-		biasData = ct.mat.RawMatrix().Data
+	var biasData []float32
+	if bt.trans {
+		biasData = make([]float32, c)
+		if br == 1 { // bias is 1xc
+			for i := 0; i < c; i++ {
+				biasData[i] = bt.At(0, i)
+			}
+		} else { // bias is cx1
+			for i := 0; i < c; i++ {
+				biasData[i] = bt.At(i, 0)
+			}
+		}
 	} else {
-		// Fallback for cross-device (shouldn't happen in pure CPU run)
-		biasData = bias.ToHost()
+		biasData = bt.data
 	}
 	
 	if len(biasData) != c {
-		// Check if it's 1xM or Mx1
-		if br * bc != c {
-			panic("AddBias: bias length mismatch")
-		}
+		panic("AddBias: bias length mismatch with tensor columns")
 	}
 
-	data := t.mat.RawMatrix().Data
-	// Add bias to each row
+	if t.trans {
+		log.Panic("AddBias not supported on transposed tensor views directly")
+	}
+
+	data := t.data
 	for i := 0; i < r; i++ {
 		row := data[i*c : (i+1)*c]
 		simd.VecAdd(row, biasData)
 	}
 }
 
-func (t *CPUTensor) Scale(val float64) {
-	// Use scaler scaling? Or simple loop?
-	// mat.Scale does this.
-	t.mat.Scale(val, t.mat)
+func (t *CPUTensor) Scale(val float32) {
+	for i := range t.data {
+		t.data[i] *= val
+	}
 }
 
 func (t *CPUTensor) Gather(indices []int) Tensor {
 	r, c := t.Dims()
-	
-	outData := make([]float64, len(indices)*c)
-	tData := t.mat.RawMatrix().Data
-	
-	// parallel := len(indices) * c > 10000 
-	
-	// If parallel, use goroutines? Simple loop for now.
-	// Actually for large embeddings, parallel copy is good.
-	// But let's stick to simple copy.
+	outData := make([]float32, len(indices)*c)
 	
 	for i, idx := range indices {
 		if idx < 0 || idx >= r {
 			panic("Gather index out of bounds")
 		}
-		// Copy row idx to row i
-		copy(outData[i*c : (i+1)*c], tData[idx*c : (idx+1)*c])
+		for j := 0; j < c; j++ {
+			outData[i*c+j] = t.At(idx, j)
+		}
 	}
 	
-	// Create new tensor
 	return t.backend.NewTensor(len(indices), c, outData)
 }
 
 func (t *CPUTensor) Softmax() {
-	r, _ := t.mat.Dims()
+	if t.trans {
+		panic("Softmax on transposed")
+	}
+	r, c := t.Dims()
 	for i := 0; i < r; i++ {
-		row := t.mat.RawRowView(i)
+		rowStart := i * c
+		row := t.data[rowStart : rowStart+c]
 		simd.SoftmaxFast(row)
 	}
 }
 
 func (t *CPUTensor) Gelu() {
-	simd.GeluFast(t.mat.RawMatrix().Data)
+	if t.trans {
+		log.Panic("Gelu not supported on transposed tensor views directly")
+	}
+	simd.GeluFast(t.data)
 }
 
 func (t *CPUTensor) Tanh() {
-	data := t.mat.RawMatrix().Data
+	if t.trans {
+		log.Panic("Tanh not supported on transposed tensor views directly")
+	}
+	data := t.data
 	for i, v := range data {
 		data[i] = simd.TanhFast(v)
 	}
 }
 
-func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float64) {
+func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	gt, ok1 := gamma.(*CPUTensor)
 	bt, ok2 := beta.(*CPUTensor)
-	if !ok1 || !ok2 {
-		log.Panic("Mixed backend LayerNorm not supported")
+	if !ok1 || !ok2 { panic("Mixed backend LN") }
+	
+	if t.trans {
+		log.Panic("LayerNorm not supported on transposed tensor views directly")
+	}
+	data := t.data
+
+	var gammaData, betaData []float32
+	_, gc := gt.Dims()
+	_, bc := bt.Dims()
+
+	if gt.trans {
+		gammaData = make([]float32, gc)
+		for i := 0; i < gc; i++ {
+			gammaData[i] = gt.At(0, i)
+		}
+	} else {
+		gammaData = gt.data
+	}
+
+	if bt.trans {
+		betaData = make([]float32, bc)
+		for i := 0; i < bc; i++ {
+			betaData[i] = bt.At(0, i)
+		}
+	} else {
+		betaData = bt.data
 	}
 	
-	// Access raw data
-	data := t.mat.RawMatrix().Data
-	gammaData := gt.mat.RawMatrix().Data
-	betaData := bt.mat.RawMatrix().Data
+	r, c := t.Dims()
 	
-	r, c := t.mat.Dims()
-	
-	// Assuming gamma/beta are size c
 	if len(gammaData) < c || len(betaData) < c {
 		log.Panic("LayerNorm params dim mismatch")
 	}
@@ -279,23 +461,20 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float64) {
 		rowStart := i * c
 		row := data[rowStart : rowStart+c]
 		
-		// 1. Calculate Mean
-		var sum float64
+		var sum float32
 		for _, v := range row {
 			sum += v
 		}
-		mean := sum / float64(c)
+		mean := sum / float32(c)
 		
-		// 2. Calculate Variance
-		var varSum float64
+		var varSum float32
 		for _, v := range row {
 			diff := v - mean
 			varSum += diff * diff
 		}
-		variance := varSum / float64(c)
-		invStd := 1.0 / math.Sqrt(variance + eps)
+		variance := varSum / float32(c)
+		invStd := 1.0 / float32(math.Sqrt(float64(variance + eps)))
 		
-		// 3. Normalize and Scale/Shift
 		for j := 0; j < c; j++ {
 			row[j] = (row[j] - mean) * invStd * gammaData[j] + betaData[j]
 		}
@@ -303,15 +482,12 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float64) {
 }
 
 func (t *CPUTensor) Linear(input, weight, bias Tensor) Tensor {
-	// 1. MatMul: result = input * weight
-	// Output dims: input.rows x weight.cols
 	r, _ := input.Dims()
 	_, wc := weight.Dims()
 	
-	result := t.backend.NewTensor(r, wc, nil)
+	result := t.backend.GetTensor(r, wc)
 	result.Mul(input, weight)
 	
-	// 2. Add Bias
 	if bias != nil {
 		result.AddBias(bias)
 	}
@@ -320,10 +496,8 @@ func (t *CPUTensor) Linear(input, weight, bias Tensor) Tensor {
 }
 
 func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation ActivationType) Tensor {
-	// 1. Linear
 	result := t.Linear(input, weight, bias)
 	
-	// 2. Activation
 	switch activation {
 	case ActivationGELU:
 		result.Gelu()
@@ -338,9 +512,7 @@ func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation Acti
 	return result
 }
 
-
-
-func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float64) Tensor {
+func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
 	qt := q.(*CPUTensor)
 	kt := k.(*CPUTensor)
 	vt := v.(*CPUTensor)
@@ -353,68 +525,71 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*CPUTensor)
 	
-	// Buffers for intermediate per-sequence calculations
-	// To avoid allocs in loop, we could reuse, but simple loop is fine for now.
-	// We need a temporary score matrix (seqLen x seqLen)
+	var wg sync.WaitGroup
+	workers := numWorkers
+	if batchSize < workers {
+		workers = batchSize
+	}
 	
-	for i := 0; i < batchSize; i++ {
-		start := i * seqLen
-		// end unused
-		
-		// Slices (Views)
-		// Use Slice method to handle indexing logic safely
-		qSlice := qt.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
-		kSlice := kt.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
-		// vSlice used in Context calculation, also needs to be *mat.Dense
-		vSlice := vt.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
-		outSlice := rst.Slice(start, start+seqLen, 0, c).(*CPUTensor).mat
-		
-		// qSlice * kSlice.T
-		var scores mat.Dense
-		scores.Mul(qSlice, kSlice.T())
-		
-		// Scale
-		scores.Scale(scale, &scores)
-		
-		// Softmax row-wise
-		// Access raw data of scores
-		rows, _ := scores.Dims()
-		for r := 0; r < rows; r++ {
-			row := scores.RawRowView(r)
-			simd.SoftmaxFast(row)
+	itemsPerWorker := (batchSize + workers - 1) / workers
+	
+	for w := 0; w < workers; w++ {
+		startBatch := w * itemsPerWorker
+		endBatch := startBatch + itemsPerWorker
+		if endBatch > batchSize {
+			endBatch = batchSize
 		}
 		
-		// Context = Scores * V
-		outSlice.Mul(&scores, vSlice)
+		wg.Add(1)
+		go func(start, end int) {
+			defer wg.Done()
+			
+			scoresBuf := make([]float32, seqLen*seqLen)
+			
+			for i := start; i < end; i++ {
+				offset := i * seqLen
+				
+				for rQ := 0; rQ < seqLen; rQ++ {
+					qIdx := (offset + rQ) * c
+					qRow := qt.data[qIdx : qIdx+c]
+					
+					for rK := 0; rK < seqLen; rK++ {
+						kIdx := (offset + rK) * c
+						kRow := kt.data[kIdx : kIdx+c]
+						
+						dot := simd.DotProduct(qRow, kRow)
+						scoresBuf[rQ*seqLen + rK] = dot * scale
+					}
+				}
+				
+				for rS := 0; rS < seqLen; rS++ {
+					rowIdx := rS * seqLen
+					simd.SoftmaxFast(scoresBuf[rowIdx : rowIdx+seqLen])
+				}
+				
+				for rS := 0; rS < seqLen; rS++ {
+					outIdx := (offset + rS) * c
+					outRow := rst.data[outIdx : outIdx+c]
+					
+					for z := 0; z < c; z++ {
+						outRow[z] = 0
+					}
+					
+					scoresRowIdx := rS * seqLen
+					scoresRow := scoresBuf[scoresRowIdx : scoresRowIdx+seqLen]
+					
+					for k := 0; k < seqLen; k++ {
+						score := scoresRow[k]
+						vIdx := (offset + k) * c
+						vRow := vt.data[vIdx : vIdx+c]
+						
+						simd.VecAddScaled(outRow, vRow, score)
+					}
+				}
+			}
+		}(startBatch, endBatch)
 	}
+	wg.Wait()
 	
 	return result
-}
-
-func (t *CPUTensor) ToHost() []float64 {
-	// For CPU, we just return a copy of the data? 
-	// Or raw data? "ToHost" implies transfer. 
-	// To be safe and immutable-ish, copy.
-	// But for performance, maybe raw? 
-	// Let's return copy to be safe.
-	// Actually, `mat.RawMatrix().Data` is the slice.
-	// Given this is an interface for mostly GPU sync, returning the slice is fine.
-	// But GPU would return a copy.
-	// Let's return a copy to unify behavior.
-	data := t.mat.RawMatrix().Data
-	dst := make([]float64, len(data))
-	copy(dst, data)
-	return dst
-}
-
-func (t *CPUTensor) Data() []float64 {
-    return t.mat.RawMatrix().Data
-}
-
-func (t *CPUTensor) CopyFromFloat64(data []float64) {
-	dst := t.mat.RawMatrix().Data
-	if len(data) != len(dst) {
-		panic("CopyFromFloat64: size mismatch")
-	}
-	copy(dst, data)
 }
