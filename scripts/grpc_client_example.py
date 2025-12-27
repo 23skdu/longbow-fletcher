@@ -38,13 +38,14 @@ except ImportError:
     sys.exit(1)
 
 
-def encode_texts(server_url: str, texts: list[str], timeout: float = 30.0) -> list:
+def encode_texts(server_url: str, texts: list[str], dataset: str = None, timeout: float = 30.0) -> list:
     """
     Send texts to Fletcher server for embedding.
     
     Args:
         server_url: Base URL of Fletcher server (e.g., http://localhost:8080)
         texts: List of text strings to embed
+        dataset: Optional target dataset name for indexing in longbow
         timeout: Request timeout in seconds
         
     Returns:
@@ -53,7 +54,10 @@ def encode_texts(server_url: str, texts: list[str], timeout: float = 30.0) -> li
     url = f"{server_url.rstrip('/')}/encode"
     
     # CBOR encode the request
-    request_body = cbor2.dumps({"texts": texts})
+    request = {"texts": texts}
+    if dataset:
+        request["dataset"] = dataset
+    request_body = cbor2.dumps(request)
     
     headers = {
         "Content-Type": "application/cbor",
@@ -93,9 +97,13 @@ def main():
         help="Output embeddings as JSON (default: summary only)"
     )
     parser.add_argument(
-        "--dims", "-d",
+        "--dims",
         action="store_true",
         help="Print embedding dimensions only"
+    )
+    parser.add_argument(
+        "--dataset", "-D",
+        help="Target dataset name for indexing in longbow server"
     )
     parser.add_argument(
         "texts",
@@ -122,7 +130,7 @@ def main():
         sys.exit(1)
     
     try:
-        embeddings = encode_texts(args.server, texts, args.timeout)
+        embeddings = encode_texts(args.server, texts, args.dataset, args.timeout)
         
         if args.dims:
             # Print dimensions only
