@@ -29,7 +29,8 @@ func BenchmarkBertModel_Forward_CPU(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		model.ForwardBatch(inputIDs, lengths)
+		out := model.ForwardBatch(inputIDs, lengths)
+		backend.PutTensor(out)
 	}
 }
 
@@ -96,7 +97,8 @@ func BenchmarkBertModel_Forward_CPU_Batch32(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		model.ForwardBatch(inputIDs, lengths)
+		out := model.ForwardBatch(inputIDs, lengths)
+		backend.PutTensor(out)
 	}
 }
 

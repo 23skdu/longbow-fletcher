@@ -1,4 +1,4 @@
-//go:build ignore
+//go:build cgo
 package main
 
 // This file is only included when cgo is enabled.

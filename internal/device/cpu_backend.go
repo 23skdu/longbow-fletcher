@@ -7,6 +7,8 @@ import (
 	"runtime"
 
 	"github.com/23skdu/longbow-fletcher/internal/simd"
+	"gonum.org/v1/gonum/blas"
+	"gonum.org/v1/gonum/blas/blas32"
 )
 
 // ensure interface compliance
@@ -251,64 +253,84 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 	if tr != ar || tc != bc {
 		log.Panicf("Mul: result tensor dimension mismatch. Expected %dx%d, got %dx%d", ar, bc, tr, tc)
 	}
-	
-	common := ac // or br
 
-	// Parallel MatMul
-	var wg sync.WaitGroup
-	rowsPerWorker := (ar + numWorkers - 1) / numWorkers
+	// Hybrid dispatch: disabled - BLAS is faster even for small matrices on M3 Pro
+	// Keep SIMD path for potential use on systems without optimized BLAS
+	const blasThreshold = 0 // 0 = always use BLAS
+	resultSize := tr * tc
 	
-	for w := 0; w < numWorkers; w++ {
-		startRow := w * rowsPerWorker
-		endRow := startRow + rowsPerWorker
-		if startRow >= ar {
-			break
-		}
-		if endRow > ar {
-			endRow = ar
-		}
-		
-		wg.Add(1)
-		go func(start, end int) {
-			defer wg.Done()
-			
-			// For each row in result
-			for i := start; i < end; i++ {
-				// C[i, j] = A[i, :] * B[:, j]
-				
-				// Get row A[i]
-				var rowA []float32
-				if ma.trans {
-					rowA = make([]float32, common)
-					for k := 0; k < common; k++ {
-						rowA[k] = ma.At(i, k)
-					}
-				} else {
-					startA := i * ma.cols
-					rowA = ma.data[startA : startA+ma.cols]
-				}
-				
-				for j := 0; j < bc; j++ {
-					// Get col j of B
-					var colB []float32
-					if mb.trans {
-						startB := j * mb.cols
-						colB = mb.data[startB : startB+mb.cols]
-					} else {
-						colB = make([]float32, common)
-						for k := 0; k < common; k++ {
-							colB[k] = mb.At(k, j)
-						}
-					}
-					
-					val := simd.DotProduct(rowA, colB)
-					t.Set(i, j, val)
-				}
-			}
-		}(startRow, endRow)
+	if resultSize < blasThreshold {
+		t.mulSIMD(ma, mb, ar, ac, bc)
+	} else {
+		t.mulBLAS(ma, mb, ar, bc)
 	}
-	wg.Wait()
 }
+
+// mulBLAS performs matrix multiplication using hardware-accelerated BLAS
+func (t *CPUTensor) mulBLAS(ma, mb *CPUTensor, ar, bc int) {
+	tA := blas.NoTrans
+	if ma.trans {
+		tA = blas.Trans
+	}
+	tB := blas.NoTrans
+	if mb.trans {
+		tB = blas.Trans
+	}
+
+	lda := ma.cols
+	ldb := mb.cols
+	tr, tc := t.Dims()
+	ldc := tc
+
+	blas32.Gemm(tA, tB,
+		1.0,
+		blas32.General{Rows: ma.rows, Cols: ma.cols, Stride: lda, Data: ma.data},
+		blas32.General{Rows: mb.rows, Cols: mb.cols, Stride: ldb, Data: mb.data},
+		0.0,
+		blas32.General{Rows: tr, Cols: tc, Stride: ldc, Data: t.data},
+	)
+}
+
+// mulSIMD performs matrix multiplication using pure-Go SIMD (single-threaded for tiny matrices)
+func (t *CPUTensor) mulSIMD(ma, mb *CPUTensor, ar, common, bc int) {
+	// For very small matrices, single-threaded is faster than goroutine overhead
+	// Pre-allocate buffer for non-contiguous access
+	var colBBuf []float32
+	if !mb.trans {
+		colBBuf = make([]float32, common)
+	}
+
+	for i := 0; i < ar; i++ {
+		var rowA []float32
+		if ma.trans {
+			// Need to gather row from transposed matrix
+			rowA = make([]float32, common)
+			for k := 0; k < common; k++ {
+				rowA[k] = ma.data[k*ma.cols+i]
+			}
+		} else {
+			startA := i * ma.cols
+			rowA = ma.data[startA : startA+ma.cols]
+		}
+
+		for j := 0; j < bc; j++ {
+			var colB []float32
+			if mb.trans {
+				startB := j * mb.cols
+				colB = mb.data[startB : startB+mb.cols]
+			} else {
+				for k := 0; k < common; k++ {
+					colBBuf[k] = mb.data[k*mb.cols+j]
+				}
+				colB = colBBuf
+			}
+
+			sum := simd.DotProduct(rowA, colB)
+			t.data[i*t.cols+j] = sum
+		}
+	}
+}
+
 
 func (t *CPUTensor) Add(other Tensor) {
 	ot, ok := other.(*CPUTensor)
@@ -558,6 +580,8 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*CPUTensor)
 	
+	// Process each batch in parallel using BLAS for QK^T and Scores@V
+	// Testing showed numWorkers is optimal - fewer workers actually slower
 	var wg sync.WaitGroup
 	workers := numWorkers
 	if batchSize < workers {
@@ -577,48 +601,40 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 		go func(start, end int) {
 			defer wg.Done()
 			
-			scoresBuf := make([]float32, seqLen*seqLen)
+			// Pre-allocate per-worker buffers
+			scores := make([]float32, seqLen*seqLen)
 			
 			for i := start; i < end; i++ {
 				offset := i * seqLen
+				qStart := offset * c
+				qData := qt.data[qStart : qStart+seqLen*c]
+				kData := kt.data[qStart : qStart+seqLen*c]
+				vData := vt.data[qStart : qStart+seqLen*c]
 				
-				for rQ := 0; rQ < seqLen; rQ++ {
-					qIdx := (offset + rQ) * c
-					qRow := qt.data[qIdx : qIdx+c]
-					
-					for rK := 0; rK < seqLen; rK++ {
-						kIdx := (offset + rK) * c
-						kRow := kt.data[kIdx : kIdx+c]
-						
-						dot := simd.DotProduct(qRow, kRow)
-						scoresBuf[rQ*seqLen + rK] = dot * scale
-					}
+				// scores = Q @ K^T using BLAS
+				blas32.Gemm(blas.NoTrans, blas.Trans,
+					scale,
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: qData},
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: kData},
+					0.0,
+					blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
+				)
+				
+				// Apply softmax to each row
+				for row := 0; row < seqLen; row++ {
+					rowIdx := row * seqLen
+					simd.SoftmaxFast(scores[rowIdx : rowIdx+seqLen])
 				}
 				
-				for rS := 0; rS < seqLen; rS++ {
-					rowIdx := rS * seqLen
-					simd.SoftmaxFast(scoresBuf[rowIdx : rowIdx+seqLen])
-				}
-				
-				for rS := 0; rS < seqLen; rS++ {
-					outIdx := (offset + rS) * c
-					outRow := rst.data[outIdx : outIdx+c]
-					
-					for z := 0; z < c; z++ {
-						outRow[z] = 0
-					}
-					
-					scoresRowIdx := rS * seqLen
-					scoresRow := scoresBuf[scoresRowIdx : scoresRowIdx+seqLen]
-					
-					for k := 0; k < seqLen; k++ {
-						score := scoresRow[k]
-						vIdx := (offset + k) * c
-						vRow := vt.data[vIdx : vIdx+c]
-						
-						simd.VecAddScaled(outRow, vRow, score)
-					}
-				}
+				// context = scores @ V using BLAS
+				outData := rst.data[qStart : qStart+seqLen*c]
+				blas32.Gemm(blas.NoTrans, blas.NoTrans,
+					1.0,
+					blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: vData},
+					0.0,
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: outData},
+				)
 			}
 		}(startBatch, endBatch)
 	}
