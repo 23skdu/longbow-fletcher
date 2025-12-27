@@ -119,6 +119,8 @@ kernel void add_bias_kernel_f16(device half *matrix [[ buffer(0) ]],
     // But division is slow.
     // 2D dispatch is better.
     
+    
+    if (gid.x >= cols) return;
     int index = gid.y * cols + gid.x;
     result[index] = matrix[index] + bias[gid.x];
 }
@@ -389,6 +391,7 @@ kernel void add_bias_kernel(device float *component [[ buffer(0) ]],
                             uint2 id [[ thread_position_in_grid ]]) {
     uint row = id.x;
     uint col = id.y;
+    if (col >= cols) return;
     component[row * cols + col] += bias[col];
 }
 

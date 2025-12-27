@@ -31,10 +31,12 @@ var (
 	duration    = flag.Duration("duration", 0, "Run soak test for specified duration (e.g. 10s, 20m)")
 	serverAddr  = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
 	datasetName = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
+	listenAddr  = flag.String("listen", "", "Address to listen on for Server Mode (e.g. :8080)")
 )
 
 func main() {
 	flag.Parse()
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
@@ -50,6 +52,23 @@ func main() {
 	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU, *modelType, *precision)
 	if err != nil {
 		log.Fatalf("Failed to create embedder: %v", err)
+		log.Fatalf("Failed to create embedder: %v", err)
+	}
+
+	// Server Mode
+	if *listenAddr != "" {
+		var fc *client.FlightClient
+		if *serverAddr != "" {
+			var err error
+			fc, err = client.NewFlightClient(*serverAddr)
+			if err != nil {
+				log.Fatalf("Failed to create flight client: %v", err)
+			}
+			log.Printf("Connected to Flight Server at %s", *serverAddr)
+		}
+
+		startServer(*listenAddr, embedder, fc, *datasetName)
+		return
 	}
 
 	var texts []string
