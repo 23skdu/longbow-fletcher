@@ -580,6 +580,7 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*CPUTensor)
 	
+	// Process each batch in parallel using BLAS for QK^T and Scores@V
 	var wg sync.WaitGroup
 	workers := numWorkers
 	if batchSize < workers {
@@ -599,48 +600,44 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 		go func(start, end int) {
 			defer wg.Done()
 			
-			scoresBuf := make([]float32, seqLen*seqLen)
+			// Pre-allocate per-worker buffers
+			scores := make([]float32, seqLen*seqLen)
 			
 			for i := start; i < end; i++ {
 				offset := i * seqLen
 				
-				for rQ := 0; rQ < seqLen; rQ++ {
-					qIdx := (offset + rQ) * c
-					qRow := qt.data[qIdx : qIdx+c]
-					
-					for rK := 0; rK < seqLen; rK++ {
-						kIdx := (offset + rK) * c
-						kRow := kt.data[kIdx : kIdx+c]
-						
-						dot := simd.DotProduct(qRow, kRow)
-						scoresBuf[rQ*seqLen + rK] = dot * scale
-					}
+				// Extract Q, K, V slices for this batch item
+				qStart := offset * c
+				qData := qt.data[qStart : qStart+seqLen*c]
+				kData := kt.data[qStart : qStart+seqLen*c]
+				vData := vt.data[qStart : qStart+seqLen*c]
+				
+				// scores = Q @ K^T using BLAS
+				// Q: seqLen x c, K^T: c x seqLen -> scores: seqLen x seqLen
+				blas32.Gemm(blas.NoTrans, blas.Trans,
+					scale,
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: qData},
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: kData},
+					0.0,
+					blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
+				)
+				
+				// Apply softmax to each row
+				for row := 0; row < seqLen; row++ {
+					rowIdx := row * seqLen
+					simd.SoftmaxFast(scores[rowIdx : rowIdx+seqLen])
 				}
 				
-				for rS := 0; rS < seqLen; rS++ {
-					rowIdx := rS * seqLen
-					simd.SoftmaxFast(scoresBuf[rowIdx : rowIdx+seqLen])
-				}
-				
-				for rS := 0; rS < seqLen; rS++ {
-					outIdx := (offset + rS) * c
-					outRow := rst.data[outIdx : outIdx+c]
-					
-					for z := 0; z < c; z++ {
-						outRow[z] = 0
-					}
-					
-					scoresRowIdx := rS * seqLen
-					scoresRow := scoresBuf[scoresRowIdx : scoresRowIdx+seqLen]
-					
-					for k := 0; k < seqLen; k++ {
-						score := scoresRow[k]
-						vIdx := (offset + k) * c
-						vRow := vt.data[vIdx : vIdx+c]
-						
-						simd.VecAddScaled(outRow, vRow, score)
-					}
-				}
+				// context = scores @ V using BLAS
+				// scores: seqLen x seqLen, V: seqLen x c -> context: seqLen x c
+				outData := rst.data[qStart : qStart+seqLen*c]
+				blas32.Gemm(blas.NoTrans, blas.NoTrans,
+					1.0,
+					blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: vData},
+					0.0,
+					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: outData},
+				)
 			}
 		}(startBatch, endBatch)
 	}

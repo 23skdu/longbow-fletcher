@@ -521,7 +521,7 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	
 	batchSize := len(lengths)
 	
-	if false && allSameLength {
+	if allSameLength {
 		// Optimized GPU/Graph path for uniform sequence lengths
 		scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
 		
