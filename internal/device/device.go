@@ -104,10 +104,18 @@ type Backend interface {
 	// PutTensor returns a tensor to the pool.
 	PutTensor(t Tensor)
 	
-	// Synchronize() // Block until all queued operations are complete
+	// Synchronize waits for all pending operations to complete.
 	Synchronize()
 
-	// Multi-GPU Support
+	// DeviceCount returns the number of available devices.
+	// 1 for CPU, >=1 for GPU.
 	DeviceCount() int
+	
+	// SetDevice sets the current active device for this backend instance.
+	// index must be < DeviceCount().
 	SetDevice(index int)
+
+	// GetVRAMUsage returns the currently allocated memory and total available memory (in bytes).
+	// For CPU, this returns system memory stats.
+	GetVRAMUsage() (allocated int64, total int64)
 }

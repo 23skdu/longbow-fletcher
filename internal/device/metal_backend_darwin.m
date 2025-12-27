@@ -723,12 +723,28 @@ void Metal_BatchedMatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
         [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)c
                                    offset:batchOffC
                                descriptor:descC];
-    [mul encodeToCommandBuffer:mc.currentCommandBuffer
-                    leftMatrix:matA
-                   rightMatrix:matB
-                  resultMatrix:matC];
   }
   [mc flush];
+}
+
+unsigned long long Metal_GetAllocatedSize(void *ctx) {
+  if (!ctx)
+    return 0;
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  if (@available(macOS 10.13, *)) {
+    return [mc.device currentAllocatedSize];
+  }
+  return 0;
+}
+
+unsigned long long Metal_GetRecommendMaxWorkingSetSize(void *ctx) {
+  if (!ctx)
+    return 0;
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  if (@available(macOS 10.13, *)) {
+    return [mc.device recommendedMaxWorkingSetSize];
+  }
+  return 0;
 }
 
 // Plan B Implementations

@@ -12,6 +12,26 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/fxamacker/cbor/v2"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"time"
+)
+
+var (
+	vectorsProcessed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fletcher_vectors_processed_total",
+		Help: "The total number of vectors embedded",
+	})
+	
+	requestDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fletcher_request_duration_seconds",
+		Help:    "Time spent processing encode requests",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	// VRAM metrics will be registered dynamically to capture embedder closure
 )
 
 type Server struct {
@@ -27,6 +47,19 @@ func startServer(addr string, embedder *embeddings.Embedder, fc *client.FlightCl
 		datasetName:  dataset,
 	}
 
+	// Register VRAM metrics
+	prometheus.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{
+			Name: "fletcher_vram_allocated_bytes",
+			Help: "Current VRAM allocated by the backend",
+		},
+		func() float64 {
+			alloc, _ := embedder.GetVRAMUsage()
+			return float64(alloc)
+		},
+	))
+
+	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/encode", srv.handleEncode)
 	
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +78,11 @@ func startServer(addr string, embedder *embeddings.Embedder, fc *client.FlightCl
 }
 
 func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	defer func() {
+		requestDuration.Observe(time.Since(start).Seconds())
+	}()
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -64,6 +102,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Embed -> [][]float32
 	batch := s.embedder.EmbedBatch(texts)
+	vectorsProcessed.Add(float64(len(texts)))
 
 	// 3. Forward to Longbow
 	if s.flightClient != nil {

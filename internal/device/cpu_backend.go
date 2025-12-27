@@ -107,6 +107,12 @@ func (b *CPUBackend) SetDevice(index int) {
 	}
 }
 
+func (b *CPUBackend) GetVRAMUsage() (int64, int64) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return int64(m.HeapAlloc), int64(m.Sys)
+}
+
 type CPUTensor struct {
 	backend *CPUBackend
 	data    []float32

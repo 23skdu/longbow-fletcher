@@ -802,3 +802,9 @@ func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 		panic("ApplyRoPE only supported for Metal FP16")
 	}
 }
+
+func (b *MetalBackend) GetVRAMUsage() (int64, int64) {
+	allocated := C.Metal_GetAllocatedSize(b.ctx)
+	total := C.Metal_GetRecommendMaxWorkingSetSize(b.ctx)
+	return int64(allocated), int64(total)
+}
