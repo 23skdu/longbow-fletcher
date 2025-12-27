@@ -29,6 +29,9 @@ void Metal_CopyToHost(MetalBufferRef buf, int offset, void *data, int size);
 void Metal_Memset(MetalBufferRef buf, int offset, int value, int size);
 void *Metal_GetBufferContents(MetalBufferRef buf);
 void Metal_SetAt(MetalBufferRef buf, int offset, float val);
+void Metal_ExtractBytes(MetalBufferRef buf, int offset, void *dest, int size);
+void Metal_Cast_F32_to_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
 
 // Ops
 void Metal_Add(MetalContextRef ctx, MetalBufferRef a, int offA,

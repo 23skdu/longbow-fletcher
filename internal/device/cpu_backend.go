@@ -2,8 +2,10 @@ package device
 
 import (
 	"math"
+	"reflect"
 	"sync"
 	"runtime"
+	"unsafe"
 
 	"github.com/rs/zerolog/log"
 	"github.com/23skdu/longbow-fletcher/internal/simd"
@@ -649,21 +651,6 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	return result
 }
 
-func (t *CPUTensor) ExtractTo(dest [][]float32, start int) {
-	r, c := t.Dims()
-	data := t.ToHost() // Handles transpose if necessary
-	for i := 0; i < r; i++ {
-		row := make([]float32, c)
-		copy(row, data[i*c:(i+1)*c])
-		dest[start+i] = row
-	}
-}
-
-func (t *CPUTensor) ExtractToFlat(dest []float32, start int) {
-	data := t.ToHost()
-	copy(dest[start:], data)
-}
-
 func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	if t.trans {
 		panic("ApplyRoPE on transposed")
@@ -710,3 +697,42 @@ func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	}
 	wg.Wait()
 }
+
+func (t *CPUTensor) ExtractTo(dest [][]float32, start int) {
+	r, c := t.Dims()
+	data := t.ToHost() // Handles transpose if necessary
+	for i := 0; i < r; i++ {
+		row := make([]float32, c)
+		copy(row, data[i*c:(i+1)*c])
+		dest[start+i] = row
+	}
+}
+
+func (t *CPUTensor) ExtractToFlat(dest []float32, start int) {
+	data := t.ToHost()
+	copy(dest[start:], data)
+}
+
+func (t *CPUTensor) ExtractBytes() []byte {
+	// Return raw bytes of underlying float32 slice
+	tData := t.ToHost() // Ensure we have contiguous host data
+	if len(tData) == 0 {
+		return nil
+	}
+	
+	// Create byte slice view using unsafe.Slice (Go 1.17+)
+	ptr := (*byte)(unsafe.Pointer(&tData[0]))
+	return unsafe.Slice(ptr, len(tData)*4)
+}
+
+func (t *CPUTensor) Cast(dtype DataType) Tensor {
+	if dtype == Float32 {
+		// Just copy
+		newT := t.backend.NewTensor(t.rows, t.cols, t.ToHost())
+		return newT
+	}
+	
+	// CPU backend currently only supports Float32 storage
+	panic("Cast: CPU backend does not support non-Float32 tensors")
+}
+

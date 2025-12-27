@@ -84,7 +84,22 @@ type Tensor interface {
 
 	// ExtractToFlat copies the tensor data into a pre-allocated flat slice.
 	ExtractToFlat(destination []float32, startOffset int)
+
+	// ExtractBytes returns the raw underlying byte representation of the tensor.
+	// This is a copy of the data.
+	ExtractBytes() []byte
+
+	// Cast returns a new Tensor with the specified data type (cast performed on device).
+	// returns new Tensor
+	Cast(dtype DataType) Tensor
 }
+
+type DataType int
+
+const (
+	Float32 DataType = iota
+	Float16
+)
 
 type ActivationType int
 

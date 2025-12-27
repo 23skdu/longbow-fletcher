@@ -295,7 +295,43 @@ func (t *CudaTensor) ExtractTo(destination [][]float32, startRow int) {
 	}
 }
 
-func (t *CudaTensor) ExtractToFlat(dest []float32, start int) {
-	data := t.ToHost()
-	copy(dest[start:], data)
+func (t *CudaTensor) ExtractBytes() []byte {
+	// For CUDA, since we don't have pinned memory logic fully wired for zero-copy to arrow yet,
+	// we fall back to copy-to-host and then unsafe cast to bytes.
+	// This ensures correctness but not yet full performance on Linux.
+	
+	// If FP16, ToHost returns float32 (converted).
+	// If we want raw bytes of the *device* tensor (which might be FP16), we need a raw read.
+	
+	size := t.rows * t.cols
+	if t.backend.useFP16 {
+		// FP16 on device. We want those bytes if we are doing zero-copy transfer.
+		// ToHost converts to FP32. We don't want that for "ExtractBytes" if the intention is to get raw transport format.
+		// However, the interface contract implies "raw underlying byte representation".
+		// If the tensor is FP16, we should return FP16 bytes.
+		
+		sizeBytes := size * 2
+		out := make([]byte, sizeBytes)
+		// Access C buffer directly
+		C.Cuda_CopyToHost(t.buf, 0, unsafe.Pointer(&out[0]), C.int(sizeBytes))
+		return out
+	} else {
+		// FP32
+		sizeBytes := size * 4
+		out := make([]byte, sizeBytes)
+		C.Cuda_CopyToHost(t.buf, 0, unsafe.Pointer(&out[0]), C.int(sizeBytes))
+		return out
+	}
+}
+
+func (t *CudaTensor) Cast(dtype DataType) Tensor {
+	// Stub implementation for now
+	if dtype == Float32 && !t.backend.useFP16 {
+		// Copy
+		nt := t.backend.NewTensor(t.rows, t.cols, nil)
+		nt.Copy(t)
+		return nt
+	}
+	// TODO: Implement proper casting kernels for CUDA
+	panic("Cast not fully implemented for CUDA yet")
 }

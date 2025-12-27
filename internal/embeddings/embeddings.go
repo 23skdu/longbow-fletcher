@@ -135,11 +135,69 @@ var tracer = otel.Tracer("fletcher-embeddings")
 
 // StreamResult contains a partial result of an EmbedBatch call.
 type StreamResult struct {
-	Vectors []float32
-	Offset  int // Position in the original request
-	Count   int // Number of sequences in this chunk
-	Err     error
+	Vectors     []float32
+	RawBytes    []byte          // Zero-copy bytes from device (if requested)
+	RawDataType device.DataType // Type of RawBytes
+	Offset      int             // Position in the original request
+	Count       int             // Number of sequences in this chunk
+	Err         error
 }
+
+type ctxKeyOutputFormat struct{}
+
+// WithOutputFormat returns a context with the desired output format hint.
+// format: "fp16" or "fp32" (default).
+func WithOutputFormat(ctx context.Context, format string) context.Context {
+	return context.WithValue(ctx, ctxKeyOutputFormat{}, format)
+}
+
+
+
+func processOutput(m *model.BertModel, t device.Tensor, dim int, offset, count int, format string, out chan<- StreamResult) {
+	// Helper to handle extraction and sending
+	res := StreamResult{
+		Offset: offset,
+		Count:  count,
+	}
+
+	if format == "fp16" {
+		// We want FP16 bytes.
+		// If tensor is already FP16 (from backend), extract bytes.
+		// If tensor is FP32, cast to FP16 then extract.
+		
+		// We can check t.DType if we exposed it on Tensor interface?
+		// We exposed ExtractBytes.
+		// `Cast` handles conversion.
+		
+		t16 := t.Cast(device.Float16) // Returns new tensor or same if already FP16
+		// If Cast returns new tensor, we must free it (if it owns memory).
+		// Tensor interface doesn't expose Free (Backends handle it or Finalizers).
+		// Our Cast implementation returns a Tensor with Finalizer or Pool management.
+		
+		res.RawBytes = t16.ExtractBytes()
+		res.RawDataType = device.Float16
+		
+		// If t16 was a new tensor copy, we should signal we are done with it?
+		// PutTensor might handle returning to pool if it's a pooled tensor.
+		// Cast implementation returned a manual alloc in some cases.
+		// If we use PutTensor on it, the backend needs to know how to handle it.
+		// MetalBackend.PutTensor checks ownsBuffer. 
+		// So safe to PutTensor(t16) if different from t.
+		
+		if t16 != t {
+			m.Backend.PutTensor(t16)
+		}
+		
+	} else {
+		// Default FP32 Vectors
+		chunk := make([]float32, count*dim)
+		t.ExtractToFlat(chunk, 0)
+		res.Vectors = chunk
+	}
+	
+	out <- res
+}
+
 
 // EmbedBatch generates embeddings for a batch of texts.
 // It returns a channel that yields StreamResults as they become available.
@@ -251,12 +309,14 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 			}
 			
 			
+			format, _ := ctx.Value(ctxKeyOutputFormat{}).(string)
+
 			deviceWg.Add(1)
 			go func(devId, s, eIdx int) {
 				defer deviceWg.Done()
 				log.Info().Int("device", devId).Int("sequences", eIdx-s).Int("tokens", currentTokens).Msg("Dispatching batch")
 				m := e.models[devId]
-				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, out)
+				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, format, out)
 			}(d, startIndex, endIndex)
 			
 			startIndex = endIndex
@@ -380,7 +440,7 @@ type tokenizedResult struct {
 	len int
 }
 
-func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, baseOffset int, dim int, out chan<- StreamResult) {
+func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, baseOffset int, dim int, format string, out chan<- StreamResult) {
 	// Double-buffered GPU Processing (per device)
 	var prevOutput device.Tensor
 	var prevBatchCount int
@@ -415,13 +475,7 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 
 		// Async handle previous batch
 		if prevOutput != nil {
-			chunk := make([]float32, prevBatchCount*dim)
-			prevOutput.ExtractToFlat(chunk, 0)
-			out <- StreamResult{
-				Vectors: chunk,
-				Offset:  prevOffset,
-				Count:   prevBatchCount,
-			}
+			processOutput(m, prevOutput, dim, prevOffset, prevBatchCount, format, out)
 			m.Backend.PutTensor(prevOutput)
 		}
 
@@ -432,13 +486,7 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 
 	// Handle the final batch
 	if prevOutput != nil {
-		chunk := make([]float32, prevBatchCount*dim)
-		prevOutput.ExtractToFlat(chunk, 0)
-		out <- StreamResult{
-			Vectors: chunk,
-			Offset:  prevOffset,
-			Count:   prevBatchCount,
-		}
+		processOutput(m, prevOutput, dim, prevOffset, prevBatchCount, format, out)
 		m.Backend.PutTensor(prevOutput)
 	}
 }

@@ -203,7 +203,11 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2 & 3. Embed and Forward (Pipelined)
-	ch := s.embedder.EmbedBatch(ctx, texts)
+	embedCtx := ctx
+	if s.TransportFmt == "fp16" {
+		embedCtx = embeddings.WithOutputFormat(ctx, "fp16")
+	}
+	ch := s.embedder.EmbedBatch(embedCtx, texts)
 	vectorsProcessed.Add(float64(len(texts)))
 
 	if s.flightClient != nil {
@@ -214,7 +218,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 			}
 			// Forward slice of original texts
 			chunkTexts := texts[chunk.Offset : chunk.Offset+chunk.Count]
-			if err := s.forwardToLongbow(ctx, chunkTexts, chunk.Vectors); err != nil {
+			if err := s.forwardToLongbow(ctx, chunkTexts, chunk); err != nil {
 				logger.Error().Err(err).Msg("Error forwarding chunk to Longbow")
 				// Keep going for other chunks? Or abort?
 			}
@@ -228,7 +232,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("OK"))
 }
 
-func (s *Server) forwardToLongbow(ctx context.Context, texts []string, flatBatch []float32) error {
+func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embeddings.StreamResult) error {
 	curBatchSize := len(texts)
 	
 	// Text Column
@@ -239,55 +243,47 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, flatBatch
 	defer textArr.Release()
 
 	// Embedding Column
-	if len(flatBatch) == 0 {
-		return nil
-	}
-	cols := len(flatBatch) / curBatchSize
-	
 	var embedBytes int
 	var fslType *arrow.FixedSizeListType
 	var valuesData *array.Data
 	
-	if s.TransportFmt == "fp16" {
-		// Convert to FP16
-		fp16Data := make([]float16.Num, len(flatBatch))
-		for i, v := range flatBatch {
-			fp16Data[i] = float16.New(v)
+	if res.RawBytes != nil && s.TransportFmt == "fp16" {
+		// Zero-copy path for FP16
+		resultBuf := memory.NewBufferBytes(res.RawBytes)
+		dim := len(res.RawBytes) / (curBatchSize * 2)
+		fslType = arrow.FixedSizeListOf(int32(dim), arrow.FixedWidthTypes.Float16)
+		valuesData = array.NewData(arrow.FixedWidthTypes.Float16, curBatchSize*dim, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
+		embedBytes = len(res.RawBytes)
+	} else if len(res.Vectors) > 0 {
+		// FP32 path (or fallback)
+		flatBatch := res.Vectors
+		cols := len(flatBatch) / curBatchSize
+		
+		if s.TransportFmt == "fp16" {
+			// Convert FP32 -> FP16 manually
+			fp16Data := make([]float16.Num, len(flatBatch))
+			for i, v := range flatBatch {
+				fp16Data[i] = float16.New(v)
+			}
+			byteData := make([]byte, len(flatBatch)*2)
+			for i, n := range fp16Data {
+				u := n.Uint16()
+				byteData[i*2] = byte(u)
+				byteData[i*2+1] = byte(u >> 8)
+			}
+			resultBuf := memory.NewBufferBytes(byteData)
+			fslType = arrow.FixedSizeListOf(int32(cols), arrow.FixedWidthTypes.Float16)
+			valuesData = array.NewData(arrow.FixedWidthTypes.Float16, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
+			embedBytes = len(byteData)
+		} else {
+			// FP32
+			resultBuf := memory.NewBufferBytes(arrow.Float32Traits.CastToBytes(flatBatch))
+			fslType = arrow.FixedSizeListOf(int32(cols), arrow.PrimitiveTypes.Float32)
+			valuesData = array.NewData(arrow.PrimitiveTypes.Float32, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
+			embedBytes = len(flatBatch) * 4
 		}
-		
-		// Create buffer from uint16s
-		// Arrow Float16 is backed by 2 bytes.
-		// We can cast []float16.Num (which is uint16) to bytes.
-		// Using unsafe/manual cast or copying.
-		// memory.NewBufferBytes takes []byte.
-		// We can iterate and write, or use unsafe.
-		// For safety/portability without unsafe, let's just write to byte slice.
-		// Or use arrow.Float16Traits? No traits for Float16 in v18 might be standard like others.
-		// Let's assume manual byte construction for now to be safe or use what CastToBytes does (unsafe).
-		// arrow.Float16Traits might exist if imported.
-		// Let's try arrow.Float16Traits.CastToBytes(fp16Data) if it exists, but float16 package is in arrow/float16.
-		// array.Float16Builder uses float16.Num.
-		
-		// Let's reuse the CastToBytes pattern but for uint16/float16.Num if possible.
-		// Actually arrow.Float16Traits doesn't exist usually.
-		// We will construct the byte slice manually for now to be safe.
-		byteData := make([]byte, len(flatBatch)*2)
-		for i, n := range fp16Data {
-			u := n.Uint16()
-			byteData[i*2] = byte(u)
-			byteData[i*2+1] = byte(u >> 8)
-		}
-		
-		resultBuf := memory.NewBufferBytes(byteData)
-		fslType = arrow.FixedSizeListOf(int32(cols), arrow.FixedWidthTypes.Float16)
-		valuesData = array.NewData(arrow.FixedWidthTypes.Float16, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
-		embedBytes = len(byteData)
 	} else {
-		// FP32 Default
-		resultBuf := memory.NewBufferBytes(arrow.Float32Traits.CastToBytes(flatBatch))
-		fslType = arrow.FixedSizeListOf(int32(cols), arrow.PrimitiveTypes.Float32)
-		valuesData = array.NewData(arrow.PrimitiveTypes.Float32, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
-		embedBytes = len(flatBatch) * 4
+		return nil // No data?
 	}
 	defer valuesData.Release()
 	
@@ -300,36 +296,31 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, flatBatch
 		0,
 	)
 	defer fslData.Release()
-	embeddingArr := array.NewFixedSizeListData(fslData)
-	defer embeddingArr.Release()
-
-	schema := arrow.NewSchema(
-		[]arrow.Field{
-			{Name: "text", Type: arrow.BinaryTypes.String},
-			{Name: "embedding", Type: fslType},
-		},
-		nil,
+	
+	fslArr := array.NewFixedSizeListData(fslData)
+	defer fslArr.Release()
+	
+	rec := array.NewRecord(
+		arrow.NewSchema(
+			[]arrow.Field{
+				{Name: "text", Type: arrow.BinaryTypes.String},
+				{Name: "embedding", Type: fslType},
+			},
+			nil,
+		),
+		[]arrow.Array{textArr, fslArr},
+		int64(curBatchSize),
 	)
+	defer rec.Release()
 	
-	rb := array.NewRecordBatch(schema, []arrow.Array{textArr, embeddingArr}, int64(curBatchSize))
-	defer rb.Release()
-	
-	// Record flight metrics
-	startFlight := time.Now()
-	err := s.flightClient.DoPut(ctx, s.datasetName, rb)
-	dur := time.Since(startFlight)
-	
+	start := time.Now()
+	err := s.flightClient.DoPut(ctx, s.datasetName, rec)
+	duration := time.Since(start).Seconds()
+
 	flightRequests.Inc()
-	flightDuration.Observe(dur.Seconds())
-	
-	// Estimate bytes (schema + buffers)
-	// Rough estimate: text buffer len + embedding buffer len
-	// Text buffer:
-	totalTextLen := 0
-	for _, t := range texts { totalTextLen += len(t) }
-	// Embeddings:
-	flightBytesSent.Add(float64(totalTextLen + embedBytes))
-	
+	flightDuration.Observe(duration)
+	flightBytesSent.Add(float64(embedBytes)) // Estimate
+
 	return err
 }
 
@@ -453,7 +444,11 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) processBatch(ctx context.Context, texts []string) {
 	// Pipeline this batch
-	ch := s.embedder.EmbedBatch(ctx, texts)
+	embedCtx := ctx
+	if s.TransportFmt == "fp16" {
+		embedCtx = embeddings.WithOutputFormat(ctx, "fp16")
+	}
+	ch := s.embedder.EmbedBatch(embedCtx, texts)
 	vectorsProcessed.Add(float64(len(texts)))
 
 	if s.flightClient != nil {
@@ -463,7 +458,7 @@ func (s *Server) processBatch(ctx context.Context, texts []string) {
 				continue 
 			}
 			chunkTexts := texts[chunk.Offset : chunk.Offset+chunk.Count]
-			if err := s.forwardToLongbow(ctx, chunkTexts, chunk.Vectors); err != nil {
+			if err := s.forwardToLongbow(ctx, chunkTexts, chunk); err != nil {
 				log.Error().Err(err).Msg("Error forwarding chunk to Longbow")
 			}
 		}

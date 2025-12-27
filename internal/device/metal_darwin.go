@@ -137,6 +137,7 @@ func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
 		offset:   0,
 		sizeBytes: sizeBytes,
 		ownsBuffer: true,
+		dtype: func() DataType { if b.useFP16 { return Float16 }; return Float32 }(),
 	}
 	
 	runtime.SetFinalizer(t, func(mt *MetalTensor) {
@@ -235,6 +236,7 @@ type MetalTensor struct {
 	offset     int  // in bytes, offset into the underlying buffer
 	sizeBytes  int  // total size of owned buffer in bytes
 	ownsBuffer bool // true if this tensor owns the buffer (for pooling)
+	dtype      DataType
 }
 
 func (t *MetalTensor) Dims() (int, int) {
@@ -827,6 +829,82 @@ func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	} else {
 		panic("ApplyRoPE only supported for Metal FP16")
 	}
+}
+
+func (t *MetalTensor) ExtractBytes() []byte {
+	t.backend.Synchronize()
+	
+	size := t.rows * t.cols
+	var sizeBytes int
+	if t.dtype == Float16 {
+		sizeBytes = size * 2
+	} else {
+		sizeBytes = size * 4
+	}
+	
+	out := make([]byte, sizeBytes)
+	C.Metal_ExtractBytes(t.buf, C.int(t.offset), unsafe.Pointer(&out[0]), C.int(sizeBytes))
+	return out
+}
+
+func (t *MetalTensor) Cast(dtype DataType) Tensor {
+	if t.dtype == dtype {
+		// If backend default type != requested dtype?
+		// NewTensor uses backend.useFP16. 
+		// If we are casting, we likely want a new tensor that potentially differs from backend default.
+		// We should manual construct.
+		
+		sizeBytes := t.sizeBytes
+		buf := C.Metal_Alloc(t.backend.ctx, C.int(sizeBytes))
+		C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(uintptr(C.Metal_GetBufferContents(t.buf))+uintptr(t.offset)), C.int(sizeBytes)) // Hacky copy 
+		// Actually better: use a kernel or Metal_CopyBuffer if we had it.
+		// Or read/write.
+		// Simplified: Just use existing copy logic if types match?
+		// But CopyFrom expects tensor.
+		
+		// For now, let's implement the specific case we need: FP32 -> FP16.
+		// Or FP16 -> FP16 (Copy)
+		
+		// If same type, just use NewTensor if backend matches type
+		currentBackendType := Float32
+		if t.backend.useFP16 { currentBackendType = Float16 }
+		
+		if dtype == currentBackendType {
+			nt := t.backend.NewTensor(t.rows, t.cols, nil)
+			nt.Copy(t)
+			return nt
+		}
+	}
+	
+	if t.dtype == Float32 && dtype == Float16 {
+		size := t.rows * t.cols
+		outSizeBytes := size * 2
+		outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
+		
+		C.Metal_Cast_F32_to_F16(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+		
+		tFinal := &MetalTensor{
+			backend:    t.backend,
+			rows:       t.rows,
+			cols:       t.cols,
+			buf:        outBuf,
+			offset:     0,
+			sizeBytes:  outSizeBytes,
+			ownsBuffer: true,
+			dtype:      Float16,
+		}
+		
+		runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
+			// We can't pool this easily if it mismatches backend buckets (FP16 vs FP32 sizes differ for same dims)
+			// But returnToPool uses bytes size. So it works!
+			C.Metal_FreeBuffer(mt.backend.ctx, mt.buf) // Or use pool?
+			// Use free for safety for now on manual allocs
+		})
+		
+		return tFinal
+	}
+	
+	panic("Cast: Unsupported conversion")
 }
 
 func (b *MetalBackend) GetVRAMUsage() (int64, int64) {

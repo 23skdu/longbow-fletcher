@@ -32,6 +32,7 @@
 @property(strong) id<MTLComputePipelineState> pipelineAddBias_F16;
 @property(strong) id<MTLComputePipelineState> pipelineRope_F16;
 @property(strong) id<MTLComputePipelineState> pipelineSwiglu_F16;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F16;
 
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
 @property(strong) id<MTLComputeCommandEncoder> currentEncoder;
@@ -142,6 +143,7 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineAddBias_F16 = loadPipeline(ctx, @"add_bias_kernel_f16");
   ctx.pipelineRope_F16 = loadPipeline(ctx, @"rope_kernel_f16");
   ctx.pipelineSwiglu_F16 = loadPipeline(ctx, @"swiglu_kernel_f16");
+  ctx.pipelineCast_F32_to_F16 = loadPipeline(ctx, @"cast_f32_to_f16");
 
   return (__bridge_retained MetalContextRef)ctx;
 }
@@ -191,6 +193,11 @@ void Metal_Memset(MetalBufferRef buf, int o, int v, int s) {
   memset((char *)[(__bridge id<MTLBuffer>)buf contents] + o, v, s);
 }
 
+void Metal_ExtractBytes(MetalBufferRef buf, int offset, void *dest, int size) {
+  id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)buf;
+  memcpy(dest, (char *)[buffer contents] + offset, size);
+}
+
 // Kernels Implementation
 #define ENCODE(wrapper, pipeline)                                              \
   [wrapper ensureEncoder];                                                     \
@@ -209,6 +216,20 @@ void Metal_Add(MetalContextRef ctx, MetalBufferRef a, int offA,
   [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
                        offset:offRes
                       atIndex:2];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
   [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
 }
