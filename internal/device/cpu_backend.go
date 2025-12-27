@@ -271,23 +271,31 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 		wg.Add(1)
 		go func(start, end int) {
 			defer wg.Done()
-			
+
+			// Pre-allocate buffers for transposed access (amortizes allocation cost)
+			var rowABuf []float32
+			if ma.trans {
+				rowABuf = make([]float32, common)
+			}
+			var colBBuf []float32
+			if !mb.trans {
+				colBBuf = make([]float32, common)
+			}
+
 			// For each row in result
 			for i := start; i < end; i++ {
-				// C[i, j] = A[i, :] * B[:, j]
-				
 				// Get row A[i]
 				var rowA []float32
 				if ma.trans {
-					rowA = make([]float32, common)
 					for k := 0; k < common; k++ {
-						rowA[k] = ma.At(i, k)
+						rowABuf[k] = ma.At(i, k)
 					}
+					rowA = rowABuf
 				} else {
 					startA := i * ma.cols
 					rowA = ma.data[startA : startA+ma.cols]
 				}
-				
+
 				for j := 0; j < bc; j++ {
 					// Get col j of B
 					var colB []float32
@@ -295,14 +303,15 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 						startB := j * mb.cols
 						colB = mb.data[startB : startB+mb.cols]
 					} else {
-						colB = make([]float32, common)
 						for k := 0; k < common; k++ {
-							colB[k] = mb.At(k, j)
+							colBBuf[k] = mb.At(k, j)
 						}
+						colB = colBBuf
 					}
-					
-					val := simd.DotProduct(rowA, colB)
-					t.Set(i, j, val)
+
+					// Dot product
+					sum := simd.DotProduct(rowA, colB)
+					t.Set(i, j, sum)
 				}
 			}
 		}(startRow, endRow)
