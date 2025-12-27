@@ -57,16 +57,13 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 	
 	vectors := e.EmbedBatch(context.Background(), tests)
 	
-	if len(vectors) != len(tests) {
-		t.Errorf("Expected %d vectors, got %d", len(tests), len(vectors))
+	if len(vectors) != len(tests)*config.HiddenSize {
+		t.Errorf("Expected %d elements, got %d", len(tests)*config.HiddenSize, len(vectors))
 	}
 	
-	for i, vec := range vectors {
-		if len(vec) != config.HiddenSize {
-			t.Errorf("Test %d: Expected vector length %d, got %d", i, config.HiddenSize, len(vec))
-		}
-		
-		// Check for non-zero (highly unlikely to be all zero with Xavier init)
+	for i := 0; i < len(tests); i++ {
+		vec := vectors[i*config.HiddenSize : (i+1)*config.HiddenSize]
+		// Check for non-zero
 		hasNonZero := false
 		for _, v := range vec {
 			if v != 0 {

@@ -81,6 +81,9 @@ type Tensor interface {
 	
 	// ExtractTo parallelizes the transfer and row-splitting of the tensor into a pre-allocated slice of slices.
 	ExtractTo(destination [][]float32, startRow int)
+
+	// ExtractToFlat copies the tensor data into a pre-allocated flat slice.
+	ExtractToFlat(destination []float32, startOffset int)
 }
 
 type ActivationType int

@@ -133,14 +133,24 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 
 var tracer = otel.Tracer("fletcher-embeddings")
 
+// StreamResult contains a partial result of an EmbedBatch call.
+type StreamResult struct {
+	Vectors []float32
+	Offset  int // Position in the original request
+	Count   int // Number of sequences in this chunk
+	Err     error
+}
+
 // EmbedBatch generates embeddings for a batch of texts.
-// It processes texts in internal batches of 128 to prevent VRAM exhaustion on GPUs.
-func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) [][]float32 {
+// It returns a channel that yields StreamResults as they become available.
+func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan StreamResult {
+	out := make(chan StreamResult, len(e.models)*2)
 	ctx, span := tracer.Start(ctx, "EmbedBatch")
 	defer span.End()
 
 	if len(texts) == 0 {
-		return nil
+		close(out)
+		return out
 	}
 
 	span.SetAttributes(attribute.Int("sequence_count", len(texts)))
@@ -182,35 +192,50 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) [][]float32 {
 	tSpan.End()
 
 	// 2. Multi-GPU Dispatch
-	_, iSpan := tracer.Start(ctx, "Inference")
-	allResults := make([][]float32, len(texts))
+	dim := e.models[0].Config.HiddenSize
 	numDevices := len(e.models)
-	
-	// Split work across devices
 	itemsPerDevice := (len(texts) + numDevices - 1) / numDevices
 	
-	var deviceWg sync.WaitGroup
-	for d := 0; d < numDevices; d++ {
-		start := d * itemsPerDevice
-		if start >= len(texts) {
-			break
-		}
-		end := start + itemsPerDevice
-		if end > len(texts) {
-			end = len(texts)
-		}
-		
-		deviceWg.Add(1)
-		go func(devId, s, eIdx int) {
-			defer deviceWg.Done()
-			m := e.models[devId]
-			runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], allResults, s)
-		}(d, start, end)
-	}
-	deviceWg.Wait()
-	iSpan.End()
+	go func() {
+		defer close(out)
+		_, iSpan := tracer.Start(ctx, "Inference")
+		defer iSpan.End()
 
-	return allResults
+		var deviceWg sync.WaitGroup
+		for d := 0; d < numDevices; d++ {
+			start := d * itemsPerDevice
+			if start >= len(texts) {
+				break
+			}
+			end := start + itemsPerDevice
+			if end > len(texts) {
+				end = len(texts)
+			}
+			
+			deviceWg.Add(1)
+			go func(devId, s, eIdx int) {
+				defer deviceWg.Done()
+				m := e.models[devId]
+				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, out)
+			}(d, start, end)
+		}
+		deviceWg.Wait()
+	}()
+
+	return out
+}
+// ProxyEmbedBatch is a helper for legacy code that wants the full slice.
+func (e *Embedder) ProxyEmbedBatch(ctx context.Context, texts []string) []float32 {
+	dim := e.models[0].Config.HiddenSize
+	res := make([]float32, len(texts)*dim)
+	ch := e.EmbedBatch(ctx, texts)
+	for chunk := range ch {
+		if chunk.Err != nil {
+			continue 
+		}
+		copy(res[chunk.Offset*dim:], chunk.Vectors)
+	}
+	return res
 }
 
 // GetVRAMUsage returns the total VRAM usage across all devices.
@@ -232,10 +257,11 @@ type tokenizedResult struct {
 	len int
 }
 
-func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, outputs [][]float32, globalOffset int) {
+func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, baseOffset int, dim int, out chan<- StreamResult) {
 	// Double-buffered GPU Processing (per device)
 	var prevOutput device.Tensor
-	var prevBatchIdx int
+	var prevBatchCount int
+	var prevOffset int
 
 	count := len(inputs)
 	for i := 0; i < count; i += batchSize {
@@ -264,19 +290,32 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 		// Start GPU for current batch
 		currentOutput := m.ForwardBatch(flatInputs, lengths)
 
-		// While GPU handles current batch, CPU extracts results from PREVIOUS batch
+		// Async handle previous batch
 		if prevOutput != nil {
-			prevOutput.ExtractTo(outputs, globalOffset+prevBatchIdx)
+			chunk := make([]float32, prevBatchCount*dim)
+			prevOutput.ExtractToFlat(chunk, 0)
+			out <- StreamResult{
+				Vectors: chunk,
+				Offset:  prevOffset,
+				Count:   prevBatchCount,
+			}
 			m.Backend.PutTensor(prevOutput)
 		}
 
 		prevOutput = currentOutput
-		prevBatchIdx = i
+		prevBatchCount = batchCount
+		prevOffset = baseOffset + i
 	}
 
 	// Handle the final batch
 	if prevOutput != nil {
-		prevOutput.ExtractTo(outputs, globalOffset+prevBatchIdx)
+		chunk := make([]float32, prevBatchCount*dim)
+		prevOutput.ExtractToFlat(chunk, 0)
+		out <- StreamResult{
+			Vectors: chunk,
+			Offset:  prevOffset,
+			Count:   prevBatchCount,
+		}
 		m.Backend.PutTensor(prevOutput)
 	}
 }

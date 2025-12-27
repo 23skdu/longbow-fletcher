@@ -32,10 +32,11 @@ type bufferPoolEntry struct {
 }
 
 type MetalBackend struct {
-	ctx        C.MetalContextRef
-	mu         sync.Mutex
-	buckets    map[int][]bufferPoolEntry // Pooled GPU buffers, organized by size buckets
-	useFP16    bool                      // Use FP16 precision for 2x GPU performance
+	ctx            C.MetalContextRef
+	mu             sync.Mutex
+	buckets        map[int][]bufferPoolEntry // Safe to reuse
+	pendingBuckets map[int][]bufferPoolEntry // In flight on GPU
+	useFP16        bool                      // Use FP16 precision
 }
 
 func getBucket(size int) int {
@@ -56,9 +57,10 @@ func NewMetalBackend() *MetalBackend {
 	}
 	
 	return &MetalBackend{
-		ctx:     ctx,
-		buckets: make(map[int][]bufferPoolEntry),
-		useFP16: false,
+		ctx:            ctx,
+		buckets:        make(map[int][]bufferPoolEntry),
+		pendingBuckets: make(map[int][]bufferPoolEntry),
+		useFP16:        false,
 	}
 }
 
@@ -73,9 +75,10 @@ func NewMetalBackendFP16() *MetalBackend {
 	}
 	
 	return &MetalBackend{
-		ctx:     ctx,
-		buckets: make(map[int][]bufferPoolEntry),
-		useFP16: true,
+		ctx:            ctx,
+		buckets:        make(map[int][]bufferPoolEntry),
+		pendingBuckets: make(map[int][]bufferPoolEntry),
+		useFP16:        true,
 	}
 }
 
@@ -151,13 +154,18 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Drain pending buffers if GPU is done
+	if bool(C.Metal_IsCompleted(b.ctx)) {
+		for bucket, entries := range b.pendingBuckets {
+			b.buckets[bucket] = append(b.buckets[bucket], entries...)
+		}
+		b.pendingBuckets = make(map[int][]bufferPoolEntry)
+	}
+
 	bucket := getBucket(sizeBytes)
-	
-	// Check current bucket and larger buckets (up to 2 levels higher)
 	for i := bucket; i <= bucket+2; i++ {
 		list := b.buckets[i]
 		if len(list) > 0 {
-			// Find best fit in this bucket
 			bestIdx := -1
 			for idx, entry := range list {
 				if entry.size >= sizeBytes {
@@ -166,7 +174,6 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 					}
 				}
 			}
-			
 			if bestIdx != -1 {
 				buf := list[bestIdx].buf
 				b.buckets[i] = append(list[:bestIdx], list[bestIdx+1:]...)
@@ -182,15 +189,8 @@ func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
 	defer b.mu.Unlock()
 
 	bucket := getBucket(sizeBytes)
-	list := b.buckets[bucket]
-	
-	// Limit bucket size
-	if len(list) >= 32 {
-		C.Metal_FreeBuffer(b.ctx, list[0].buf)
-		list = list[1:]
-	}
-	
-	b.buckets[bucket] = append(list, bufferPoolEntry{buf: buf, size: sizeBytes})
+	// Add to pending (in-flight) queue until next getPooledBuffer drains it
+	b.pendingBuckets[bucket] = append(b.pendingBuckets[bucket], bufferPoolEntry{buf: buf, size: sizeBytes})
 }
 
 func (b *MetalBackend) GetTensor(r, c int) Tensor {
@@ -793,6 +793,32 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 		}(wStart, wEnd)
 	}
 	wg.Wait()
+}
+
+func (t *MetalTensor) ExtractToFlat(dest []float32, start int) {
+	ptr := C.Metal_GetBufferContents(t.buf)
+	if ptr == nil {
+		return
+	}
+	
+	size := t.rows * t.cols
+	if t.trans {
+		data := t.ToHost()
+		copy(dest[start:], data)
+		return
+	}
+
+	if t.backend.useFP16 {
+		raw := (*[1 << 30]uint16)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset)))[:size:size]
+		// Explicit parallel conversion if large? 
+		// For now simple loop
+		for i := 0; i < size; i++ {
+			dest[start+i] = Float16ToFloat32(raw[i])
+		}
+	} else {
+		raw := (*[1 << 30]float32)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset)))[:size:size]
+		copy(dest[start:], raw)
+	}
 }
 
 func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {

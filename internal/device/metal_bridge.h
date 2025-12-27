@@ -16,6 +16,7 @@ typedef void *MetalBufferRef;
 MetalContextRef Metal_Init(const char *libSource);
 void Metal_Free(MetalContextRef ctx);
 void Metal_Synchronize(MetalContextRef ctx);
+bool Metal_IsCompleted(MetalContextRef ctx);
 unsigned long long Metal_GetAllocatedSize(MetalContextRef ctx);
 unsigned long long Metal_GetRecommendMaxWorkingSetSize(MetalContextRef ctx);
 
@@ -27,9 +28,6 @@ void Metal_CopyToDevice(MetalBufferRef buf, int offset, const void *data,
 void Metal_CopyToHost(MetalBufferRef buf, int offset, void *data, int size);
 void Metal_Memset(MetalBufferRef buf, int offset, int value, int size);
 void *Metal_GetBufferContents(MetalBufferRef buf);
-// Index is absolute or relative? Let's say relative to buffer. But here we take
-// buf directly. Let's keep SetAt absolute for now or add offset. Better:
-// Metal_SetAt(buf, offset, val).
 void Metal_SetAt(MetalBufferRef buf, int offset, float val);
 
 // Ops
@@ -95,30 +93,16 @@ void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                       MetalBufferRef output, int offOut, int n, int interSize);
 
 // Matrix Mul (MPS)
-// C = A * B. A (r x inner), B (inner x c), C (r x c)
-// Transpose flags? For now assume standard A x B.
-// We support A * B^T via flags if needed, or caller handles it.
-// The Go code uses Transpose T() often.
-// MPSMatrixMultiplication supports transpose.
-// Let's forward transpose flags.
 void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   MetalBufferRef b, int offB, bool transB, MetalBufferRef c,
                   int offC, int M, int N, int K);
-
-// FP16 MatMul for 2x GPU performance (requires FP16 buffers)
 void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
                       bool transA, MetalBufferRef b, int offB, bool transB,
                       MetalBufferRef c, int offC, int M, int N, int K);
-
-// Batched MatMul for attention: process multiple sequences at once
-// Assumes uniform matrix sizes. batchCount = number of independent MatMuls.
-// strideA/B/C = byte offset between consecutive matrices in the batch
 void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
                          int strideA, bool transA, MetalBufferRef b, int offB,
                          int strideB, bool transB, MetalBufferRef c, int offC,
                          int strideC, int M, int N, int K, int batchCount);
-
-void Metal_Synchronize(MetalContextRef ctx);
 
 #ifdef __cplusplus
 }

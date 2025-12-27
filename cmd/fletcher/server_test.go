@@ -40,12 +40,7 @@ func TestServer_Full(t *testing.T) {
 	assert.NoError(t, err)
 
 	mfc := &mockFlightClient{}
-
-	srv := &Server{
-		embedder:     emb,
-		flightClient: mfc,
-		datasetName:  "test-dataset",
-	}
+	srv := NewServer(emb, mfc, "test-dataset")
 
 	t.Run("HandleEncode with Forwarding", func(t *testing.T) {
 		texts := []string{"test", "test"}

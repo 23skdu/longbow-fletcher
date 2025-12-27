@@ -294,3 +294,8 @@ func (t *CudaTensor) ExtractTo(destination [][]float32, startRow int) {
 		destination[startRow+i] = row
 	}
 }
+
+func (t *CudaTensor) ExtractToFlat(dest []float32, start int) {
+	data := t.ToHost()
+	copy(dest[start:], data)
+}

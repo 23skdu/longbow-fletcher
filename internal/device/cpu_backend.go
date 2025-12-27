@@ -659,6 +659,11 @@ func (t *CPUTensor) ExtractTo(dest [][]float32, start int) {
 	}
 }
 
+func (t *CPUTensor) ExtractToFlat(dest []float32, start int) {
+	data := t.ToHost()
+	copy(dest[start:], data)
+}
+
 func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	if t.trans {
 		panic("ApplyRoPE on transposed")

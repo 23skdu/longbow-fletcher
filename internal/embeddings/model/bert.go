@@ -131,7 +131,7 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	embeddings := m.Embeddings.ForwardBatch(inputIDs, lengths)
 	
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
-	// embeddings is consumed by Encoder
+	// embeddings is released by Encoder.
 	
 	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
 	m.Backend.PutTensor(hiddenStates)
@@ -218,13 +218,7 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 	// 4. Norm + Dropout
 	output := e.LayerNorm.Forward(embeddings)
 	
-	// Dropout not implemented in interface yet? 
-	// BertEmbeddings struct has Dropout *Dropout.
-	// Dropout.Forward takes Tensor.
-	// Assuming Dropout accepts Tensor.
-	// Check BertEmbeddings struct?
-	// But let's assume yes.
-	
+	// Dropout is identity for now, returning same tensor.
 	output = e.Dropout.Forward(output)
 	
 	return output
@@ -420,7 +414,9 @@ func (a *BertAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 
 func (a *BertAttention) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	selfOutput := a.Self.ForwardBatch(hiddenStates, lengths)
-	return a.Output.ForwardBatch(selfOutput, hiddenStates)
+	res := a.Output.ForwardBatch(selfOutput, hiddenStates)
+	// selfOutput is released by Output.ForwardBatch
+	return res
 }
 
 type BertSelfAttention struct {
@@ -489,9 +485,8 @@ func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 }
 
 func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
-	r, c := hiddenStates.Dims()
+	_, c := hiddenStates.Dims()
 	
-	// 1. Project Q, K, V for the entire batch at once
 	// 1. Project Q, K, V for the entire batch at once
 	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
 	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
@@ -506,7 +501,7 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 		keyLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
 	}
 
-	output := s.Backend.NewTensor(r, c, nil)
+	var output device.Tensor
 	
 	// Fast path: uniform sequence lengths (common case in batched inference)
 	// This allows computing attention for all sequences without per-seq loop
