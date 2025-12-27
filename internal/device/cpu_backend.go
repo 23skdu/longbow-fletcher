@@ -2,7 +2,6 @@ package device
 
 import (
 	"math"
-	"reflect"
 	"sync"
 	"runtime"
 	"unsafe"
