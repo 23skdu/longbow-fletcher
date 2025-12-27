@@ -195,6 +195,19 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 	return allResults
 }
 
+// GetVRAMUsage returns the total VRAM usage across all devices.
+func (e *Embedder) GetVRAMUsage() (allocated int64, total int64) {
+	for _, m := range e.models {
+		a, t := m.Backend.GetVRAMUsage()
+		allocated += a
+		// Total VRAM might be counted multiple times if multiple models share device?
+		// But here we have 1 model per device (usually).
+		// If multiple devices, summing totals is correct (Global VRAM).
+		total += t
+	}
+	return
+}
+
 // tokenizedResult is a helper struct for passing data
 type tokenizedResult struct {
 	ids []int

@@ -12,9 +12,12 @@ extern "C" {
 typedef void *MetalContextRef;
 typedef void *MetalBufferRef;
 
-// Setup
+// Device management
 MetalContextRef Metal_Init(const char *libSource);
-void Metal_FreeContext(MetalContextRef ctx);
+void Metal_Free(MetalContextRef ctx);
+void Metal_Synchronize(MetalContextRef ctx);
+unsigned long long Metal_GetAllocatedSize(MetalContextRef ctx);
+unsigned long long Metal_GetRecommendMaxWorkingSetSize(MetalContextRef ctx);
 
 // Buffer Management
 MetalBufferRef Metal_Alloc(MetalContextRef ctx, int size);

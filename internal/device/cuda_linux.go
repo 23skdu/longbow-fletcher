@@ -99,6 +99,11 @@ func (b *CudaBackend) SetDevice(index int) {
 	C.Cuda_SetDevice(b.ctx, C.int(index))
 }
 
+func (b *CudaBackend) GetVRAMUsage() (int64, int64) {
+	// TODO: Implement cudaMemGetInfo
+	return 0, 0
+}
+
 type CudaTensor struct {
 	backend   *CudaBackend
 	buf       C.CudaBufferRef
