@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
+	"time"
 
-	"github.com/23skdu/longbow-fletcher/internal/client"
-	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -16,7 +14,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"time"
+	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -34,13 +34,23 @@ var (
 	// VRAM metrics will be registered dynamically to capture embedder closure
 )
 
+type EmbedderInterface interface {
+	EmbedBatch(ctx context.Context, texts []string) [][]float32
+	GetVRAMUsage() (allocated int64, total int64)
+}
+
+type FlightClientInterface interface {
+	DoPut(ctx context.Context, datasetName string, record arrow.RecordBatch) error
+	Close() error
+}
+
 type Server struct {
-	embedder     *embeddings.Embedder
-	flightClient *client.FlightClient
+	embedder     EmbedderInterface
+	flightClient FlightClientInterface
 	datasetName  string
 }
 
-func startServer(addr string, embedder *embeddings.Embedder, fc *client.FlightClient, dataset string) {
+func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string) {
 	srv := &Server{
 		embedder:     embedder,
 		flightClient: fc,
@@ -62,22 +72,24 @@ func startServer(addr string, embedder *embeddings.Embedder, fc *client.FlightCl
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/encode", srv.handleEncode)
 	
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
-	})
+	http.HandleFunc("/health", srv.handleHealth)
 
-	log.Printf("Starting Fletcher Server on %s", addr)
+	log.Info().Str("addr", addr).Msg("Starting Fletcher Server")
 	if fc != nil {
-		log.Printf("Forwarding to Longbow at specified server address")
+		log.Info().Msg("Forwarding to Longbow at specified server address")
 	}
 
 	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		log.Fatal().Err(err).Msg("Server failed")
 	}
 }
 
+var tracer = otel.Tracer("fletcher-server")
+
 func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
+	ctx, span := tracer.Start(r.Context(), "handleEncode")
+	defer span.End()
+
 	start := time.Now()
 	defer func() {
 		requestDuration.Observe(time.Since(start).Seconds())
@@ -91,6 +103,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	var texts []string
 	decoder := cbor.NewDecoder(r.Body)
 	if err := decoder.Decode(&texts); err != nil {
+		span.RecordError(err)
 		http.Error(w, fmt.Sprintf("Bad Request (CBOR decode): %v", err), http.StatusBadRequest)
 		return
 	}
@@ -100,14 +113,18 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	span.SetAttributes(
+		attribute.Int("sequence_count", len(texts)),
+	)
+
 	// 2. Embed -> [][]float32
-	batch := s.embedder.EmbedBatch(texts)
+	batch := s.embedder.EmbedBatch(ctx, texts)
 	vectorsProcessed.Add(float64(len(texts)))
 
 	// 3. Forward to Longbow
 	if s.flightClient != nil {
-		if err := s.forwardToLongbow(r.Context(), texts, batch); err != nil {
-			log.Printf("Error forwarding to Longbow: %v", err)
+		if err := s.forwardToLongbow(ctx, texts, batch); err != nil {
+			log.Error().Err(err).Msg("Error forwarding to Longbow")
 			http.Error(w, "Error forwarding to Longbow", http.StatusInternalServerError)
 			return
 		}
@@ -176,4 +193,9 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, batch [][
 	defer rb.Release()
 	
 	return s.flightClient.DoPut(ctx, s.datasetName, rb)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
 }

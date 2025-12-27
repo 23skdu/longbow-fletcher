@@ -1,6 +1,7 @@
 package embeddings
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -10,6 +11,9 @@ import (
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/weights"
 	"github.com/23skdu/longbow-fletcher/internal/device"
+	"github.com/rs/zerolog/log"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Embedder manages the tokenization and model inference.
@@ -55,7 +59,10 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	}
 	}
 
-	fmt.Printf("Initializing Embedder with %d device(s), precision: %s\n", deviceCount, precision)
+	log.Info().
+		Int("devices", deviceCount).
+		Str("precision", precision).
+		Msg("Initializing Embedder")
 	models := make([]*model.BertModel, deviceCount)
 
 	// Pre-load weights into memory ONCE to avoid disk I/O per device
@@ -93,7 +100,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 		} else if weightsPath == "bert_tiny.bin" {
 			if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
 				if i == 0 {
-					fmt.Printf("Warning: default weights file %s not found, using random initialization\n", weightsPath)
+					log.Warn().Str("file", weightsPath).Msg("Default weights file not found, using random initialization")
 				}
 			} else {
 				loader := weights.NewLoader(bert)
@@ -124,15 +131,23 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	}, nil
 }
 
+var tracer = otel.Tracer("fletcher-embeddings")
+
 // EmbedBatch generates embeddings for a batch of texts.
 // It processes texts in internal batches of 128 to prevent VRAM exhaustion on GPUs.
-func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
+func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) [][]float32 {
+	ctx, span := tracer.Start(ctx, "EmbedBatch")
+	defer span.End()
+
 	if len(texts) == 0 {
 		return nil
 	}
 
+	span.SetAttributes(attribute.Int("sequence_count", len(texts)))
+
 	// 1. Parallel Tokenization
 	// Uses package-level tokenizedResult struct
+	_, tSpan := tracer.Start(ctx, "Tokenization")
 	results := make([]tokenizedResult, len(texts))
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 16 {
@@ -164,8 +179,10 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 		}(start, end)
 	}
 	wg.Wait()
+	tSpan.End()
 
 	// 2. Multi-GPU Dispatch
+	_, iSpan := tracer.Start(ctx, "Inference")
 	allResults := make([][]float32, len(texts))
 	numDevices := len(e.models)
 	
@@ -191,6 +208,7 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 		}(d, start, end)
 	}
 	deviceWg.Wait()
+	iSpan.End()
 
 	return allResults
 }

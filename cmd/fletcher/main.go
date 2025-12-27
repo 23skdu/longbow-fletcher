@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"runtime/pprof"
 	"time"
@@ -17,6 +16,15 @@ import (
 	
 	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 )
 
 var (
@@ -32,27 +40,38 @@ var (
 	serverAddr  = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
 	datasetName = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
 	listenAddr  = flag.String("listen", "", "Address to listen on for Server Mode (e.g. :8080)")
+	enableOTel  = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
 )
 
 func main() {
-	flag.Parse()
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	// Initialize logging
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
 
+	flag.Parse()
+
+	if *enableOTel {
+		shutdown, err := initTracer()
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to initialize tracer")
+		}
+		defer shutdown(context.Background())
+	}
+	
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal().Err(err).Msg("Failed to create CPU profile file")
 		}
 		if err := pprof.StartCPUProfile(f); err != nil {
-			log.Fatalf("could not start CPU profile: %v", err)
+			log.Fatal().Err(err).Msg("Could not start CPU profile")
 		}
 		defer pprof.StopCPUProfile()
 	}
 
 	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU, *modelType, *precision)
 	if err != nil {
-		log.Fatalf("Failed to create embedder: %v", err)
-		log.Fatalf("Failed to create embedder: %v", err)
+		log.Fatal().Err(err).Msg("Failed to create embedder")
 	}
 
 	// Server Mode
@@ -62,9 +81,9 @@ func main() {
 			var err error
 			fc, err = client.NewFlightClient(*serverAddr)
 			if err != nil {
-				log.Fatalf("Failed to create flight client: %v", err)
+				log.Fatal().Err(err).Msg("Failed to create flight client")
 			}
-			log.Printf("Connected to Flight Server at %s", *serverAddr)
+			log.Info().Str("addr", *serverAddr).Msg("Connected to Flight Server")
 		}
 
 		startServer(*listenAddr, embedder, fc, *datasetName)
@@ -87,7 +106,7 @@ func main() {
 	}
 
 	if *duration > 0 {
-		fmt.Printf("Starting soak test for %v...\n", *duration)
+		log.Info().Str("duration", duration.String()).Msg("Starting soak test")
 		if len(texts) == 0 {
 			// Default soak payload if not specified
 			texts = generateLorem(1000)
@@ -100,7 +119,7 @@ func main() {
 		
 		for time.Now().Before(endTime) {
 			iterStart := time.Now()
-			_ = embedder.EmbedBatch(texts)
+			_ = embedder.EmbedBatch(context.Background(), texts)
 			_ = time.Since(iterStart) // Keep timer call but ignore result to silence usage error, or just remove.
 			
 			totalVectors += int64(len(texts))
@@ -109,28 +128,38 @@ func main() {
 			if iter%10 == 0 {
 				elapsed := time.Since(startTime)
 				tps := float64(totalVectors) / elapsed.Seconds()
-				fmt.Printf("[%v] Completed %d iterations. Total: %d vectors. Current TPS: %.2f\n", 
-					elapsed.Round(time.Second), iter, totalVectors, tps)
+				log.Info().
+					Str("elapsed", elapsed.Round(time.Second).String()).
+					Int("iter", iter).
+					Int64("total_vectors", totalVectors).
+					Float64("tps", tps).
+					Msg("Soak test progress")
 			}
 		}
 		
 		totalElapsed := time.Since(startTime)
-		fmt.Printf("Soak test complete.\n")
-		fmt.Printf("Total Vectors: %d\n", totalVectors)
-		fmt.Printf("Total Time: %v\n", totalElapsed)
-		fmt.Printf("Average Throughput: %.2f vectors/sec\n", float64(totalVectors)/totalElapsed.Seconds())
+		log.Info().
+			Int64("total_vectors", totalVectors).
+			Dur("total_time", totalElapsed).
+			Float64("avg_tps", float64(totalVectors)/totalElapsed.Seconds()).
+			Msg("Soak test complete")
 		return
 	}
 
 	start := time.Now()
-	vectors := embedder.EmbedBatch(texts)
+	vectors := embedder.EmbedBatch(context.Background(), texts)
 	elapsed := time.Since(start)
 
-	fmt.Printf("Embedded %d texts in %v\n", len(texts), elapsed)
-	if len(texts) > 0 {
-		fmt.Printf("Vector dim: %d\n", len(vectors[0]))
-		fmt.Printf("Throughput: %.2f vectors/sec\n", float64(len(texts))/elapsed.Seconds())
+	dim := 0
+	if len(vectors) > 0 {
+		dim = len(vectors[0])
 	}
+	log.Info().
+		Int("count", len(texts)).
+		Dur("elapsed", elapsed).
+		Int("dim", dim).
+		Float64("tps", float64(len(texts))/elapsed.Seconds()).
+		Msg("Embedded sequences")
 
 	// Example: write to Arrow IPC
 	// Using Arrow Go library
@@ -138,10 +167,9 @@ func main() {
 	
 	// Define Schema
 	// Schema: { "text": utf8, "embedding": fixed_size_list<float32>[128] }
-	// Assuming 128 dim for BERT Tiny
-	dim := 128
-	if len(vectors) > 0 {
-		dim = len(vectors[0])
+	// Assuming 128 dim for BERT Tiny (fallback if dim is 0)
+	if dim == 0 {
+		dim = 128
 	}
 	
 	schema := arrow.NewSchema(
@@ -178,14 +206,14 @@ func main() {
 
 	// If server is provided, send via Flight
 	if *serverAddr != "" {
-		fmt.Printf("Sending %d vectors to Longbow at %s [%s]...\n", len(texts), *serverAddr, *datasetName)
+		log.Info().Int("count", len(texts)).Str("server", *serverAddr).Str("dataset", *datasetName).Msg("Sending vectors to Longbow")
 		flightClient, err := client.NewFlightClient(*serverAddr)
 		if err != nil {
-			log.Fatalf("Failed to connect to Longbow: %v", err)
+			log.Fatal().Err(err).Msg("Failed to connect to Longbow")
 		}
 		defer func() {
 			if err := flightClient.Close(); err != nil {
-				log.Printf("Warning: failed to close flight client: %v", err)
+				log.Warn().Err(err).Msg("Failed to close flight client")
 			}
 		}()
 
@@ -193,14 +221,14 @@ func main() {
 		defer cancel()
 
 		if err := flightClient.DoPut(ctx, *datasetName, rec); err != nil {
-			log.Fatalf("Flight DoPut failed: %v", err)
+			log.Fatal().Err(err).Msg("Flight DoPut failed")
 		}
-		fmt.Println("Successfully sent embeddings to Longbow.")
+		log.Info().Msg("Successfully sent embeddings to Longbow")
 	} else {
 		// Example: write to Arrow IPC to stdout
 		err = writeArrowStream(os.Stdout, rec)
-	if err != nil {
-			log.Printf("Warning: failed to write arrow stream: %v", err)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to write arrow stream")
 		}
 	}
 }
@@ -222,4 +250,23 @@ func generateLorem(n int) []string {
 		res[i] = fmt.Sprintf("%s %d", base, i)
 	}
 	return res
+}
+
+func initTracer() (func(context.Context) error, error) {
+	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	if err != nil {
+		return nil, err
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("fletcher"),
+		)),
+	)
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+
+	return tp.Shutdown, nil
 }

@@ -1,6 +1,7 @@
 package embeddings
 
 import (
+	"context"
 	"os"
 	"testing"
 
@@ -54,7 +55,7 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 		"test sentence",
 	}
 	
-	vectors := e.EmbedBatch(tests)
+	vectors := e.EmbedBatch(context.Background(), tests)
 	
 	if len(vectors) != len(tests) {
 		t.Errorf("Expected %d vectors, got %d", len(tests), len(vectors))

@@ -1,11 +1,11 @@
 package device
 
 import (
-	"log"
 	"math"
 	"sync"
 	"runtime"
 
+	"github.com/rs/zerolog/log"
 	"github.com/23skdu/longbow-fletcher/internal/simd"
 	"gonum.org/v1/gonum/blas"
 	"gonum.org/v1/gonum/blas/blas32"
@@ -105,7 +105,7 @@ func (b *CPUBackend) DeviceCount() int {
 
 func (b *CPUBackend) SetDevice(index int) {
 	if index != 0 {
-		log.Panicf("Invalid CPU device index: %d", index)
+		log.Panic().Int("index", index).Msg("Invalid CPU device index")
 	}
 }
 
@@ -182,14 +182,17 @@ func (t *CPUTensor) CopyFromFloat32(data []float32) {
 func (t *CPUTensor) Copy(from Tensor) {
 	ft, ok := from.(*CPUTensor)
 	if !ok {
-		log.Panic("Copying between different backends not yet supported directly")
+		log.Panic().Msg("Copying between different backends not yet supported directly")
 	}
 	
 	tr, tc := t.Dims()
 	fr, fc := ft.Dims()
 
 	if tr != fr || tc != fc {
-		log.Panicf("Copy: dimension mismatch. Target: %dx%d, Source: %dx%d", tr, tc, fr, fc)
+		log.Panic().
+			Int("target_rows", tr).Int("target_cols", tc).
+			Int("source_rows", fr).Int("source_cols", fc).
+			Msg("Copy: dimension mismatch")
 	}
 
 	if !t.trans && !ft.trans {
@@ -239,19 +242,19 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 	mb, ok2 := b.(*CPUTensor)
 	
 	if !ok1 || !ok2 {
-		log.Panic("Mixed backend Mul not supported")
+		log.Panic().Msg("Mixed backend Mul not supported")
 	}
 
 	ar, ac := ma.Dims()
 	br, bc := mb.Dims()
 
 	if ac != br {
-		log.Panicf("Mul: dimension mismatch. A cols (%d) != B rows (%d)", ac, br)
+		log.Panic().Int("a_cols", ac).Int("b_rows", br).Msg("Mul: dimension mismatch")
 	}
 
 	tr, tc := t.Dims()
 	if tr != ar || tc != bc {
-		log.Panicf("Mul: result tensor dimension mismatch. Expected %dx%d, got %dx%d", ar, bc, tr, tc)
+		log.Panic().Msgf("Mul: result tensor dimension mismatch. Expected %dx%d, got %dx%d", ar, bc, tr, tc)
 	}
 
 	// Hybrid dispatch: disabled - BLAS is faster even for small matrices on M3 Pro
@@ -335,14 +338,17 @@ func (t *CPUTensor) mulSIMD(ma, mb *CPUTensor, ar, common, bc int) {
 func (t *CPUTensor) Add(other Tensor) {
 	ot, ok := other.(*CPUTensor)
 	if !ok {
-		log.Panic("Mixed backend Add not supported")
+		log.Panic().Msg("Mixed backend Add not supported")
 	}
 
 	tr, tc := t.Dims()
 	or, oc := ot.Dims()
 
 	if tr != or || tc != oc {
-		log.Panicf("Add: dimension mismatch. Target: %dx%d, Other: %dx%d", tr, tc, or, oc)
+		log.Panic().
+			Int("target_rows", tr).Int("target_cols", tc).
+			Int("other_rows", or).Int("other_cols", oc).
+			Msg("Add: dimension mismatch")
 	}
 
 	if !t.trans && !ot.trans {
@@ -394,7 +400,7 @@ func (t *CPUTensor) AddBias(bias Tensor) {
 	}
 
 	if t.trans {
-		log.Panic("AddBias not supported on transposed tensor views directly")
+		log.Panic().Msg("AddBias not supported on transposed tensor views directly")
 	}
 
 	data := t.data
@@ -440,14 +446,14 @@ func (t *CPUTensor) Softmax() {
 
 func (t *CPUTensor) Gelu() {
 	if t.trans {
-		log.Panic("Gelu not supported on transposed tensor views directly")
+		log.Panic().Msg("Gelu not supported on transposed tensor views directly")
 	}
 	simd.GeluFast(t.data)
 }
 
 func (t *CPUTensor) Tanh() {
 	if t.trans {
-		log.Panic("Tanh not supported on transposed tensor views directly")
+		log.Panic().Msg("Tanh not supported on transposed tensor views directly")
 	}
 	data := t.data
 	for i, v := range data {
@@ -461,7 +467,7 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	if !ok1 || !ok2 { panic("Mixed backend LN") }
 	
 	if t.trans {
-		log.Panic("LayerNorm not supported on transposed tensor views directly")
+		log.Panic().Msg("LayerNorm not supported on transposed tensor views directly")
 	}
 	data := t.data
 
@@ -490,7 +496,7 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	r, c := t.Dims()
 	
 	if len(gammaData) < c || len(betaData) < c {
-		log.Panic("LayerNorm params dim mismatch")
+		log.Panic().Msg("LayerNorm params dim mismatch")
 	}
 	
 	for i := 0; i < r; i++ {
