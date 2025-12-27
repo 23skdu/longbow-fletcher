@@ -45,7 +45,7 @@ func main() {
 	// Benchmark function
 	benchmark := func(nVectors int) {
 		// Generate input
-		batchSize := 128 // Reduced batch size for safety / lower latency
+		batchSize := 32 // Reduced batch size for safety / lower latency
 		numBatches := nVectors / batchSize
 		if nVectors%batchSize != 0 {
 			numBatches++
@@ -66,7 +66,8 @@ func main() {
 		// Timed run
 		start := time.Now()
 		for b := 0; b < numBatches; b++ {
-			_ = bertModel.ForwardBatch(inputIDs, lengths)
+			out := bertModel.ForwardBatch(inputIDs, lengths)
+			backend.PutTensor(out)
 			
 			// Frequent synchronization and GC to prevent VRAM exhaustion/Lockup
 			if b % 10 == 0 {
