@@ -131,7 +131,7 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	embeddings := m.Embeddings.ForwardBatch(inputIDs, lengths)
 	
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
-	m.Backend.PutTensor(embeddings)
+	// embeddings is consumed by Encoder
 	
 	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
 	m.Backend.PutTensor(hiddenStates)
@@ -324,7 +324,7 @@ func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) devi
 	// Release intermediates
 	// selfAttention was used by Intermediate and Output, now done.
 	l.Attention.Self.Backend.PutTensor(selfAttention)
-	l.Intermediate.Backend.PutTensor(intermediate)
+	// intermediate is consumed by Output layer
 	
 	return res
 }

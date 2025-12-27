@@ -44,8 +44,9 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 	// initWeights is called in NewBertModelWithBackend, so it has random weights.
 
 	e := &Embedder{
-		model:     bert,
-		tokenizer: tok,
+		models:            []*model.BertModel{bert},
+		tokenizer:         tok,
+		internalBatchSize: 32,
 	}
 	
 	tests := []string{
