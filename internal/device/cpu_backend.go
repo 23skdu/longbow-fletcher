@@ -7,6 +7,8 @@ import (
 	"runtime"
 
 	"github.com/23skdu/longbow-fletcher/internal/simd"
+	"gonum.org/v1/gonum/blas"
+	"gonum.org/v1/gonum/blas/blas32"
 )
 
 // ensure interface compliance
@@ -251,72 +253,34 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 	if tr != ar || tc != bc {
 		log.Panicf("Mul: result tensor dimension mismatch. Expected %dx%d, got %dx%d", ar, bc, tr, tc)
 	}
+
+	// Use BLAS sgemm for hardware-accelerated matmul
+	// C = alpha * A * B + beta * C
+	// We want C = A * B, so alpha=1, beta=0
 	
-	common := ac // or br
-
-	// Parallel MatMul
-	var wg sync.WaitGroup
-	rowsPerWorker := (ar + numWorkers - 1) / numWorkers
-	
-	for w := 0; w < numWorkers; w++ {
-		startRow := w * rowsPerWorker
-		endRow := startRow + rowsPerWorker
-		if startRow >= ar {
-			break
-		}
-		if endRow > ar {
-			endRow = ar
-		}
-		
-		wg.Add(1)
-		go func(start, end int) {
-			defer wg.Done()
-
-			// Pre-allocate buffers for transposed access (amortizes allocation cost)
-			var rowABuf []float32
-			if ma.trans {
-				rowABuf = make([]float32, common)
-			}
-			var colBBuf []float32
-			if !mb.trans {
-				colBBuf = make([]float32, common)
-			}
-
-			// For each row in result
-			for i := start; i < end; i++ {
-				// Get row A[i]
-				var rowA []float32
-				if ma.trans {
-					for k := 0; k < common; k++ {
-						rowABuf[k] = ma.At(i, k)
-					}
-					rowA = rowABuf
-				} else {
-					startA := i * ma.cols
-					rowA = ma.data[startA : startA+ma.cols]
-				}
-
-				for j := 0; j < bc; j++ {
-					// Get col j of B
-					var colB []float32
-					if mb.trans {
-						startB := j * mb.cols
-						colB = mb.data[startB : startB+mb.cols]
-					} else {
-						for k := 0; k < common; k++ {
-							colBBuf[k] = mb.At(k, j)
-						}
-						colB = colBBuf
-					}
-
-					// Dot product
-					sum := simd.DotProduct(rowA, colB)
-					t.Set(i, j, sum)
-				}
-			}
-		}(startRow, endRow)
+	// Determine transpose flags based on internal state
+	tA := blas.NoTrans
+	if ma.trans {
+		tA = blas.Trans
 	}
-	wg.Wait()
+	tB := blas.NoTrans
+	if mb.trans {
+		tB = blas.Trans
+	}
+
+	// lda/ldb/ldc are leading dimensions (stride between rows in memory)
+	// For row-major storage: stride = number of columns in the original matrix
+	lda := ma.cols
+	ldb := mb.cols
+	ldc := tc
+
+	blas32.Gemm(tA, tB,
+		1.0, // alpha
+		blas32.General{Rows: ma.rows, Cols: ma.cols, Stride: lda, Data: ma.data},
+		blas32.General{Rows: mb.rows, Cols: mb.cols, Stride: ldb, Data: mb.data},
+		0.0, // beta
+		blas32.General{Rows: tr, Cols: tc, Stride: ldc, Data: t.data},
+	)
 }
 
 func (t *CPUTensor) Add(other Tensor) {
