@@ -104,7 +104,7 @@ func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
 			// Convert []float32 to []uint16 (FP16 encoded)
 			f16 := make([]uint16, size)
 			for i, v := range data {
-				f16[i] = float32ToFloat16(v)
+				f16[i] = Float32ToFloat16(v)
 			}
 			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&f16[0]), C.int(sizeBytes))
 		} else {
@@ -145,48 +145,7 @@ func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
 	return t
 }
 
-// FP16 conversion helpers
-func float32ToFloat16(f float32) uint16 {
-	bits := *(*uint32)(unsafe.Pointer(&f))
-	sign := (bits >> 31) & 1
-	exp := (bits >> 23) & 0xFF
-	frac := bits & 0x7FFFFF
-	
-	if exp == 255 { // Inf/NaN
-		return uint16((sign << 15) | (0x1F << 10) | (frac >> 13))
-	}
-	if exp == 0 { // Zero/Denorm
-		return uint16(sign << 15)
-	}
-	
-	newExp := int(exp) - 127 + 15
-	if newExp >= 31 { // Overflow -> Inf
-		return uint16((sign << 15) | (0x1F << 10))
-	}
-	if newExp <= 0 { // Underflow -> Zero
-		return uint16(sign << 15)
-	}
-	
-	return uint16((sign << 15) | (uint32(newExp) << 10) | (frac >> 13))
-}
-
-func float16ToFloat32(h uint16) float32 {
-	sign := (uint32(h) >> 15) & 1
-	exp := (uint32(h) >> 10) & 0x1F
-	frac := uint32(h) & 0x3FF
-	
-	if exp == 0 { // Zero/Denorm
-		return 0.0
-	}
-	if exp == 31 { // Inf/NaN
-		bits := (sign << 31) | (0xFF << 23) | (frac << 13)
-		return *(*float32)(unsafe.Pointer(&bits))
-	}
-	
-	newExp := exp - 15 + 127
-	bits := (sign << 31) | (newExp << 23) | (frac << 13)
-	return *(*float32)(unsafe.Pointer(&bits))
-}
+	// FP16 conversion helpers are now in utils.go
 
 func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 	b.mu.Lock()
@@ -257,6 +216,16 @@ func (b *MetalBackend) Synchronize() {
 	C.Metal_Synchronize(b.ctx)
 }
 
+func (b *MetalBackend) DeviceCount() int {
+	return 1 // Single Metal device for now
+}
+
+func (b *MetalBackend) SetDevice(index int) {
+	if index != 0 {
+		panic("Invalid Metal device index")
+	}
+}
+
 type MetalTensor struct {
 	backend    *MetalBackend
 	buf        C.MetalBufferRef
@@ -308,7 +277,7 @@ func (t *MetalTensor) Set(i, j int, v float32) {
 	
 	if t.backend.useFP16 {
 		// FP16: 2 bytes per element - use conversion and direct memory write
-		f16Val := float32ToFloat16(v)
+		f16Val := Float32ToFloat16(v)
 		byteOffset := t.offset + idx*2
 		// Write FP16 value via Metal_CopyToDevice
 		C.Metal_CopyToDevice(t.buf, C.int(byteOffset), unsafe.Pointer(&f16Val), 2)
@@ -330,7 +299,7 @@ func (t *MetalTensor) rawHostCopy() []float32 {
 		
 		raw := make([]float32, size)
 		for i, h := range raw16 {
-			raw[i] = float16ToFloat32(h)
+			raw[i] = Float16ToFloat32(h)
 		}
 		return raw
 	}
@@ -355,10 +324,6 @@ func (t *MetalTensor) Data() []float32 {
 		// but we can do it more efficiently than ToHost().
 		// For now, ToHost is safer if it's FP16. 
 		// But let's provide a way to get raw host access if it were FP32.
-		if !t.backend.useFP16 {
-			// This branch is only for documentation of the logic, 
-			// the actual check is below.
-		}
 		return nil // Force ToHost for FP16 for now to handle conversion
 	}
 	
@@ -409,7 +374,7 @@ func (t *MetalTensor) CopyFromFloat32(data []float32) {
 		// Batch convert to FP16 and upload
 		f16 := make([]uint16, size)
 		for i, v := range data {
-			f16[i] = float32ToFloat16(v)
+			f16[i] = Float32ToFloat16(v)
 		}
 		C.Metal_CopyToDevice(t.buf, C.int(t.offset), unsafe.Pointer(&f16[0]), C.int(size*2))
 	} else {
@@ -519,7 +484,7 @@ func (t *MetalTensor) AddScalar(val float32) {
 func (t *MetalTensor) Scale(val float32) {
 	size := t.rows * t.cols
 	if t.backend.useFP16 {
-		f16Val := float32ToFloat16(val)
+		f16Val := Float32ToFloat16(val)
 		C.Metal_Scale_F16(t.backend.ctx, t.buf, C.int(t.offset), C.uint16_t(f16Val), t.buf, C.int(t.offset), C.int(size))
 	} else {
 		C.Metal_Scale(t.backend.ctx, t.buf, C.int(t.offset), C.float(val), t.buf, C.int(t.offset), C.int(size))
@@ -788,7 +753,6 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 		return
 	}
 
-	dataPtr := uintptr(ptr) + uintptr(t.offset)
 	numWorkers := 4
 	if r < numWorkers {
 		numWorkers = r
@@ -812,16 +776,16 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 			if t.backend.useFP16 {
 				for i := s; i < e; i++ {
 					row := make([]float32, c)
-					rowRaw := (*[1 << 30]uint16)(unsafe.Pointer(dataPtr + uintptr(i*c*2)))[:c:c]
+					rowRaw := (*[1 << 30]uint16)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset) + uintptr(i*c*2)))[:c:c]
 					for j := 0; j < c; j++ {
-						row[j] = float16ToFloat32(rowRaw[j])
+						row[j] = Float16ToFloat32(rowRaw[j])
 					}
 					dest[start+i] = row
 				}
 			} else {
 				for i := s; i < e; i++ {
 					row := make([]float32, c)
-					rowRaw := (*[1 << 30]float32)(unsafe.Pointer(dataPtr + uintptr(i*c*4)))[:c:c]
+					rowRaw := (*[1 << 30]float32)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset) + uintptr(i*c*4)))[:c:c]
 					copy(row, rowRaw)
 					dest[start+i] = row
 				}

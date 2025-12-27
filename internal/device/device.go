@@ -106,4 +106,8 @@ type Backend interface {
 	
 	// Synchronize() // Block until all queued operations are complete
 	Synchronize()
+
+	// Multi-GPU Support
+	DeviceCount() int
+	SetDevice(index int)
 }

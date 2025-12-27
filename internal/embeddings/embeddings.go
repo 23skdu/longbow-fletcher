@@ -14,13 +14,14 @@ import (
 
 // Embedder manages the tokenization and model inference.
 type Embedder struct {
-	model     *model.BertModel
-	tokenizer *tokenizer.WordPieceTokenizer
+	models            []*model.BertModel
+	tokenizer         *tokenizer.WordPieceTokenizer
+	internalBatchSize int
 }
 
 // NewEmbedder creates a new embedder.
-// vocabPath and weightsPath are paths to the vocab.txt and model weights binary.
-func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string) (*Embedder, error) {
+// precision can be "fp32" (default) or "fp16".
+func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, precision string) (*Embedder, error) {
 	tok, err := tokenizer.NewWordPieceTokenizer(vocabPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load tokenizer: %w", err)
@@ -36,38 +37,87 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string) (
 		return nil, fmt.Errorf("unknown model type: %s", modelType)
 	}
 	
-	var backend device.Backend
+	// Default to FP32
+	if precision == "" {
+		precision = "fp32"
+	}
+	
+	deviceCount := 1
 	if useGPU {
-		// NewMetalBackend will fallback or panic if not supported
-		// Ideally we check availability
-		backend = device.NewMetalBackend() // Use FP32 Metal by default, user can call NewMetalBackendFP16 via other means if we exposed it
-		// Or we could expose a config option for FP16
-	} else {
-		backend = device.NewCPUBackend()
+		// Probe for device count using a temporary backend
+		if runtime.GOOS == "darwin" {
+			d := device.NewMetalBackend()
+			deviceCount = d.DeviceCount()
+		} else if runtime.GOOS == "linux" {
+			d := device.NewCudaBackend()
+			deviceCount = d.DeviceCount()
+		}
 	}
 
-	bert := model.NewBertModelWithBackend(config, backend)
+	fmt.Printf("Initializing Embedder with %d device(s), precision: %s\n", deviceCount, precision)
+	models := make([]*model.BertModel, deviceCount)
 
-	if weightsPath != "" && weightsPath != "bert_tiny.bin" {
-		loader := weights.NewLoader(bert)
-		if err := loader.LoadFromRawBinary(weightsPath); err != nil {
-			return nil, fmt.Errorf("failed to load weights: %w", err)
-		}
-	} else if weightsPath == "bert_tiny.bin" {
-		// Check if file exists, if not, skip with warning
-		if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
-			fmt.Printf("Warning: default weights file %s not found, using random initialization\n", weightsPath)
+	// Pre-load weights into memory ONCE to avoid disk I/O per device
+	// var weightData []byte // TODO: Refactor Loader later
+	
+	for i := 0; i < deviceCount; i++ {
+		var backend device.Backend
+		if useGPU {
+			if runtime.GOOS == "darwin" {
+				if precision == "fp16" {
+					backend = device.NewMetalBackendFP16()
+				} else {
+					backend = device.NewMetalBackend()
+				}
+			} else if runtime.GOOS == "linux" {
+				if precision == "fp16" {
+					backend = device.NewCudaBackendFP16()
+				} else {
+					backend = device.NewCudaBackend()
+				}
+			}
+			backend.SetDevice(i) // Pin backend to specific device
 		} else {
+			backend = device.NewCPUBackend()
+		}
+
+		bert := model.NewBertModelWithBackend(config, backend)
+
+		if weightsPath != "" && weightsPath != "bert_tiny.bin" {
 			loader := weights.NewLoader(bert)
 			if err := loader.LoadFromRawBinary(weightsPath); err != nil {
-				return nil, fmt.Errorf("failed to load weights: %w", err)
+				return nil, fmt.Errorf("failed to load weights for device %d: %w", i, err)
 			}
+		} else if weightsPath == "bert_tiny.bin" {
+			if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
+				if i == 0 {
+					fmt.Printf("Warning: default weights file %s not found, using random initialization\n", weightsPath)
+				}
+			} else {
+				loader := weights.NewLoader(bert)
+				if err := loader.LoadFromRawBinary(weightsPath); err != nil {
+					return nil, fmt.Errorf("failed to load weights for device %d: %w", i, err)
+				}
+			}
+		}
+		models[i] = bert
+	}
+
+	// Default batch sizes based on device
+	batchSize := 32
+	if useGPU {
+		// Dynamic batch sizing based on platform
+		if runtime.GOOS == "darwin" {
+			batchSize = 256
+		} else if runtime.GOOS == "linux" {
+			batchSize = 512
 		}
 	}
 
 	return &Embedder{
-		model:     bert,
-		tokenizer: tok,
+		models:            models,
+		tokenizer:         tok,
+		internalBatchSize: batchSize,
 	}, nil
 }
 
@@ -79,10 +129,7 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 	}
 
 	// 1. Parallel Tokenization
-	type tokenizedResult struct {
-		ids []int
-		len int
-	}
+	// Uses package-level tokenizedResult struct
 	results := make([]tokenizedResult, len(texts))
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 16 {
@@ -115,44 +162,78 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 	}
 	wg.Wait()
 
-	const internalBatchSize = 512
+	// 2. Multi-GPU Dispatch
 	allResults := make([][]float32, len(texts))
+	numDevices := len(e.models)
 	
-	// 2. Double-buffered GPU Processing
+	// Split work across devices
+	itemsPerDevice := (len(texts) + numDevices - 1) / numDevices
+	
+	var deviceWg sync.WaitGroup
+	for d := 0; d < numDevices; d++ {
+		start := d * itemsPerDevice
+		if start >= len(texts) {
+			break
+		}
+		end := start + itemsPerDevice
+		if end > len(texts) {
+			end = len(texts)
+		}
+		
+		deviceWg.Add(1)
+		go func(devId, s, eIdx int) {
+			defer deviceWg.Done()
+			m := e.models[devId]
+			runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], allResults, s)
+		}(d, start, end)
+	}
+	deviceWg.Wait()
+
+	return allResults
+}
+
+// tokenizedResult is a helper struct for passing data
+type tokenizedResult struct {
+	ids []int
+	len int
+}
+
+func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, outputs [][]float32, globalOffset int) {
+	// Double-buffered GPU Processing (per device)
 	var prevOutput device.Tensor
 	var prevBatchIdx int
 
-	for i := 0; i < len(texts); i += internalBatchSize {
-		batchEnd := i + internalBatchSize
-		if batchEnd > len(texts) {
-			batchEnd = len(texts)
+	count := len(inputs)
+	for i := 0; i < count; i += batchSize {
+		batchEnd := i + batchSize
+		if batchEnd > count {
+			batchEnd = count
 		}
 
 		batchCount := batchEnd - i
 		totalTokens := 0
 		for j := i; j < batchEnd; j++ {
-			totalTokens += results[j].len
+			totalTokens += inputs[j].len
 		}
 
-		inputs := make([]int, 0, totalTokens)
+		flatInputs := make([]int, 0, totalTokens)
 		lengths := make([]int, batchCount)
 
 		for j := 0; j < batchCount; j++ {
-			res := results[i+j]
-			inputs = append(inputs, 101) // [CLS]
-			inputs = append(inputs, res.ids...)
-			inputs = append(inputs, 102) // [SEP]
+			res := inputs[i+j]
+			flatInputs = append(flatInputs, 101) // [CLS]
+			flatInputs = append(flatInputs, res.ids...)
+			flatInputs = append(flatInputs, 102) // [SEP]
 			lengths[j] = res.len
 		}
 
 		// Start GPU for current batch
-		// forward pass is largely async until ExtractTo/ToHost is called
-		currentOutput := e.model.ForwardBatch(inputs, lengths)
+		currentOutput := m.ForwardBatch(flatInputs, lengths)
 
 		// While GPU handles current batch, CPU extracts results from PREVIOUS batch
 		if prevOutput != nil {
-			prevOutput.ExtractTo(allResults, prevBatchIdx)
-			e.model.Backend.PutTensor(prevOutput)
+			prevOutput.ExtractTo(outputs, globalOffset+prevBatchIdx)
+			m.Backend.PutTensor(prevOutput)
 		}
 
 		prevOutput = currentOutput
@@ -161,9 +242,7 @@ func (e *Embedder) EmbedBatch(texts []string) [][]float32 {
 
 	// Handle the final batch
 	if prevOutput != nil {
-		prevOutput.ExtractTo(allResults, prevBatchIdx)
-		e.model.Backend.PutTensor(prevOutput)
+		prevOutput.ExtractTo(outputs, globalOffset+prevBatchIdx)
+		m.Backend.PutTensor(prevOutput)
 	}
-
-	return allResults
 }

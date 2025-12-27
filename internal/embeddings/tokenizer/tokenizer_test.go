@@ -17,14 +17,14 @@ func TestTokenizer(t *testing.T) {
 	vocabPath := "test_vocab.txt"
 	err := os.WriteFile(vocabPath, []byte(""), 0644)
 	require.NoError(t, err)
-	defer os.Remove(vocabPath)
+	defer func() { _ = os.Remove(vocabPath) }()
 
 	f, err := os.OpenFile(vocabPath, os.O_APPEND|os.O_WRONLY, 0644)
 	require.NoError(t, err)
 	for _, v := range vocabContent {
-		f.WriteString(v + "\n")
+		_, _ = f.WriteString(v + "\n")
 	}
-	f.Close()
+	_ = f.Close()
 
 	tk, err := NewWordPieceTokenizer(vocabPath)
 	require.NoError(t, err)

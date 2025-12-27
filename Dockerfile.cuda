@@ -1,0 +1,67 @@
+# Stage 1: Build
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS builder
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    git \
+    gcc \
+    g++ \
+    libopenblas-dev \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Go
+RUN curl -L https://go.dev/dl/go1.24.linux-amd64.tar.gz | tar -C /usr/local -xz
+ENV PATH=$PATH:/usr/local/go/bin
+
+# Install MatX (Header-only)
+# We assume the user clones it or we fetch it. 
+# For this Dockerfile, we'll fetch the headers.
+RUN git clone https://github.com/NVIDIA/MatX.git /usr/local/matx
+# MatX is header-only, just need to include it in the include path.
+
+# Copy go module files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the MatX bridge as a shared library
+# We include /usr/local/matx/include
+RUN nvcc -O3 --shared -Xcompiler -fPIC \
+    -I/usr/local/matx/include \
+    -o libcuda_fletcher.so \
+    internal/device/cuda_backend.cu \
+    -lcublas -lcudart
+
+# Build Go binary with CUDA tag
+# We link against the shared library we just built
+RUN CGO_ENABLED=1 GOOS=linux go build -tags cuda \
+    -ldflags="-s -w" \
+    -o fletcher ./cmd/fletcher
+
+# Stage 2: Runtime image
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libopenblas0 \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the binary and vocab
+COPY --from=builder /app/fletcher /app/fletcher
+COPY --from=builder /app/vocab.txt /app/vocab.txt
+COPY --from=builder /app/libcuda_fletcher.so /usr/local/lib/
+
+# Ensure the shared library is found
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+RUN ldconfig
+
+ENTRYPOINT ["/app/fletcher"]

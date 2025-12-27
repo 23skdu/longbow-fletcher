@@ -28,7 +28,7 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// In a real implementation, we would have a header or a manifest.
 	// For this CLI, we'll assume a specific order based on the model structure.

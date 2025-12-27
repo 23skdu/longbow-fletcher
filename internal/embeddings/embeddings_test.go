@@ -14,7 +14,7 @@ func createTempVocab(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	tokens := []string{
 		"[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]",
@@ -22,14 +22,14 @@ func createTempVocab(t *testing.T) string {
 		"##lo", "##ld",
 	}
 	for _, tok := range tokens {
-		f.WriteString(tok + "\n")
+		_, _ = f.WriteString(tok + "\n")
 	}
 	return f.Name()
 }
 
 func TestEmbedder_EmbedBatch(t *testing.T) {
 	vocabPath := createTempVocab(t)
-	defer os.Remove(vocabPath)
+	defer func() { _ = os.Remove(vocabPath) }()
 	
 	// Manually construct tokenizer
 	tok, err := tokenizer.NewWordPieceTokenizer(vocabPath)

@@ -19,14 +19,14 @@ func TestLoader_LoadFromRawBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(f.Name())
+	defer func() { _ = os.Remove(f.Name()) }()
 	
 	// Write some floats
 	data := []float64{1.0, 2.0, 3.0}
 	for _, v := range data {
-		binary.Write(f, binary.LittleEndian, float32(v)) // Assuming file is float32
+		_ = binary.Write(f, binary.LittleEndian, float32(v)) // Assuming file is float32
 	}
-	f.Close()
+	_ = f.Close()
 	
 	// Try loading (will fail partly because file is too small for full model, but checks stricture)
 	// Actually LoadFromRawBinary expects full model size.

@@ -27,6 +27,8 @@ var (
 	interactive = flag.Bool("interactive", false, "Interactive mode")
 	loremIpsum  = flag.Int("lorem", 0, "Generate N lines of lorem ipsum")
 	modelType   = flag.String("model", "bert-tiny", "Model type (bert-tiny, nomic-embed-text)")
+	precision   = flag.String("precision", "fp32", "Precision (fp32, fp16)")
+	duration    = flag.Duration("duration", 0, "Run soak test for specified duration (e.g. 10s, 20m)")
 	serverAddr  = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
 	datasetName = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
 )
@@ -39,11 +41,13 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		pprof.StartCPUProfile(f)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("could not start CPU profile: %v", err)
+		}
 		defer pprof.StopCPUProfile()
 	}
 
-	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU, *modelType)
+	embedder, err := embeddings.NewEmbedder(*vocabPath, *weightsPath, *useGPU, *modelType, *precision)
 	if err != nil {
 		log.Fatalf("Failed to create embedder: %v", err)
 	}
@@ -61,6 +65,42 @@ func main() {
 			"The quick brown fox jumps over the lazy dog",
 			"Fletcher is a high performance embedding engine",
 		}
+	}
+
+	if *duration > 0 {
+		fmt.Printf("Starting soak test for %v...\n", *duration)
+		if len(texts) == 0 {
+			// Default soak payload if not specified
+			texts = generateLorem(1000)
+		}
+		
+		startTime := time.Now()
+		endTime := startTime.Add(*duration)
+		var totalVectors int64
+		var iter int
+		
+		for time.Now().Before(endTime) {
+			iterStart := time.Now()
+			_ = embedder.EmbedBatch(texts)
+			_ = time.Since(iterStart) // Keep timer call but ignore result to silence usage error, or just remove.
+			
+			totalVectors += int64(len(texts))
+			iter++
+			
+			if iter%10 == 0 {
+				elapsed := time.Since(startTime)
+				tps := float64(totalVectors) / elapsed.Seconds()
+				fmt.Printf("[%v] Completed %d iterations. Total: %d vectors. Current TPS: %.2f\n", 
+					elapsed.Round(time.Second), iter, totalVectors, tps)
+			}
+		}
+		
+		totalElapsed := time.Since(startTime)
+		fmt.Printf("Soak test complete.\n")
+		fmt.Printf("Total Vectors: %d\n", totalVectors)
+		fmt.Printf("Total Time: %v\n", totalElapsed)
+		fmt.Printf("Average Throughput: %.2f vectors/sec\n", float64(totalVectors)/totalElapsed.Seconds())
+		return
 	}
 
 	start := time.Now()
@@ -93,11 +133,12 @@ func main() {
 		nil,
 	)
 
-	builder := array.NewRecordBuilder(pool, schema)
-	defer builder.Release()
-
-	textBuilder := builder.Field(0).(*array.StringBuilder)
-	embedBuilder := builder.Field(1).(*array.FixedSizeListBuilder)
+	// Build Columns
+	textBuilder := array.NewStringBuilder(pool)
+	defer textBuilder.Release()
+	
+	embedBuilder := array.NewFixedSizeListBuilder(pool, int32(dim), arrow.PrimitiveTypes.Float32)
+	defer embedBuilder.Release()
 	floatBuilder := embedBuilder.ValueBuilder().(*array.Float32Builder)
 
 	// Append Data
@@ -105,11 +146,15 @@ func main() {
 		textBuilder.Append(text)
 		
 		embedBuilder.Append(true)
-		// vectors[i] is already []float32 now!
 		floatBuilder.AppendValues(vectors[i], nil)
 	}
 
-	rec := builder.NewRecord()
+	textArr := textBuilder.NewArray()
+	defer textArr.Release()
+	embedArr := embedBuilder.NewArray()
+	defer embedArr.Release()
+
+	rec := array.NewRecordBatch(schema, []arrow.Array{textArr, embedArr}, int64(len(texts)))
 	defer rec.Release()
 
 	// If server is provided, send via Flight
@@ -119,7 +164,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to connect to Longbow: %v", err)
 		}
-		defer flightClient.Close()
+		defer func() {
+			if err := flightClient.Close(); err != nil {
+				log.Printf("Warning: failed to close flight client: %v", err)
+			}
+		}()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
@@ -131,17 +180,19 @@ func main() {
 	} else {
 		// Example: write to Arrow IPC to stdout
 		err = writeArrowStream(os.Stdout, rec)
-		if err != nil {
-			// If stdout is closed or something
+	if err != nil {
+			log.Printf("Warning: failed to write arrow stream: %v", err)
 		}
 	}
 }
 
-func writeArrowStream(w *os.File, rec arrow.Record) error {
+func writeArrowStream(w *os.File, rec arrow.RecordBatch) error {
 	writer := ipc.NewWriter(w, ipc.WithSchema(rec.Schema()))
-	defer writer.Close()
-	
-	return writer.Write(rec)
+	if err := writer.Write(rec); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
 }
 
 func generateLorem(n int) []string {
