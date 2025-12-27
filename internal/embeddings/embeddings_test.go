@@ -55,7 +55,7 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 		"test sentence",
 	}
 	
-	vectors := e.EmbedBatch(context.Background(), tests)
+	vectors := e.ProxyEmbedBatch(context.Background(), tests)
 	
 	if len(vectors) != len(tests)*config.HiddenSize {
 		t.Errorf("Expected %d elements, got %d", len(tests)*config.HiddenSize, len(vectors))

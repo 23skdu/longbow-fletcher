@@ -1,3 +1,6 @@
+// go:build metal
+//  +build metal
+
 #import "metal_bridge.h"
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>

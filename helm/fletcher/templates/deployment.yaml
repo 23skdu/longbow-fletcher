@@ -46,10 +46,27 @@ spec:
             {{- if .Values.server.useGPU }}
             - "-gpu"
             {{- end }}
+            - "-transport-fmt"
+            - "{{ .Values.server.transportFmt }}"
+            - "-max-vram"
+            - "{{ .Values.server.maxVRAM }}"
+            - "-max-concurrent"
+            - "{{ .Values.server.maxConcurrent }}"
+            - "-dataset"
+            - "{{ .Values.server.dataset }}"
+            {{- if .Values.server.flightEnabled }}
+            - "-flight"
+            - ":{{ .Values.server.flightPort }}"
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
+            {{- if .Values.server.flightEnabled }}
+            - name: flight
+              containerPort: {{ .Values.server.flightPort }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health

@@ -62,6 +62,17 @@ server:
   forwardTo: ""
   # Enable GPU usage flag (-gpu)
   useGPU: false
+  # Transport format: fp32 or fp16
+  transportFmt: "fp32"
+  # Maximum VRAM usage for admission control
+  maxVRAM: "4GB"
+  # Maximum concurrent sequences
+  maxConcurrent: 16384
+  # Target dataset name when forwarding
+  dataset: "fletcher_dataset"
+  # Flight Server Configuration
+  flightEnabled: false
+  flightPort: 9090
 
 # Monitoring Configuration
 monitoring:

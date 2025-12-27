@@ -10,6 +10,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -36,13 +37,27 @@ var (
 		Buckets: prometheus.DefBuckets,
 	})
 
-	// VRAM metrics will be registered dynamically to capture embedder closure
+	// Flight Metrics
+	flightBytesSent = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fletcher_flight_bytes_sent_total",
+		Help: "Total bytes sent via Arrow Flight",
+	})
+	flightRequests = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fletcher_flight_requests_total",
+		Help: "Total Arrow Flight DoPut requests",
+	})
+	flightDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fletcher_flight_duration_seconds",
+		Help:    "Time spent in Flight DoPut",
+		Buckets: prometheus.DefBuckets,
+	})
 )
 
 type EmbedderInterface interface {
 	EmbedBatch(ctx context.Context, texts []string) <-chan embeddings.StreamResult
 	ProxyEmbedBatch(ctx context.Context, texts []string) []float32
 	GetVRAMUsage() (allocated int64, total int64)
+	EstimateVRAM(numSequences int, totalBytes int) int64
 }
 
 type FlightClientInterface interface {
@@ -57,9 +72,16 @@ type Server struct {
 	alloc        memory.Allocator
 	sbPool       sync.Pool
 	sem          *semaphore.Weighted
+	vramSem      *semaphore.Weighted
+	TransportFmt string
 }
 
-func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int) *Server {
+func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string) *Server {
+	var vs *semaphore.Weighted
+	if maxVRAM > 0 {
+		vs = semaphore.NewWeighted(maxVRAM)
+	}
+	
 	return &Server{
 		embedder:     embedder,
 		flightClient: fc,
@@ -70,12 +92,14 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 				return array.NewStringBuilder(memory.DefaultAllocator)
 			},
 		},
-		sem: semaphore.NewWeighted(int64(maxConcurrent)),
+		sem:          semaphore.NewWeighted(int64(maxConcurrent)),
+		vramSem:      vs,
+		TransportFmt: transportFmt,
 	}
 }
 
-func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int) {
-	srv := NewServer(embedder, fc, dataset, maxConcurrent)
+func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string) {
+	srv := NewServer(embedder, fc, dataset, maxConcurrent, maxVRAM, transportFmt)
 
 	// Register VRAM metrics
 	prometheus.MustRegister(prometheus.NewGaugeFunc(
@@ -120,6 +144,17 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	
+	// Enhanced logging with Trace ID and Client IP
+	sc := span.SpanContext()
+	logger := log.With().
+		Str("client_ip", r.RemoteAddr).
+		Str("user_agent", r.UserAgent()).
+		Logger()
+	
+	if sc.HasTraceID() {
+		logger = logger.With().Str("trace_id", sc.TraceID().String()).Logger()
+	}
 
 	var texts []string
 	decoder := cbor.NewDecoder(r.Body)
@@ -133,19 +168,39 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	
+	logger.Info().Int("sequence_count", len(texts)).Msg("Received encode request")
 
 	span.SetAttributes(
 		attribute.Int("sequence_count", len(texts)),
 	)
+	
+	// Use total character count for estimation
+	totalBytes := 0
+	for _, t := range texts {
+		totalBytes += len(t)
+	}
 
 	// Admission Control
+	// 1. Sequence Count Limit
 	weight := int64(len(texts))
 	if err := s.sem.Acquire(ctx, weight); err != nil {
-		log.Error().Err(err).Msg("Failed to acquire semaphore")
+		logger.Error().Err(err).Msg("Failed to acquire semaphore")
 		http.Error(w, "Server busy", http.StatusServiceUnavailable)
 		return
 	}
 	defer s.sem.Release(weight)
+	
+	// 2. VRAM Limit
+	if s.vramSem != nil {
+		estVRAM := s.embedder.EstimateVRAM(len(texts), totalBytes)
+		if err := s.vramSem.Acquire(ctx, estVRAM); err != nil {
+			logger.Error().Err(err).Msg("Failed to acquire VRAM semaphore")
+			http.Error(w, "Server busy (VRAM)", http.StatusServiceUnavailable)
+			return
+		}
+		defer s.vramSem.Release(estVRAM)
+	}
 
 	// 2 & 3. Embed and Forward (Pipelined)
 	ch := s.embedder.EmbedBatch(ctx, texts)
@@ -154,13 +209,13 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	if s.flightClient != nil {
 		for chunk := range ch {
 			if chunk.Err != nil {
-				log.Error().Err(chunk.Err).Msg("Inference error in stream")
+				logger.Error().Err(chunk.Err).Msg("Inference error in stream")
 				continue 
 			}
 			// Forward slice of original texts
 			chunkTexts := texts[chunk.Offset : chunk.Offset+chunk.Count]
 			if err := s.forwardToLongbow(ctx, chunkTexts, chunk.Vectors); err != nil {
-				log.Error().Err(err).Msg("Error forwarding chunk to Longbow")
+				logger.Error().Err(err).Msg("Error forwarding chunk to Longbow")
 				// Keep going for other chunks? Or abort?
 			}
 		}
@@ -188,15 +243,52 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, flatBatch
 		return nil
 	}
 	cols := len(flatBatch) / curBatchSize
-
-	// Zero-copy Arrow Data construction
-	// Note: In a production scenario, we'd manage the lifecycle of the tensor memory
-	// but here we rely on the flatBatch being owned by this function until RecordBatch is sent.
-	resultBuf := memory.NewBufferBytes(arrow.Float32Traits.CastToBytes(flatBatch))
 	
-	fslType := arrow.FixedSizeListOf(int32(cols), arrow.PrimitiveTypes.Float32)
+	var embedBytes int
+	var fslType *arrow.FixedSizeListType
+	var valuesData *array.Data
 	
-	valuesData := array.NewData(arrow.PrimitiveTypes.Float32, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
+	if s.TransportFmt == "fp16" {
+		// Convert to FP16
+		fp16Data := make([]float16.Num, len(flatBatch))
+		for i, v := range flatBatch {
+			fp16Data[i] = float16.New(v)
+		}
+		
+		// Create buffer from uint16s
+		// Arrow Float16 is backed by 2 bytes.
+		// We can cast []float16.Num (which is uint16) to bytes.
+		// Using unsafe/manual cast or copying.
+		// memory.NewBufferBytes takes []byte.
+		// We can iterate and write, or use unsafe.
+		// For safety/portability without unsafe, let's just write to byte slice.
+		// Or use arrow.Float16Traits? No traits for Float16 in v18 might be standard like others.
+		// Let's assume manual byte construction for now to be safe or use what CastToBytes does (unsafe).
+		// arrow.Float16Traits might exist if imported.
+		// Let's try arrow.Float16Traits.CastToBytes(fp16Data) if it exists, but float16 package is in arrow/float16.
+		// array.Float16Builder uses float16.Num.
+		
+		// Let's reuse the CastToBytes pattern but for uint16/float16.Num if possible.
+		// Actually arrow.Float16Traits doesn't exist usually.
+		// We will construct the byte slice manually for now to be safe.
+		byteData := make([]byte, len(flatBatch)*2)
+		for i, n := range fp16Data {
+			u := n.Uint16()
+			byteData[i*2] = byte(u)
+			byteData[i*2+1] = byte(u >> 8)
+		}
+		
+		resultBuf := memory.NewBufferBytes(byteData)
+		fslType = arrow.FixedSizeListOf(int32(cols), arrow.FixedWidthTypes.Float16)
+		valuesData = array.NewData(arrow.FixedWidthTypes.Float16, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
+		embedBytes = len(byteData)
+	} else {
+		// FP32 Default
+		resultBuf := memory.NewBufferBytes(arrow.Float32Traits.CastToBytes(flatBatch))
+		fslType = arrow.FixedSizeListOf(int32(cols), arrow.PrimitiveTypes.Float32)
+		valuesData = array.NewData(arrow.PrimitiveTypes.Float32, curBatchSize*cols, []*memory.Buffer{nil, resultBuf}, nil, 0, 0)
+		embedBytes = len(flatBatch) * 4
+	}
 	defer valuesData.Release()
 	
 	fslData := array.NewData(
@@ -222,13 +314,40 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, flatBatch
 	rb := array.NewRecordBatch(schema, []arrow.Array{textArr, embeddingArr}, int64(curBatchSize))
 	defer rb.Release()
 	
-	return s.flightClient.DoPut(ctx, s.datasetName, rb)
+	// Record flight metrics
+	startFlight := time.Now()
+	err := s.flightClient.DoPut(ctx, s.datasetName, rb)
+	dur := time.Since(startFlight)
+	
+	flightRequests.Inc()
+	flightDuration.Observe(dur.Seconds())
+	
+	// Estimate bytes (schema + buffers)
+	// Rough estimate: text buffer len + embedding buffer len
+	// Text buffer:
+	totalTextLen := 0
+	for _, t := range texts { totalTextLen += len(t) }
+	// Embeddings:
+	flightBytesSent.Add(float64(totalTextLen + embedBytes))
+	
+	return err
 }
 
 
 func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "handleEncodeArrow")
 	defer span.End()
+
+	// Enhanced logging with Trace ID and Client IP
+	sc := span.SpanContext()
+	logger := log.With().
+		Str("client_ip", r.RemoteAddr).
+		Str("user_agent", r.UserAgent()).
+		Logger()
+	
+	if sc.HasTraceID() {
+		logger = logger.With().Str("trace_id", sc.TraceID().String()).Logger()
+	}
 
 	start := time.Now()
 	defer func() {
@@ -279,7 +398,7 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			
-			log.Warn().Msg("First column is not String/Binary array, skipping batch")
+			logger.Warn().Msg("First column is not String/Binary array, skipping batch")
 			continue
 		}
 
@@ -288,22 +407,42 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 			texts[i] = strArr.Value(i)
 		}
 		
+		// Admission Control setup
+		totalBytes := 0
+		for _, t := range texts {
+			totalBytes += len(t)
+		}
+		
 		weight := int64(len(texts))
 		if err := s.sem.Acquire(ctx, weight); err != nil {
-			log.Error().Err(err).Msg("Failed to acquire semaphore for arrow batch")
-			// For stream, maybe we just break or wait?
-			// Acquire is blocking unless ctx canceled.
-			// Ideally we wait.
+			logger.Error().Err(err).Msg("Failed to acquire semaphore for arrow batch")
 			break
 		}
+		
+		// VRAM Limit (nested to ensure we release both)
+		var vramAcquired int64
+		if s.vramSem != nil {
+			estVRAM := s.embedder.EstimateVRAM(len(texts), totalBytes)
+			if err := s.vramSem.Acquire(ctx, estVRAM); err != nil {
+				logger.Error().Err(err).Msg("Failed to acquire VRAM semaphore for arrow batch")
+				s.sem.Release(weight) // Back out
+				break
+			}
+			vramAcquired = estVRAM
+		}
+		
 		s.processBatch(ctx, texts)
+		
+		if s.vramSem != nil {
+			s.vramSem.Release(vramAcquired)
+		}
 		s.sem.Release(weight)
 		
 		totalProcessed += len(texts)
 	}
 
 	if reader.Err() != nil {
-		log.Error().Err(reader.Err()).Msg("Error reading Arrow stream")
+		logger.Error().Err(reader.Err()).Msg("Error reading Arrow stream")
 		http.Error(w, "Stream error", http.StatusInternalServerError)
 		return
 	}

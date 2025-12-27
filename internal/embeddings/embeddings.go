@@ -194,30 +194,72 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	// 2. Multi-GPU Dispatch
 	dim := e.models[0].Config.HiddenSize
 	numDevices := len(e.models)
-	itemsPerDevice := (len(texts) + numDevices - 1) / numDevices
 	
+	// Calculate total tokens for balancing
+	totalTokens := 0
+	for _, res := range results {
+		totalTokens += res.len
+	}
+	targetTokensPerDevice := totalTokens / numDevices
+	if targetTokensPerDevice == 0 {
+		targetTokensPerDevice = 1
+	}
+
 	go func() {
 		defer close(out)
 		_, iSpan := tracer.Start(ctx, "Inference")
 		defer iSpan.End()
 
 		var deviceWg sync.WaitGroup
+		
+		startIndex := 0
 		for d := 0; d < numDevices; d++ {
-			start := d * itemsPerDevice
-			if start >= len(texts) {
+			if startIndex >= len(results) {
 				break
 			}
-			end := start + itemsPerDevice
-			if end > len(texts) {
-				end = len(texts)
+			
+			endIndex := startIndex
+			currentTokens := 0
+			
+			// Greedily accumulate items until we reach target load
+			// But ensure at least one item if available
+			for endIndex < len(results) {
+				// Always take at least one item if we haven't taken any for this device yet
+				if endIndex == startIndex {
+					currentTokens += results[endIndex].len
+					endIndex++
+					continue
+				}
+				
+				// Check if adding next item exceeds target significantly?
+				// Simple approach: stop if we are above target, unless we are the last device
+				if d < numDevices-1 && currentTokens >= targetTokensPerDevice {
+					break
+				}
+				
+				currentTokens += results[endIndex].len
+				endIndex++
 			}
+			
+			// If last device, take everything remaining
+			if d == numDevices-1 {
+				endIndex = len(results)
+			}
+			
+			if endIndex > len(results) {
+				endIndex = len(results)
+			}
+			
 			
 			deviceWg.Add(1)
 			go func(devId, s, eIdx int) {
 				defer deviceWg.Done()
+				log.Info().Int("device", devId).Int("sequences", eIdx-s).Int("tokens", currentTokens).Msg("Dispatching batch")
 				m := e.models[devId]
 				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, out)
-			}(d, start, end)
+			}(d, startIndex, endIndex)
+			
+			startIndex = endIndex
 		}
 		deviceWg.Wait()
 	}()
@@ -249,6 +291,87 @@ func (e *Embedder) GetVRAMUsage() (allocated int64, total int64) {
 		total += t
 	}
 	return
+}
+
+// EstimateVRAM returns the estimated VRAM usage in bytes for a given request.
+// It assumes the request will be processed in chunks of e.internalBatchSize.
+// numSequences: number of text strings in the request
+// totalBytes: total number of bytes in the text strings (used to estimate token count)
+func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
+	if numSequences == 0 {
+		return 0
+	}
+
+	// 1. Estimate average tokens per sequence
+	// English text is roughly 4 chars per token. Conservatively use 3.
+	avgChars := totalBytes / numSequences
+	avgTokens := avgChars / 3
+	if avgTokens < 16 {
+		avgTokens = 16 // Minimum floor
+	}
+	// Cap at model max position embeddings (e.g., 512 for BERT Tiny)
+	maxPos := e.models[0].Config.MaxPositionEmbeddings
+	if avgTokens > maxPos {
+		avgTokens = maxPos
+	}
+
+	// 2. Determine effective batch size (capped by internal batch size)
+	// We use 2x internal batch size because of double buffering in runInferenceOnDevice
+	effectiveBatchSize := numSequences
+	doubleBufferedCap := e.internalBatchSize * 2
+	if effectiveBatchSize > doubleBufferedCap {
+		effectiveBatchSize = doubleBufferedCap
+	}
+	
+	// 3. Calculate Memory Usage per Sequence (Heuristic)
+	// Based on BERT architecture:
+	// Activation Memory ~= Layers * (Attention + MLP)
+	// Attention: O(L^2) scores + O(L*D) projections
+	// MLP: O(L*D*4)
+	
+	hiddenSize := e.models[0].Config.HiddenSize // e.g., 128
+	layers := e.models[0].Config.NumHiddenLayers // e.g., 2
+	
+	// Float32 = 4 bytes
+	bytesPerElement := 4
+	
+	// Per Layer:
+	// Q, K, V, Out: 4 * (SeqLen * Hidden)
+	// Attention Scores: (SeqLen * SeqLen) * Heads (optimization: reused?)
+	// Let's assume naive scores allocation: SeqLen^2
+	// Intermediates (MLP): SeqLen * IntermediateSize (usually 4*Hidden)
+	
+	// Simplified per-token cost (activations):
+	// roughly: Layers * (4*Hidden + Intermediate + Hidden) * Bytes
+	// + Attention Scores: Layers * Heads * SeqLen * Bytes (if linear attention) or SeqLen^2
+	
+	// For BERT Tiny (H=128, I=512, L=2):
+	// Per Token: 2 * (512 + 512 + 128) * 4 ~= 10KB ?
+	// Let's use a simpler linear constant derived from empirics or conservative bounds.
+	// A standard BERT-base (Seq 512) takes ~1GB for batch 32? -> ~30MB/seq.
+	// BERT Tiny is much smaller (1/20th parameters, smaller activations).
+	
+	// Heuristic Factors (Tunable):
+	// Fixed overhead per batch
+	const fixedOverhead = 10 * 1024 * 1024 // 10MB base overhead
+	
+	// Linear cost per token (Activations)
+	// H=128, L=2 -> Small.
+	// H=768, L=12 -> Large.
+	// Estimate: 4 bytes * Layers * (10 * Hidden)
+	linearFactor := int64(layers * 10 * hiddenSize * bytesPerElement)
+	
+	// Quadratic cost (Attention Matrix): Layers * Heads * SeqLen
+	// (Only significant for long sequences)
+	quadraticFactor := int64(layers * e.models[0].Config.NumAttentionHeads * bytesPerElement)
+
+	// Per Sequence Cost
+	seqLen := int64(avgTokens)
+	costPerSeq := (seqLen * linearFactor) + (seqLen * seqLen * quadraticFactor)
+	
+	totalEst := fixedOverhead + (int64(effectiveBatchSize) * costPerSeq)
+	
+	return totalEst
 }
 
 // tokenizedResult is a helper struct for passing data

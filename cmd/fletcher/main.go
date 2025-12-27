@@ -42,13 +42,37 @@ var (
 	listenAddr  = flag.String("listen", "", "Address to listen on for HTTP Server (e.g. :8080)")
 	flightAddr  = flag.String("flight", "", "Address to listen on for Flight Server (e.g. :9090)")
 	maxConcurrent = flag.Int("max-concurrent", 16384, "Maximum number of concurrent sequences to process")
-	enableOTel  = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
+	enableOTel    = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
+	flagMaxVRAM   = flag.String("max-vram", "4GB", "Maximum VRAM to use for admission control (e.g. 4GB, 512MB)")
+	flagTransportFmt = flag.String("transport-fmt", "fp32", "Transport format for embeddings: 'fp32' (default) or 'fp16'")
 )
+
+func parseBytes(s string) int64 {
+	// Simple parser without external deps
+	// 4GB, 100MB, 1024
+	if s == "" || s == "0" {
+		return 0
+	}
+	var val int64
+	var unit string
+	fmt.Sscanf(s, "%d%s", &val, &unit)
+	
+	switch unit {
+	case "GB", "G":
+		return val * 1024 * 1024 * 1024
+	case "MB", "M":
+		return val * 1024 * 1024
+	case "KB", "K":
+		return val * 1024
+	default:
+		return val
+	}
+}
 
 func main() {
 	// Initialize logging
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).With().Caller().Logger()
 
 	flag.Parse()
 
@@ -89,7 +113,10 @@ func main() {
 			fcInterface = fc
 		}
 
-		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent)
+		maxVRAMBytes := parseBytes(*flagMaxVRAM)
+		log.Info().Str("max_vram", *flagMaxVRAM).Int64("bytes", maxVRAMBytes).Msg("VRAM Admission Control")
+
+		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent, maxVRAMBytes, *flagTransportFmt)
 		if *flightAddr == "" {
 			// specific usage for wait
 			select {}
