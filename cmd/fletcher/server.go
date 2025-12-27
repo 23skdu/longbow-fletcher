@@ -31,7 +31,7 @@ func startServer(addr string, embedder *embeddings.Embedder, fc *client.FlightCl
 	
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	log.Printf("Starting Fletcher Server on %s", addr)
@@ -75,7 +75,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	_, _ = w.Write([]byte("OK"))
 }
 
 func (s *Server) forwardToLongbow(ctx context.Context, texts []string, batch [][]float32) error {
@@ -133,7 +133,7 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, batch [][
 		nil,
 	)
 	
-	rb := array.NewRecord(schema, []arrow.Array{textArr, embeddingArr}, int64(curBatchSize))
+	rb := array.NewRecordBatch(schema, []arrow.Array{textArr, embeddingArr}, int64(curBatchSize))
 	defer rb.Release()
 	
 	return s.flightClient.DoPut(ctx, s.datasetName, rb)

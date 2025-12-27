@@ -88,8 +88,6 @@ func (b *CPUBackend) PutTensor(t Tensor) {
 		return // Don't pool foreign tensors
 	}
 	
-	ct.rows = 0
-	ct.cols = 0
 	ct.trans = false
 	// Data is zeroed when retrieved by GetTensor
 	b.pool.Put(ct)

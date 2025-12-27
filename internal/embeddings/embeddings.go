@@ -45,13 +45,14 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	deviceCount := 1
 	if useGPU {
 		// Probe for device count using a temporary backend
-		if runtime.GOOS == "darwin" {
-			d := device.NewMetalBackend()
-			deviceCount = d.DeviceCount()
-		} else if runtime.GOOS == "linux" {
-			d := device.NewCudaBackend()
-			deviceCount = d.DeviceCount()
-		}
+	switch runtime.GOOS {
+	case "darwin":
+		d := device.NewMetalBackend()
+		deviceCount = d.DeviceCount()
+	case "linux":
+		d := device.NewCudaBackend()
+		deviceCount = d.DeviceCount()
+	}
 	}
 
 	fmt.Printf("Initializing Embedder with %d device(s), precision: %s\n", deviceCount, precision)
@@ -63,20 +64,21 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	for i := 0; i < deviceCount; i++ {
 		var backend device.Backend
 		if useGPU {
-			if runtime.GOOS == "darwin" {
-				if precision == "fp16" {
-					backend = device.NewMetalBackendFP16()
-				} else {
-					backend = device.NewMetalBackend()
-				}
-			} else if runtime.GOOS == "linux" {
-				if precision == "fp16" {
-					backend = device.NewCudaBackendFP16()
-				} else {
-					backend = device.NewCudaBackend()
-				}
+			switch runtime.GOOS {
+		case "darwin":
+			if precision == "fp16" {
+				backend = device.NewMetalBackendFP16()
+			} else {
+				backend = device.NewMetalBackend()
 			}
-			backend.SetDevice(i) // Pin backend to specific device
+		case "linux":
+			if precision == "fp16" {
+				backend = device.NewCudaBackendFP16()
+			} else {
+				backend = device.NewCudaBackend()
+			}
+		}
+		backend.SetDevice(i) // Pin backend to specific device
 		} else {
 			backend = device.NewCPUBackend()
 		}
@@ -107,9 +109,10 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	batchSize := 32
 	if useGPU {
 		// Dynamic batch sizing based on platform
-		if runtime.GOOS == "darwin" {
+		switch runtime.GOOS {
+		case "darwin":
 			batchSize = 256
-		} else if runtime.GOOS == "linux" {
+		case "linux":
 			batchSize = 512
 		}
 	}
