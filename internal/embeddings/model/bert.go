@@ -396,13 +396,7 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 	return result
 }
 
-func sumInts(v []int) int {
-	s := 0
-	for _, x := range v {
-		s += x
-	}
-	return s
-}
+
 
 // BertAttention handles multi-head self-attention.
 type BertAttention struct {
@@ -701,25 +695,10 @@ func (o *BertOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) devic
 
 // Helpers
 
-func projectPooled(backend device.Backend, input, weight, bias device.Tensor) device.Tensor {
-	r, _ := input.Dims()
-	_, wc := weight.Dims()
-	
-	output := backend.GetTensor(r, wc)
-	output.Mul(input, weight)
-	
-	if bias != nil {
-		output.AddBias(bias)
-	}
-	
-	return output
-}
+
 
 // projectPooledInter uses the same pool strategy as standard project
-func projectPooledInter(backend device.Backend, input, weight, bias device.Tensor) device.Tensor {
-	// Re-use logic
-	return projectPooled(backend, input, weight, bias)
-}
+
 
 // Optimized helpers are now part of device.Tensor interface (Softmax, Gelu, etc.)
 // Removed legacy helper functions: softmax, gelu, softmaxInPlace, addInPlace, geluInPlace.

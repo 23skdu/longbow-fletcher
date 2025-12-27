@@ -32,7 +32,9 @@ func GenerateLorem(paragraphs int) []string {
 				sentence[k] = loremWords[r.Intn(len(loremWords))]
 			}
 			// Capitalize first word
-			sentence[0] = strings.Title(sentence[0])
+			if len(sentence[0]) > 0 {
+				sentence[0] = strings.ToUpper(sentence[0][:1]) + sentence[0][1:]
+			}
 			para[j] = strings.Join(sentence, " ") + "."
 		}
 		result[i] = strings.Join(para, " ")

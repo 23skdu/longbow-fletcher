@@ -30,7 +30,7 @@ func NewFlightClient(addr string) (*FlightClient, error) {
 }
 
 // DoPut sends a RecordBatch to the given dataset on the Longbow server.
-func (c *FlightClient) DoPut(ctx context.Context, datasetName string, record arrow.Record) error {
+func (c *FlightClient) DoPut(ctx context.Context, datasetName string, record arrow.RecordBatch) error {
 	desc := &flight.FlightDescriptor{
 		Type: flight.DescriptorPATH,
 		Path: []string{datasetName},

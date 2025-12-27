@@ -19,7 +19,7 @@ func NewRecordBatchBuilder(mem memory.Allocator) *RecordBatchBuilder {
 // BuildRecordBatch converts a slice of embeddings into a RecordBatch.
 // Each embedding is expected to be a []float32 or []float64.
 // For Longbow, we typically want a schema with at least a vector column.
-func (b *RecordBatchBuilder) BuildRecordBatch(embeddings [][]float32) (arrow.Record, error) {
+func (b *RecordBatchBuilder) BuildRecordBatch(embeddings [][]float32) (arrow.RecordBatch, error) {
 	if len(embeddings) == 0 {
 		return nil, nil
 	}
@@ -48,5 +48,5 @@ func (b *RecordBatchBuilder) BuildRecordBatch(embeddings [][]float32) (arrow.Rec
 	cols := []arrow.Array{listBuilder.NewArray()}
 	defer cols[0].Release()
 
-	return array.NewRecord(schema, cols, int64(numRows)), nil
+	return array.NewRecordBatch(schema, cols, int64(numRows)), nil
 }

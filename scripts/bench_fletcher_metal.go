@@ -22,7 +22,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		pprof.StartCPUProfile(f)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("could not start CPU profile: %v", err)
+		}
 		defer pprof.StopCPUProfile()
 	}
 	// Config matching prajjwal1/bert-tiny

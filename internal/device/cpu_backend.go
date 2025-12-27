@@ -99,6 +99,16 @@ func (b *CPUBackend) Synchronize() {
 	// CPU is always synchronous
 }
 
+func (b *CPUBackend) DeviceCount() int {
+	return 1
+}
+
+func (b *CPUBackend) SetDevice(index int) {
+	if index != 0 {
+		log.Panicf("Invalid CPU device index: %d", index)
+	}
+}
+
 type CPUTensor struct {
 	backend *CPUBackend
 	data    []float32
