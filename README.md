@@ -18,14 +18,17 @@ Fletcher is a high-performance transformer-based embedding engine written in pur
 
 ## Performance
 
-Fletcher is significantly faster than standard Python/PyTorch implementations on both CPU and GPU.
+Fletcher is significantly faster and more memory-efficient than standard PyTorch/SentenceTransformer implementations.
 
-| Batch Size | Fletcher (CGO/BLAS) | Fletcher (Metal FP16) | PyTorch (CPU) |
-|------------|---------------------|-----------------------|---------------|
-| 32         | 7,600 vec/s         | **~22,000 vec/s**     | 2,045 vec/s   |
-| 64         | 8,276 vec/s         | **~24,000 vec/s**     | 2,199 vec/s   |
+| Metric | Fletcher (Metal) | PyTorch (MPS) | Speedup |
+| --- | --- | --- | --- |
+| **Peak Throughput** | **~24,200 vec/s** | 14,800 vec/s | **1.6x** |
+| **Sustained (500K)** | **~21,000 vec/s** | 8,200 vec/s | **2.5x** |
+| **Single Item Latency** | **0.48 ms** | 4.77 ms | **9.9x** |
 
-*Benchmark on Apple M3 Pro (12 Cores), generating embeddings for `prajjwal1/bert-tiny`.*
+*Benchmark on Apple M3 Pro (12 Cores), generating embeddings for `prajjwal1/bert-tiny` (Batch Size 32).*
+
+For detailed benchmarks including memory usage and CPU comparisons, see **[Speedtest Documentation](docs/speedtest.md)**.
 
 ## Installation
 

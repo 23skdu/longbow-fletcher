@@ -6,8 +6,7 @@ package device
 // (Accelerate on macOS, OpenBLAS on Linux) when CGO is available.
 
 import (
-	"log"
-
+	"github.com/rs/zerolog/log"
 	"gonum.org/v1/gonum/blas/blas32"
 	"gonum.org/v1/netlib/blas/netlib"
 )
@@ -15,5 +14,5 @@ import (
 func init() {
 	// Register netlib BLAS for float32 operations (sgemm, etc.)
 	blas32.Use(netlib.Implementation{})
-	log.Println("⚡ CGO/BLAS Acceleration Enabled (netlib)")
+	log.Debug().Msg("⚡ CGO/BLAS Acceleration Enabled (netlib)")
 }

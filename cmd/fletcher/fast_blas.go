@@ -5,8 +5,7 @@ package main
 // It registers the netlib BLAS implementation which uses system BLAS (Accelerate on macOS, OpenBLAS on Linux).
 
 import (
-	"log"
-
+	"github.com/rs/zerolog/log"
 	"gonum.org/v1/gonum/blas/blas64"
 	"gonum.org/v1/gonum/blas/gonum"
 	"gonum.org/v1/netlib/blas/netlib"
@@ -15,7 +14,7 @@ import (
 func init() {
 	// Register netlib BLAS
 	blas64.Use(netlib.Implementation{})
-	log.Println("⚡ CGO/BLAS Acceleration Enabled (netlib)")
+	log.Debug().Msg("⚡ CGO/BLAS Acceleration Enabled (netlib)")
 }
 
 // Ensure gonum is also imported so we don't break non-cgo builds by accident if we mix things?
