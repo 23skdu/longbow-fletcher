@@ -3,7 +3,7 @@
 package device
 
 /*
-#cgo LDFLAGS: -framework Metal -framework Foundation -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph
+#cgo LDFLAGS: -framework Metal -framework Foundation -framework MetalPerformanceShaders -framework MetalPerformanceShadersGraph -framework Accelerate
 #cgo CFLAGS: -fobjc-arc
 #include "metal_bridge.h"
 #include <stdlib.h>

@@ -505,7 +505,7 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   int offC, int M, int N, int K) {
   MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
 
-  [mc stopEncoder];
+  [mc flush];
 
   @synchronized(mc) {
     if (!mc.currentCommandBuffer) {
@@ -550,6 +550,7 @@ void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   leftMatrix:matA
                  rightMatrix:matB
                 resultMatrix:matC];
+  [mc flush];
 }
 
 void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
@@ -557,7 +558,7 @@ void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
                       MetalBufferRef c, int offC, int M, int N, int K) {
   MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
 
-  [mc stopEncoder];
+  [mc flush];
 
   @synchronized(mc) {
     if (!mc.currentCommandBuffer) {
@@ -602,6 +603,7 @@ void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
                   leftMatrix:matA
                  rightMatrix:matB
                 resultMatrix:matC];
+  [mc flush];
 }
 
 void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
@@ -610,7 +612,7 @@ void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
                          int strideC, int M, int N, int K, int batchCount) {
   MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
 
-  [mc stopEncoder];
+  [mc flush];
 
   @synchronized(mc) {
     if (!mc.currentCommandBuffer) {
@@ -663,6 +665,7 @@ void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
                    rightMatrix:matB
                   resultMatrix:matC];
   }
+  [mc flush];
 }
 
 void Metal_BatchedMatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
@@ -672,7 +675,7 @@ void Metal_BatchedMatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
                              int N, int K, int batchCount) {
   MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
 
-  [mc stopEncoder];
+  [mc flush];
 
   @synchronized(mc) {
     if (!mc.currentCommandBuffer) {
@@ -725,6 +728,7 @@ void Metal_BatchedMatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
                    rightMatrix:matB
                   resultMatrix:matC];
   }
+  [mc flush];
 }
 
 // Plan B Implementations

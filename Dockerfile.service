@@ -1,0 +1,39 @@
+# Dockerfile.service
+# Builds Fletcher in Server Mode.
+
+# Stage 1: Build
+FROM golang:1.24 as builder
+
+WORKDIR /app
+
+# Copy modules
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source
+COPY . .
+
+# Build
+# Note: CGO_ENABLED=1 is required if using C-based backends (like Metal/CUDA or even some optimized CPU libs). 
+# For pure Go CPU fallback, CGO_ENABLED=0 is fine, but for max performance usually CGO is preferred if using BLAS.
+# We'll use CGO_ENABLED=0 for maximum portability/CPU fallback initially.
+# If CUDA is needed, use nvidia/cuda base and CGO.
+RUN CGO_ENABLED=0 GOOS=linux go build -o fletcher cmd/fletcher/*.go
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
+WORKDIR /app
+
+# Install certificates for Flight/HTTP
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/fletcher /fletcher
+COPY --from=builder /app/vocab.txt /vocab.txt
+# Note: Weights file needs to be mounted or downloaded.
+
+EXPOSE 8080
+
+# Default command: Listen on 8080 in Server Mode
+# User should mount -v /path/to/weights:/weights and pass -weights flag if needed.
+ENTRYPOINT ["/fletcher", "-listen", ":8080"]
