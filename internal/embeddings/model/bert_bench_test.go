@@ -50,7 +50,7 @@ func BenchmarkBertModel_Forward_Metal(b *testing.B) {
 		MaxPositionEmbeddings: 512,
 	}
 
-	backend := device.NewMetalBackend()
+	backend := device.NewMetalBackendFP16()
 	model := NewBertModelWithBackend(config, backend)
 
 	// Input setup: 64 token sequence
@@ -118,7 +118,7 @@ func BenchmarkBertModel_Forward_Metal_Batch32(b *testing.B) {
 		MaxPositionEmbeddings: 512,
 	}
 
-	backend := device.NewMetalBackend()
+	backend := device.NewMetalBackendFP16()
 	model := NewBertModelWithBackend(config, backend)
 
 	// Input setup: Batch 32, SeqLen 64
