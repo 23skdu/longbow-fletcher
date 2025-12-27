@@ -581,6 +581,7 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	rst := result.(*CPUTensor)
 	
 	// Process each batch in parallel using BLAS for QK^T and Scores@V
+	// Testing showed numWorkers is optimal - fewer workers actually slower
 	var wg sync.WaitGroup
 	workers := numWorkers
 	if batchSize < workers {
@@ -605,15 +606,12 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 			
 			for i := start; i < end; i++ {
 				offset := i * seqLen
-				
-				// Extract Q, K, V slices for this batch item
 				qStart := offset * c
 				qData := qt.data[qStart : qStart+seqLen*c]
 				kData := kt.data[qStart : qStart+seqLen*c]
 				vData := vt.data[qStart : qStart+seqLen*c]
 				
 				// scores = Q @ K^T using BLAS
-				// Q: seqLen x c, K^T: c x seqLen -> scores: seqLen x seqLen
 				blas32.Gemm(blas.NoTrans, blas.Trans,
 					scale,
 					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: qData},
@@ -629,7 +627,6 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 				}
 				
 				// context = scores @ V using BLAS
-				// scores: seqLen x seqLen, V: seqLen x c -> context: seqLen x c
 				outData := rst.data[qStart : qStart+seqLen*c]
 				blas32.Gemm(blas.NoTrans, blas.NoTrans,
 					1.0,
