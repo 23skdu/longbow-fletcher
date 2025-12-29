@@ -444,3 +444,10 @@ kernel void swiglu_kernel_f16(device const half *input [[ buffer(0) ]],
     output[row_offset_out + i] = half(swish_x * y);
 }
 
+
+// Cast FP32 to FP16
+kernel void cast_f32_to_f16(device const float *input [[ buffer(0) ]],
+                            device half *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = half(input[index]);
+}

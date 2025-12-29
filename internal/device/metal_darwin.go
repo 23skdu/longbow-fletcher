@@ -32,10 +32,11 @@ type bufferPoolEntry struct {
 }
 
 type MetalBackend struct {
-	ctx        C.MetalContextRef
-	mu         sync.Mutex
-	buckets    map[int][]bufferPoolEntry // Pooled GPU buffers, organized by size buckets
-	useFP16    bool                      // Use FP16 precision for 2x GPU performance
+	ctx            C.MetalContextRef
+	mu             sync.Mutex
+	buckets        map[int][]bufferPoolEntry // Safe to reuse
+	pendingBuckets map[int][]bufferPoolEntry // In flight on GPU
+	useFP16        bool                      // Use FP16 precision
 }
 
 func getBucket(size int) int {
@@ -56,9 +57,10 @@ func NewMetalBackend() *MetalBackend {
 	}
 	
 	return &MetalBackend{
-		ctx:     ctx,
-		buckets: make(map[int][]bufferPoolEntry),
-		useFP16: false,
+		ctx:            ctx,
+		buckets:        make(map[int][]bufferPoolEntry),
+		pendingBuckets: make(map[int][]bufferPoolEntry),
+		useFP16:        false,
 	}
 }
 
@@ -73,9 +75,10 @@ func NewMetalBackendFP16() *MetalBackend {
 	}
 	
 	return &MetalBackend{
-		ctx:     ctx,
-		buckets: make(map[int][]bufferPoolEntry),
-		useFP16: true,
+		ctx:            ctx,
+		buckets:        make(map[int][]bufferPoolEntry),
+		pendingBuckets: make(map[int][]bufferPoolEntry),
+		useFP16:        true,
 	}
 }
 
@@ -134,6 +137,7 @@ func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
 		offset:   0,
 		sizeBytes: sizeBytes,
 		ownsBuffer: true,
+		dtype: func() DataType { if b.useFP16 { return Float16 }; return Float32 }(),
 	}
 	
 	runtime.SetFinalizer(t, func(mt *MetalTensor) {
@@ -151,13 +155,18 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	// Drain pending buffers if GPU is done
+	if bool(C.Metal_IsCompleted(b.ctx)) {
+		for bucket, entries := range b.pendingBuckets {
+			b.buckets[bucket] = append(b.buckets[bucket], entries...)
+		}
+		b.pendingBuckets = make(map[int][]bufferPoolEntry)
+	}
+
 	bucket := getBucket(sizeBytes)
-	
-	// Check current bucket and larger buckets (up to 2 levels higher)
 	for i := bucket; i <= bucket+2; i++ {
 		list := b.buckets[i]
 		if len(list) > 0 {
-			// Find best fit in this bucket
 			bestIdx := -1
 			for idx, entry := range list {
 				if entry.size >= sizeBytes {
@@ -166,7 +175,6 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 					}
 				}
 			}
-			
 			if bestIdx != -1 {
 				buf := list[bestIdx].buf
 				b.buckets[i] = append(list[:bestIdx], list[bestIdx+1:]...)
@@ -182,15 +190,8 @@ func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
 	defer b.mu.Unlock()
 
 	bucket := getBucket(sizeBytes)
-	list := b.buckets[bucket]
-	
-	// Limit bucket size
-	if len(list) >= 32 {
-		C.Metal_FreeBuffer(b.ctx, list[0].buf)
-		list = list[1:]
-	}
-	
-	b.buckets[bucket] = append(list, bufferPoolEntry{buf: buf, size: sizeBytes})
+	// Add to pending (in-flight) queue until next getPooledBuffer drains it
+	b.pendingBuckets[bucket] = append(b.pendingBuckets[bucket], bufferPoolEntry{buf: buf, size: sizeBytes})
 }
 
 func (b *MetalBackend) GetTensor(r, c int) Tensor {
@@ -235,6 +236,7 @@ type MetalTensor struct {
 	offset     int  // in bytes, offset into the underlying buffer
 	sizeBytes  int  // total size of owned buffer in bytes
 	ownsBuffer bool // true if this tensor owns the buffer (for pooling)
+	dtype      DataType
 }
 
 func (t *MetalTensor) Dims() (int, int) {
@@ -795,6 +797,32 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 	wg.Wait()
 }
 
+func (t *MetalTensor) ExtractToFlat(dest []float32, start int) {
+	ptr := C.Metal_GetBufferContents(t.buf)
+	if ptr == nil {
+		return
+	}
+	
+	size := t.rows * t.cols
+	if t.trans {
+		data := t.ToHost()
+		copy(dest[start:], data)
+		return
+	}
+
+	if t.backend.useFP16 {
+		raw := (*[1 << 30]uint16)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset)))[:size:size]
+		// Explicit parallel conversion if large? 
+		// For now simple loop
+		for i := 0; i < size; i++ {
+			dest[start+i] = Float16ToFloat32(raw[i])
+		}
+	} else {
+		raw := (*[1 << 30]float32)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset)))[:size:size]
+		copy(dest[start:], raw)
+	}
+}
+
 func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	if t.backend.useFP16 {
 		C.Metal_ApplyRoPE_F16(t.backend.ctx, t.buf, C.int(t.offset), C.int(batchSize), C.int(seqLen), C.int(numHeads), C.int(headDim))
@@ -803,8 +831,114 @@ func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	}
 }
 
+func (t *MetalTensor) ExtractBytes() []byte {
+	t.backend.Synchronize()
+	
+	size := t.rows * t.cols
+	var sizeBytes int
+	if t.dtype == Float16 {
+		sizeBytes = size * 2
+	} else {
+		sizeBytes = size * 4
+	}
+	
+	out := make([]byte, sizeBytes)
+	C.Metal_ExtractBytes(t.buf, C.int(t.offset), unsafe.Pointer(&out[0]), C.int(sizeBytes))
+	return out
+}
+
+func (t *MetalTensor) Cast(dtype DataType) Tensor {
+	if t.dtype == dtype {
+		// If backend default type != requested dtype?
+		// NewTensor uses backend.useFP16. 
+		// If we are casting, we likely want a new tensor that potentially differs from backend default.
+		// We should manual construct.
+		
+		sizeBytes := t.sizeBytes
+		buf := C.Metal_Alloc(t.backend.ctx, C.int(sizeBytes))
+		C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(uintptr(C.Metal_GetBufferContents(t.buf))+uintptr(t.offset)), C.int(sizeBytes)) // Hacky copy 
+		// Actually better: use a kernel or Metal_CopyBuffer if we had it.
+		// Or read/write.
+		// Simplified: Just use existing copy logic if types match?
+		// But CopyFrom expects tensor.
+		
+		// For now, let's implement the specific case we need: FP32 -> FP16.
+		// Or FP16 -> FP16 (Copy)
+		
+		// If same type, just use NewTensor if backend matches type
+		currentBackendType := Float32
+		if t.backend.useFP16 { currentBackendType = Float16 }
+		
+		if dtype == currentBackendType {
+			nt := t.backend.NewTensor(t.rows, t.cols, nil)
+			nt.Copy(t)
+			return nt
+		}
+	}
+	
+	if t.dtype == Float32 && dtype == Float16 {
+		size := t.rows * t.cols
+		outSizeBytes := size * 2
+		outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
+		
+		C.Metal_Cast_F32_to_F16(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+		
+		tFinal := &MetalTensor{
+			backend:    t.backend,
+			rows:       t.rows,
+			cols:       t.cols,
+			buf:        outBuf,
+			offset:     0,
+			sizeBytes:  outSizeBytes,
+			ownsBuffer: true,
+			dtype:      Float16,
+		}
+		
+		runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
+			// We can't pool this easily if it mismatches backend buckets (FP16 vs FP32 sizes differ for same dims)
+			// But returnToPool uses bytes size. So it works!
+			C.Metal_FreeBuffer(mt.backend.ctx, mt.buf) // Or use pool?
+			// Use free for safety for now on manual allocs
+		})
+		
+		return tFinal
+	}
+	
+	panic("Cast: Unsupported conversion")
+}
+
 func (b *MetalBackend) GetVRAMUsage() (int64, int64) {
 	allocated := C.Metal_GetAllocatedSize(b.ctx)
 	total := C.Metal_GetRecommendMaxWorkingSetSize(b.ctx)
 	return int64(allocated), int64(total)
+}
+
+// FusedAttention performs scaled dot-product attention with all operations fused into a single kernel
+// This is significantly faster than the unfused Attention() method due to reduced kernel dispatch overhead
+// and better memory locality.
+func (t *MetalTensor) FusedAttention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
+	if !t.backend.useFP16 {
+		panic("FusedAttention requires FP16 backend")
+	}
+	
+	qt := q.(*MetalTensor)
+	kt := k.(*MetalTensor)
+	vt := v.(*MetalTensor)
+	
+	r, c := qt.Dims()
+	if r != batchSize*seqLen {
+		panic("FusedAttention: dims mismatch")
+	}
+	
+	result := t.backend.NewTensor(r, c, nil)
+	rst := result.(*MetalTensor)
+	
+	C.Metal_FusedAttention_F16(t.backend.ctx,
+		qt.buf, C.int(qt.offset),
+		kt.buf, C.int(kt.offset),
+		vt.buf, C.int(vt.offset),
+		rst.buf, C.int(rst.offset),
+		C.int(batchSize), C.int(seqLen), C.int(c), C.float(scale))
+	
+	return result
 }

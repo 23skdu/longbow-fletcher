@@ -39,14 +39,40 @@ var (
 	duration    = flag.Duration("duration", 0, "Run soak test for specified duration (e.g. 10s, 20m)")
 	serverAddr  = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
 	datasetName = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
-	listenAddr  = flag.String("listen", "", "Address to listen on for Server Mode (e.g. :8080)")
-	enableOTel  = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
+	listenAddr  = flag.String("listen", "", "Address to listen on for HTTP Server (e.g. :8080)")
+	flightAddr  = flag.String("flight", "", "Address to listen on for Flight Server (e.g. :9090)")
+	maxConcurrent = flag.Int("max-concurrent", 16384, "Maximum number of concurrent sequences to process")
+	enableOTel    = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
+	flagMaxVRAM   = flag.String("max-vram", "4GB", "Maximum VRAM to use for admission control (e.g. 4GB, 512MB)")
+	flagTransportFmt = flag.String("transport-fmt", "fp32", "Transport format for embeddings: 'fp32' (default) or 'fp16'")
 )
+
+func parseBytes(s string) int64 {
+	// Simple parser without external deps
+	// 4GB, 100MB, 1024
+	if s == "" || s == "0" {
+		return 0
+	}
+	var val int64
+	var unit string
+	fmt.Sscanf(s, "%d%s", &val, &unit)
+	
+	switch unit {
+	case "GB", "G":
+		return val * 1024 * 1024 * 1024
+	case "MB", "M":
+		return val * 1024 * 1024
+	case "KB", "K":
+		return val * 1024
+	default:
+		return val
+	}
+}
 
 func main() {
 	// Initialize logging
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
+	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).With().Caller().Logger()
 
 	flag.Parse()
 
@@ -76,18 +102,35 @@ func main() {
 
 	// Server Mode
 	if *listenAddr != "" {
-		var fc *client.FlightClient
+		var fcInterface FlightClientInterface
 		if *serverAddr != "" {
 			var err error
-			fc, err = client.NewFlightClient(*serverAddr)
+			fc, err := client.NewFlightClient(*serverAddr)
 			if err != nil {
 				log.Fatal().Err(err).Msg("Failed to create flight client")
 			}
 			log.Info().Str("addr", *serverAddr).Msg("Connected to Flight Server")
+			fcInterface = fc
 		}
 
-		startServer(*listenAddr, embedder, fc, *datasetName)
+		maxVRAMBytes := parseBytes(*flagMaxVRAM)
+		log.Info().Str("max_vram", *flagMaxVRAM).Int64("bytes", maxVRAMBytes).Msg("VRAM Admission Control")
+
+		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent, maxVRAMBytes, *flagTransportFmt)
+		if *flightAddr == "" {
+			// specific usage for wait
+			select {}
+		}
+	}
+	
+	if *flightAddr != "" {
+		StartFlightServer(*flightAddr, embedder)
 		return
+	}
+	
+	if *listenAddr != "" {
+		// Was waiting above
+		select {}
 	}
 
 	var texts []string
@@ -119,7 +162,7 @@ func main() {
 		
 		for time.Now().Before(endTime) {
 			iterStart := time.Now()
-			_ = embedder.EmbedBatch(context.Background(), texts)
+			_ = embedder.ProxyEmbedBatch(context.Background(), texts)
 			_ = time.Since(iterStart) // Keep timer call but ignore result to silence usage error, or just remove.
 			
 			totalVectors += int64(len(texts))
@@ -147,12 +190,12 @@ func main() {
 	}
 
 	start := time.Now()
-	vectors := embedder.EmbedBatch(context.Background(), texts)
+	vectors := embedder.ProxyEmbedBatch(context.Background(), texts)
 	elapsed := time.Since(start)
 
 	dim := 0
 	if len(vectors) > 0 {
-		dim = len(vectors[0])
+		dim = len(vectors) / len(texts)
 	}
 	log.Info().
 		Int("count", len(texts)).
@@ -193,7 +236,7 @@ func main() {
 		textBuilder.Append(text)
 		
 		embedBuilder.Append(true)
-		floatBuilder.AppendValues(vectors[i], nil)
+		floatBuilder.AppendValues(vectors[i*dim:(i+1)*dim], nil)
 	}
 
 	textArr := textBuilder.NewArray()

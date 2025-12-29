@@ -81,8 +81,14 @@ func (t *WordPieceTokenizer) Tokenize(text string) ([]string, []int) {
 	text = t.BasicNormalize(text)
 	words := strings.Fields(text)
 	
-	var outputTokens []string
-	var outputIDs []int
+	// Pre-allocate with estimated capacity to reduce allocations
+	// Average: 1.5 tokens per word (accounting for subword splits)
+	estimatedTokens := len(words) + len(words)/2
+	if estimatedTokens < 8 {
+		estimatedTokens = 8 // Minimum capacity
+	}
+	outputTokens := make([]string, 0, estimatedTokens)
+	outputIDs := make([]int, 0, estimatedTokens)
 
 	for _, word := range words {
 		if len(word) > t.maxInputChars {
