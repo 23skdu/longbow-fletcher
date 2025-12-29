@@ -41,4 +41,16 @@ var (
 		Name: "fletcher_load_balance_efficiency",
 		Help: "Load balancing efficiency (0-1, 1 = perfect balance)",
 	})
+
+	// Tokenization metrics
+	tokenizationDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fletcher_tokenization_duration_seconds",
+		Help:    "Time spent in tokenization",
+		Buckets: prometheus.DefBuckets,
+	})
+
+	tokensPerSecond = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "fletcher_tokenization_throughput",
+		Help: "Tokenization throughput in tokens/second",
+	})
 )

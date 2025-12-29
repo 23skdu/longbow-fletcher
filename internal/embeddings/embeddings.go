@@ -237,48 +237,61 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 
 	span.SetAttributes(attribute.Int("sequence_count", len(texts)))
 
-	// 1. Parallel Tokenization
+	// 1. Parallel Tokenization with Work Queue Distribution
 	// Uses package-level tokenizedResult struct
+	batchStart := time.Now()
 	_, tSpan := tracer.Start(ctx, "Tokenization")
 	results := make([]tokenizedResult, len(texts))
+	
+	// Use work queue for better load balancing
+	// This handles imbalanced text lengths better than static chunks
+	workQueue := make(chan int, len(texts))
+	for i := range texts {
+		workQueue <- i
+	}
+	close(workQueue)
+	
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 16 {
 		numWorkers = 16 // Cap at 16 workers for tokenization
 	}
 	
 	var wg sync.WaitGroup
-	chunkSize := (len(texts) + numWorkers - 1) / numWorkers
+	wg.Add(numWorkers)
+	
 	for w := 0; w < numWorkers; w++ {
-		start := w * chunkSize
-		if start >= len(texts) {
-			break
-		}
-		end := start + chunkSize
-		if end > len(texts) {
-			end = len(texts)
-		}
-		
-		wg.Add(1)
-		go func(s, eIdx int) {
+		go func() {
 			defer wg.Done()
-			for i := s; i < eIdx; i++ {
-				_, ids := e.tokenizer.Tokenize(texts[i])
-				results[i] = tokenizedResult{
+			for idx := range workQueue {
+				_, ids := e.tokenizer.Tokenize(texts[idx])
+				results[idx] = tokenizedResult{
 					ids: ids,
 					len: len(ids) + 2, // [CLS] + [SEP]
 				}
 			}
-		}(start, end)
+		}()
 	}
+	
 	wg.Wait()
 	tSpan.End()
+	
+	// Export tokenization metrics
+	tokenizationElapsed := time.Since(batchStart)
+	totalTokens := 0
+	for _, res := range results {
+		totalTokens += res.len
+	}
+	tokenizationDuration.Observe(tokenizationElapsed.Seconds())
+	if tokenizationElapsed.Seconds() > 0 {
+		tokensPerSecond.Set(float64(totalTokens) / tokenizationElapsed.Seconds())
+	}
 
 	// 2. Multi-GPU Dispatch with Dynamic Load Balancing
 	dim := e.models[0].Config.HiddenSize
 	numDevices := len(e.models)
 	
 	// Calculate total tokens for balancing
-	totalTokens := 0
+	totalTokens = 0
 	for _, res := range results {
 		totalTokens += res.len
 	}
