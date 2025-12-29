@@ -307,6 +307,10 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 		if targetTokensPerDevice[i] == 0 {
 			targetTokensPerDevice[i] = 1
 		}
+		
+		// Export weight to Prometheus
+		deviceLabel := fmt.Sprintf("%d", i)
+		gpuWeight.WithLabelValues(deviceLabel).Set(deviceWeights[i])
 	}
 
 	go func() {
@@ -567,5 +571,14 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 		alpha := 0.3
 		metrics.AvgThroughput = alpha*currentThroughput + (1-alpha)*metrics.AvgThroughput
 	}
+	
+	// Export to Prometheus
+	deviceLabel := fmt.Sprintf("%d", metrics.DeviceID)
+	gpuThroughput.WithLabelValues(deviceLabel).Set(metrics.AvgThroughput)
+	gpuBatchTime.WithLabelValues(deviceLabel).Set(elapsed.Seconds())
+	gpuBatchCount.WithLabelValues(deviceLabel).Inc()
+	gpuSequencesProcessed.WithLabelValues(deviceLabel).Add(float64(totalSequences))
+	gpuTokensProcessed.WithLabelValues(deviceLabel).Add(float64(totalTokensProcessed))
+	
 	metrics.mu.Unlock()
 }
