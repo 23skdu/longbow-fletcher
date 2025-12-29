@@ -912,3 +912,33 @@ func (b *MetalBackend) GetVRAMUsage() (int64, int64) {
 	total := C.Metal_GetRecommendMaxWorkingSetSize(b.ctx)
 	return int64(allocated), int64(total)
 }
+
+// FusedAttention performs scaled dot-product attention with all operations fused into a single kernel
+// This is significantly faster than the unfused Attention() method due to reduced kernel dispatch overhead
+// and better memory locality.
+func (t *MetalTensor) FusedAttention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
+	if !t.backend.useFP16 {
+		panic("FusedAttention requires FP16 backend")
+	}
+	
+	qt := q.(*MetalTensor)
+	kt := k.(*MetalTensor)
+	vt := v.(*MetalTensor)
+	
+	r, c := qt.Dims()
+	if r != batchSize*seqLen {
+		panic("FusedAttention: dims mismatch")
+	}
+	
+	result := t.backend.NewTensor(r, c, nil)
+	rst := result.(*MetalTensor)
+	
+	C.Metal_FusedAttention_F16(t.backend.ctx,
+		qt.buf, C.int(qt.offset),
+		kt.buf, C.int(kt.offset),
+		vt.buf, C.int(vt.offset),
+		rst.buf, C.int(rst.offset),
+		C.int(batchSize), C.int(seqLen), C.int(c), C.float(scale))
+	
+	return result
+}

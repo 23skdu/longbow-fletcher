@@ -83,6 +83,11 @@ void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
                            int offV, MetalBufferRef result, int offRes,
                            int batchSize, int seqLen, int hiddenSize,
                            float scale);
+void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
+                              MetalBufferRef k, int offK, MetalBufferRef v,
+                              int offV, MetalBufferRef result, int offRes,
+                              int batchSize, int seqLen, int hiddenSize,
+                              float scale);
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   MetalBufferRef indices, int offIndices, MetalBufferRef output,
                   int offOut, int indicesCount, int cols);

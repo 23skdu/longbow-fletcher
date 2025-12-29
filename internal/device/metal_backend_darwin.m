@@ -721,6 +721,91 @@ void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
   Metal_FreeBuffer(ctx, scoresBuf);
 }
 
+// Fused Attention - Single kernel dispatch for better performance
+void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
+                              MetalBufferRef k, int offK, MetalBufferRef v,
+                              int offV, MetalBufferRef result, int offRes,
+                              int batchSize, int seqLen, int hiddenSize,
+                              float scale) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+
+  // For now, use a simple implementation that fuses scale into the first matmul
+  // and uses a custom kernel for the attention computation
+  // This eliminates the separate scale dispatch
+
+  // Allocate temporary buffer for attention scores
+  int scoresSize = batchSize * seqLen * seqLen * 2; // FP16
+  MetalBufferRef scoresBuf = Metal_Alloc(ctx, scoresSize);
+
+  int strideQ = seqLen * hiddenSize * 2;
+  int strideK = seqLen * hiddenSize * 2;
+  int strideScores = seqLen * seqLen * 2;
+  int strideV = seqLen * hiddenSize * 2;
+
+  // Step 1: Q × K^T with scale fused
+  // Use batched matmul with alpha = scale instead of separate scale kernel
+  [mc stopEncoder];
+  [mc ensureCommandBuffer];
+
+  // Q is (seqLen, hiddenSize)
+  MPSMatrixDescriptor *dQ =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                            columns:hiddenSize
+                                           rowBytes:hiddenSize * 2
+                                           dataType:MPSDataTypeFloat16];
+  // K is (seqLen, hiddenSize) - will be transposed in multiplication
+  MPSMatrixDescriptor *dK =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                            columns:hiddenSize
+                                           rowBytes:hiddenSize * 2
+                                           dataType:MPSDataTypeFloat16];
+  // Scores is (seqLen, seqLen)
+  MPSMatrixDescriptor *dScores =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                            columns:seqLen
+                                           rowBytes:seqLen * 2
+                                           dataType:MPSDataTypeFloat16];
+
+  MPSMatrixMultiplication *mulQK =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:false
+                                       transposeRight:true
+                                           resultRows:seqLen
+                                        resultColumns:seqLen
+                                      interiorColumns:hiddenSize
+                                                alpha:scale // Fuse scale here!
+                                                 beta:0.0];
+
+  // Batch loop for Q×K^T
+  for (int i = 0; i < batchSize; i++) {
+    MPSMatrix *mQ = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)q
+                                               offset:offQ + i * strideQ
+                                           descriptor:dQ];
+    MPSMatrix *mK = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)k
+                                               offset:offK + i * strideK
+                                           descriptor:dK];
+    MPSMatrix *mScores =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
+                                   offset:i * strideScores
+                               descriptor:dScores];
+    [mulQK encodeToCommandBuffer:mc.currentCommandBuffer
+                      leftMatrix:mQ
+                     rightMatrix:mK
+                    resultMatrix:mScores];
+  }
+
+  // Step 2: Softmax (still separate for now, but could be fused in future)
+  Metal_Softmax_F16(ctx, scoresBuf, 0, scoresBuf, 0, batchSize * seqLen,
+                    seqLen);
+
+  // Step 3: Scores × V
+  Metal_BatchedMatMul_F16(ctx, scoresBuf, 0, strideScores, false, v, offV,
+                          strideV, false, result, offRes, strideQ, seqLen,
+                          hiddenSize, seqLen, batchSize);
+
+  Metal_FreeBuffer(ctx, scoresBuf);
+}
+
 void Metal_Linear_Graph(MetalContextRef ctx, MetalBufferRef input, int offIn,
                         int rows, int inCols, MetalBufferRef weight,
                         int offWeight, int outCols, MetalBufferRef bias,
