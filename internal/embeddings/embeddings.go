@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
@@ -16,11 +17,24 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
+// GPUMetrics tracks performance metrics for a single GPU device
+type GPUMetrics struct {
+	DeviceID       int
+	LastBatchTime  time.Duration
+	BatchCount     int64
+	TotalSequences int64
+	TotalTokens    int64
+	AvgThroughput  float64 // sequences/second
+	mu             sync.Mutex
+}
+
 // Embedder manages the tokenization and model inference.
 type Embedder struct {
 	models            []*model.BertModel
 	tokenizer         *tokenizer.WordPieceTokenizer
 	internalBatchSize int
+	gpuMetrics        []GPUMetrics
+	metricsMu         sync.RWMutex
 }
 
 // NewEmbedder creates a new embedder.
@@ -124,10 +138,20 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 		}
 	}
 
+	// Initialize GPU metrics
+	metrics := make([]GPUMetrics, deviceCount)
+	for i := 0; i < deviceCount; i++ {
+		metrics[i] = GPUMetrics{
+			DeviceID:      i,
+			AvgThroughput: 1.0, // Default throughput for cold start
+		}
+	}
+
 	return &Embedder{
 		models:            models,
 		tokenizer:         tok,
 		internalBatchSize: batchSize,
+		gpuMetrics:        metrics,
 	}, nil
 }
 
@@ -249,7 +273,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	wg.Wait()
 	tSpan.End()
 
-	// 2. Multi-GPU Dispatch
+	// 2. Multi-GPU Dispatch with Dynamic Load Balancing
 	dim := e.models[0].Config.HiddenSize
 	numDevices := len(e.models)
 	
@@ -258,9 +282,31 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	for _, res := range results {
 		totalTokens += res.len
 	}
-	targetTokensPerDevice := totalTokens / numDevices
-	if targetTokensPerDevice == 0 {
-		targetTokensPerDevice = 1
+	
+	// Calculate device weights based on historical performance
+	deviceWeights := make([]float64, numDevices)
+	totalWeight := 0.0
+	
+	e.metricsMu.RLock()
+	for i := 0; i < numDevices; i++ {
+		// Use average throughput as weight (sequences/second)
+		deviceWeights[i] = e.gpuMetrics[i].AvgThroughput
+		totalWeight += deviceWeights[i]
+	}
+	e.metricsMu.RUnlock()
+	
+	// Calculate target tokens per device based on weights
+	targetTokensPerDevice := make([]int, numDevices)
+	for i := 0; i < numDevices; i++ {
+		if totalWeight > 0 {
+			targetTokensPerDevice[i] = int(float64(totalTokens) * deviceWeights[i] / totalWeight)
+		} else {
+			// Fallback to equal distribution if no metrics yet
+			targetTokensPerDevice[i] = totalTokens / numDevices
+		}
+		if targetTokensPerDevice[i] == 0 {
+			targetTokensPerDevice[i] = 1
+		}
 	}
 
 	go func() {
@@ -278,6 +324,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 			
 			endIndex := startIndex
 			currentTokens := 0
+			targetTokens := targetTokensPerDevice[d]
 			
 			// Greedily accumulate items until we reach target load
 			// But ensure at least one item if available
@@ -291,7 +338,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 				
 				// Check if adding next item exceeds target significantly?
 				// Simple approach: stop if we are above target, unless we are the last device
-				if d < numDevices-1 && currentTokens >= targetTokensPerDevice {
+				if d < numDevices-1 && currentTokens >= targetTokens {
 					break
 				}
 				
@@ -314,9 +361,15 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 			deviceWg.Add(1)
 			go func(devId, s, eIdx int) {
 				defer deviceWg.Done()
-				log.Info().Int("device", devId).Int("sequences", eIdx-s).Int("tokens", currentTokens).Msg("Dispatching batch")
+				log.Info().
+					Int("device", devId).
+					Int("sequences", eIdx-s).
+					Int("tokens", currentTokens).
+					Float64("weight", deviceWeights[devId]).
+					Float64("throughput", e.gpuMetrics[devId].AvgThroughput).
+					Msg("Dispatching batch")
 				m := e.models[devId]
-				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, format, out)
+				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, format, out, &e.gpuMetrics[devId])
 			}(d, startIndex, endIndex)
 			
 			startIndex = endIndex
@@ -440,7 +493,12 @@ type tokenizedResult struct {
 	len int
 }
 
-func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, baseOffset int, dim int, format string, out chan<- StreamResult) {
+func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, baseOffset int, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics) {
+	// Track overall batch performance
+	batchStart := time.Now()
+	totalSequences := len(inputs)
+	totalTokensProcessed := 0
+	
 	// Double-buffered GPU Processing (per device)
 	var prevOutput device.Tensor
 	var prevBatchCount int
@@ -458,6 +516,7 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 		for j := i; j < batchEnd; j++ {
 			totalTokens += inputs[j].len
 		}
+		totalTokensProcessed += totalTokens
 
 		flatInputs := make([]int, 0, totalTokens)
 		lengths := make([]int, batchCount)
@@ -489,4 +548,24 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 		processOutput(m, prevOutput, dim, prevOffset, prevBatchCount, format, out)
 		m.Backend.PutTensor(prevOutput)
 	}
+	
+	// Update metrics after batch completion
+	elapsed := time.Since(batchStart)
+	
+	metrics.mu.Lock()
+	metrics.LastBatchTime = elapsed
+	metrics.BatchCount++
+	metrics.TotalSequences += int64(totalSequences)
+	metrics.TotalTokens += int64(totalTokensProcessed)
+	
+	// Exponential moving average for throughput (alpha = 0.3 for responsiveness)
+	currentThroughput := float64(totalSequences) / elapsed.Seconds()
+	if metrics.AvgThroughput == 1.0 {
+		// First real measurement, replace default
+		metrics.AvgThroughput = currentThroughput
+	} else {
+		alpha := 0.3
+		metrics.AvgThroughput = alpha*currentThroughput + (1-alpha)*metrics.AvgThroughput
+	}
+	metrics.mu.Unlock()
 }
