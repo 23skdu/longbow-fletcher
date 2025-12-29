@@ -37,10 +37,11 @@ var (
 		Help: "Current load balancing weight for GPU (based on throughput)",
 	}, []string{"device"})
 
-	loadBalanceEfficiency = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "fletcher_load_balance_efficiency",
-		Help: "Load balancing efficiency (0-1, 1 = perfect balance)",
-	})
+	// TODO: Implement load balance efficiency metric
+	// loadBalanceEfficiency = promauto.NewGauge(prometheus.GaugeOpts{
+	// 	Name: "fletcher_load_balance_efficiency",
+	// 	Help: "Load balancing efficiency (0-1, 1 = perfect balance)",
+	// })
 
 	// Tokenization metrics
 	tokenizationDuration = promauto.NewHistogram(prometheus.HistogramOpts{
