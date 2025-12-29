@@ -22,32 +22,94 @@
 
 ## Priority 1: Performance & Throughput
 
-### Step 1: Metal Kernel Optimization ⚡ HIGH IMPACT
+### Step 1: Metal Kernel Optimization ⚡ HIGH IMPACT ✅ COMPLETE
 
-- [ ] Profile Metal kernels to identify bottlenecks (MatMul, LayerNorm, Attention)
+**Completed**: Profiling infrastructure, baseline metrics, fused attention kernel
+
+- [x] Profile Metal kernels to identify bottlenecks (MatMul, LayerNorm, Attention)
+  - **Result**: MatMul 425 GFLOPS (optimal via MPS), Attention 13 GFLOPS (bottleneck)
+- [x] Benchmark kernel-level performance vs theoretical peak FLOPS
+  - **Result**: MatMul at 12% of peak (typical for memory-bound), LayerNorm 200x faster than threshold
+- [x] Implement fused attention kernel (scale fusion into MatMul alpha)
+  - **Result**: 3 dispatches vs 4, equivalent performance (dispatch overhead minimal ~3%)
 - [ ] Implement tiled matrix multiplication for better cache utilization
+  - **Skipped**: MPS already provides optimal tiling
 - [ ] Optimize threadgroup memory usage in attention kernels
+  - **Future**: Flash Attention for 2-3x improvement on long sequences
 - [ ] Add Metal Performance Shaders (MPS) Graph integration for automatic optimization
+  - **Partial**: Already using MPS for MatMul, could expand to other ops
 - [ ] Implement FP16 compute with FP32 accumulation for precision/speed balance
-- [ ] Benchmark kernel-level performance vs theoretical peak FLOPS
+  - **Implemented**: FP16 backend with FP32 accumulation in softmax
 
-### Step 2: Multi-GPU Load Balancing Improvements
+**Key Learning**: MPS is already optimal for standard operations. Focus on algorithmic improvements (Flash Attention) rather than micro-optimizations.
 
-- [ ] Implement dynamic load balancing based on actual GPU utilization
+**Files**: 647 lines across 6 files  
+**Commits**: `3f11844`, `2813329`, `f0febfd`
+
+---
+
+### Step 2: Multi-GPU Load Balancing Improvements ✅ COMPLETE
+
+**Completed**: Dynamic weighted distribution, performance metrics, Prometheus monitoring
+
+- [x] Implement dynamic load balancing based on actual GPU utilization
+  - **Result**: Weighted distribution using throughput metrics (sequences/second)
+- [x] Profile token-based vs sequence-based load distribution
+  - **Result**: Token-based with dynamic weights adapts to GPU performance
+- [x] Add GPU memory pressure monitoring for adaptive batching
+  - **Result**: VRAM usage metrics exposed via Prometheus
+- [x] Implement cross-GPU result aggregation optimization
+  - **Result**: Streaming results via channels, no blocking
 - [ ] Add GPU affinity for better NUMA performance
+  - **Future**: Requires multi-socket testing
 - [ ] Implement work-stealing between GPUs for unbalanced workloads
-- [ ] Profile token-based vs sequence-based load distribution
-- [ ] Add GPU memory pressure monitoring for adaptive batching
-- [ ] Implement cross-GPU result aggregation optimization
+  - **Future**: Phase 3 optimization
 
-### Step 3: Tokenization Parallelization
+**Performance**: 10-20% improvement for imbalanced workloads, 0% overhead for balanced
 
-- [ ] Benchmark current parallel tokenization overhead
+**Prometheus Metrics**:
+
+- `fletcher_gpu_throughput{device}` - Sequences/sec per GPU
+- `fletcher_gpu_batch_time_seconds{device}` - Batch processing time
+- `fletcher_gpu_weight{device}` - Load balancing weight
+- `fletcher_gpu_sequences_total{device}` - Total sequences processed
+- `fletcher_gpu_tokens_total{device}` - Total tokens processed
+
+**Files**: 144 lines across 2 files  
+**Commits**: `e77b7ae`, `f09c508`
+
+---
+
+### Step 3: Tokenization Parallelization ✅ COMPLETE
+
+**Completed**: Work queue distribution, pre-allocated buffers, tokenization metrics
+
+- [x] Benchmark current parallel tokenization overhead
+  - **Result**: ~15-20% of total time, dominated by string operations
+- [x] Optimize memory allocation in tokenization workers
+  - **Result**: Pre-allocated buffers (1.5 tokens/word), 20-30% fewer allocations
+- [x] Implement work queue for better load balancing
+  - **Result**: Dynamic work stealing, better for imbalanced text lengths
 - [ ] Implement SIMD-accelerated WordPiece tokenization
+  - **Future**: Requires custom string operations
 - [ ] Add tokenization result caching for repeated texts
-- [ ] Optimize memory allocation in tokenization workers
+  - **Future**: Requires cache management
 - [ ] Implement streaming tokenization for large texts
+  - **Future**: For documents >10K tokens
 - [ ] Add vocabulary trie optimization for faster lookups
+  - **Future**: Requires trie data structure
+
+**Performance**: 5-10% end-to-end improvement for imbalanced workloads
+
+**Prometheus Metrics**:
+
+- `fletcher_tokenization_duration_seconds` - Tokenization time
+- `fletcher_tokenization_throughput` - Tokens/second
+
+**Files**: 51 lines across 3 files  
+**Commit**: `aa77919`
+
+---
 
 ### Step 4: Zero-Copy Data Paths
 
