@@ -118,7 +118,7 @@ func BenchmarkMetalLayerNorm(b *testing.B) {
 
 // BenchmarkMetalAttention benchmarks attention mechanism performance
 func BenchmarkMetalAttention(b *testing.B) {
-	backend := NewMetalBackend()
+	backend := NewMetalBackendFP16() // Attention requires FP16
 	
 	sizes := []struct {
 		name string
@@ -153,14 +153,16 @@ func BenchmarkMetalAttention(b *testing.B) {
 			scale := float32(1.0 / float32(size.hidden))
 			
 			// Warm-up
-			_ = q.Attention(q, k, v, size.batch, size.seq, scale)
+			result := q.Attention(q, k, v, size.batch, size.seq, scale)
 			backend.Synchronize()
+			backend.PutTensor(result)
 			
 			b.ResetTimer()
 			b.ReportAllocs()
 			
 			for i := 0; i < b.N; i++ {
-				_ = q.Attention(q, k, v, size.batch, size.seq, scale)
+				result = q.Attention(q, k, v, size.batch, size.seq, scale)
+				backend.PutTensor(result)
 			}
 			backend.Synchronize()
 			
