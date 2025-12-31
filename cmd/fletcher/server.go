@@ -74,9 +74,10 @@ type Server struct {
 	sem          *semaphore.Weighted
 	vramSem      *semaphore.Weighted
 	TransportFmt string
+	ModelType    string
 }
 
-func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string) *Server {
+func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string, modelType string) *Server {
 	var vs *semaphore.Weighted
 	if maxVRAM > 0 {
 		vs = semaphore.NewWeighted(maxVRAM)
@@ -95,11 +96,12 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 		sem:          semaphore.NewWeighted(int64(maxConcurrent)),
 		vramSem:      vs,
 		TransportFmt: transportFmt,
+		ModelType:    modelType,
 	}
 }
 
-func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string) {
-	srv := NewServer(embedder, fc, dataset, maxConcurrent, maxVRAM, transportFmt)
+func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string, modelType string) {
+	srv := NewServer(embedder, fc, dataset, maxConcurrent, maxVRAM, transportFmt, modelType)
 
 	// Register VRAM metrics
 	prometheus.MustRegister(prometheus.NewGaugeFunc(
@@ -179,6 +181,30 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	totalBytes := 0
 	for _, t := range texts {
 		totalBytes += len(t)
+	}
+
+	// Apply Nomic Prefix if needed
+	if s.ModelType == "nomic-embed-text" || s.ModelType == "nomic-embed-text-v1.5" {
+		taskType := r.URL.Query().Get("task")
+		if taskType == "" {
+			taskType = "search_document" // Default
+		}
+		
+		prefix := ""
+		switch taskType {
+		case "search_query":
+			prefix = "search_query: "
+		case "search_document":
+			prefix = "search_document: "
+		default:
+			prefix = taskType + ": "
+		}
+		
+		if prefix != "" {
+			for i := range texts {
+				texts[i] = prefix + texts[i]
+			}
+		}
 	}
 
 	// Admission Control
@@ -398,6 +424,30 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 			texts[i] = strArr.Value(i)
 		}
 		
+		// Apply Nomic Prefix if needed (Arrow path)
+		if s.ModelType == "nomic-embed-text" || s.ModelType == "nomic-embed-text-v1.5" {
+			taskType := r.URL.Query().Get("task")
+			if taskType == "" {
+				taskType = "search_document" // Default
+			}
+			
+			prefix := ""
+			switch taskType {
+			case "search_query":
+				prefix = "search_query: "
+			case "search_document":
+				prefix = "search_document: "
+			default:
+				prefix = taskType + ": "
+			}
+			
+			if prefix != "" {
+				for i := range texts {
+					texts[i] = prefix + texts[i]
+				}
+			}
+		}
+
 		// Admission Control setup
 		totalBytes := 0
 		for _, t := range texts {

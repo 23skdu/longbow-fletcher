@@ -37,6 +37,7 @@ docker run --rm longbow-fletcher --help
 | `--lorem`   | `0`                | Number of Lorem Ipsum paragraphs to generate.         |
 | `--server`  | (none)             | Longbow server address (e.g., `localhost:3000`).      |
 | `--dataset` | `fletcher_dataset` | Target dataset name on the Longbow server.            |
+| `--task`    | `search_document`  | Task type for Nomic models (e.g., `search_query`).    |
 
 ## Examples
 
@@ -49,7 +50,7 @@ docker run --rm longbow-fletcher --help
 ### Use Nomic-Embed-Text with GPU
 
 ```bash
-./bin/fletcher --model nomic-embed-text --gpu --vocab vocab.txt --weights nomic.bin --text "Hello world"
+./bin/fletcher --model nomic-embed-text --task search_query --gpu --vocab vocab.txt --weights nomic.bin --text "Hello world"
 ```
 
 ### Generate and send 10 Lorem Ipsum paragraphs to Longbow

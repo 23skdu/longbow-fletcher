@@ -18,12 +18,19 @@ Use the `--model` flag to specify which architecture to use. This automatically 
 ./fletcher --vocab vocab.txt --text "Hello world"
 
 # Nomic-Embed-Text
-./fletcher --model nomic-embed-text --vocab vocab.txt --weights nomic.bin --text "Hello world"
+./fletcher --model nomic-embed-text --task search_document --vocab vocab.txt --weights nomic.bin --text "Hello world"
 ```
 
 ## Architectural Features
 
-### 1. Rotary Positional Embeddings (RoPE)
+### 1. Task Prefixes (Nomic)
+
+Nomic models require specific task prefixes to distinguish between queries and documents. Fletcher handles this automatically via the `--task` flag (CLI) or `?task=` query parameter (Server).
+
+- **search_query**: Prepends `search_query:`
+- **search_document** (default): Prepends `search_document:`
+
+### 2. Rotary Positional Embeddings (RoPE)
 
 Fletcher supports RoPE, which is required for modern models like Nomic. This enables the model to handle significantly longer context windows (up to 8192 tokens) more effectively than absolute positional embeddings.
 

@@ -40,6 +40,9 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 	if err := l.loadDense(file, l.Model.Embeddings.PositionEmbeddings); err != nil {
 		return fmt.Errorf("failed to load position embeddings: %w", err)
 	}
+	if err := l.loadDense(file, l.Model.Embeddings.TokenTypeEmbeddings); err != nil {
+		return fmt.Errorf("failed to load token type embeddings: %w", err)
+	}
 	if err := l.loadLayerNorm(file, l.Model.Embeddings.LayerNorm); err != nil {
 		return fmt.Errorf("failed to load embedding layernorm: %w", err)
 	}

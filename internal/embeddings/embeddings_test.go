@@ -48,6 +48,7 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 		models:            []*model.BertModel{bert},
 		tokenizer:         tok,
 		internalBatchSize: 32,
+		gpuMetrics:        make([]GPUMetrics, 1),
 	}
 	
 	tests := []string{

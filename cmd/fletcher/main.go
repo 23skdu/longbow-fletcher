@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -45,6 +46,8 @@ var (
 	enableOTel    = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
 	flagMaxVRAM   = flag.String("max-vram", "4GB", "Maximum VRAM to use for admission control (e.g. 4GB, 512MB)")
 	flagTransportFmt = flag.String("transport-fmt", "fp32", "Transport format for embeddings: 'fp32' (default) or 'fp16'")
+	inputFile = flag.String("input", "", "Path to input file (JSON array of strings)")
+	taskType = flag.String("task", "search_document", "Nomic task type (search_query, search_document)")
 )
 
 func parseBytes(s string) int64 {
@@ -116,7 +119,7 @@ func main() {
 		maxVRAMBytes := parseBytes(*flagMaxVRAM)
 		log.Info().Str("max_vram", *flagMaxVRAM).Int64("bytes", maxVRAMBytes).Msg("VRAM Admission Control")
 
-		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent, maxVRAMBytes, *flagTransportFmt)
+		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent, maxVRAMBytes, *flagTransportFmt, *modelType)
 		if *flightAddr == "" {
 			// specific usage for wait
 			select {}
@@ -134,7 +137,19 @@ func main() {
 	}
 
 	var texts []string
-	if *loremIpsum > 0 {
+	if *inputFile != "" {
+		data, err := os.ReadFile(*inputFile)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to read input file")
+		}
+		
+		// Try parsing as JSON array
+		if err := json.Unmarshal(data, &texts); err != nil {
+			// Fallback: simple line by line?
+			// For verification, we stick to strict JSON
+			log.Fatal().Err(err).Msg("Failed to parse input file as JSON")
+		}
+	} else if *loremIpsum > 0 {
 		texts = generateLorem(*loremIpsum)
 	} else if *interactive {
 		// interactive mode code...
@@ -145,6 +160,26 @@ func main() {
 			"Hello world",
 			"The quick brown fox jumps over the lazy dog",
 			"Fletcher is a high performance embedding engine",
+		}
+	}
+
+	// Apply Task Prefix if using Nomic/Nomic-like model
+	if *modelType == "nomic-embed-text" || *modelType == "nomic-embed-text-v1.5" {
+		prefix := ""
+		switch *taskType {
+		case "search_query":
+			prefix = "search_query: "
+		case "search_document":
+			prefix = "search_document: "
+		default:
+			prefix = *taskType + ": "
+		}
+		
+		if prefix != "" {
+			log.Info().Str("prefix", prefix).Msg("Applying task prefix")
+			for i := range texts {
+				texts[i] = prefix + texts[i]
+			}
 		}
 	}
 

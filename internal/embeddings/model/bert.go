@@ -530,6 +530,10 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 		// Variable length path or CPU path
 		useParallel := s.Backend.Name() == "CPU"
 		
+		// Initialize output tensor
+		r, _ := hiddenStates.Dims()
+		output = s.Backend.NewTensor(r, c, nil)
+		
 		currentIdx := 0
 		type job struct {
 			start int

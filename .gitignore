@@ -46,4 +46,9 @@ mem.pprof
 *.log
 
 # Text artifacts (temp)
+# Text artifacts (temp)
 *.txt
+*.json
+*.bin
+__pycache__/
+

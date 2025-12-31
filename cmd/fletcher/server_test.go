@@ -44,7 +44,7 @@ func TestServer_Full(t *testing.T) {
 	// 43: srv := NewServer(emb, mfc, "test-dataset", 100, 0) // Unlimited VRAM for full test
 	// 43: srv := NewServer(emb, mfc, "test-dataset", 100, 0) // Unlimited VRAM for full test
 	mfc := &mockFlightClient{}
-	srv := NewServer(emb, mfc, "test-dataset", 100, 0, "fp32")
+	srv := NewServer(emb, mfc, "test-dataset", 100, 0, "fp32", "bert-tiny")
 
 	t.Run("HandleEncode with Forwarding", func(t *testing.T) {
 		texts := []string{"test", "test"}
@@ -97,7 +97,7 @@ func TestServer_VRAMAdmission(t *testing.T) {
 	mfc := &mockFlightClient{}
 	
 	// Create server with 100 bytes VRAM limit
-	srv := NewServer(emb, mfc, "test-dataset", 10, 100, "fp32")
+	srv := NewServer(emb, mfc, "test-dataset", 10, 100, "fp32", "bert-tiny")
 	
 	t.Run("Reject Request Exceeding VRAM", func(t *testing.T) {
 		// Mock estimation to return 200 bytes (Over limit)
@@ -147,7 +147,7 @@ func TestServer_FP16Transport(t *testing.T) {
 	mfc := &mockFlightClient{}
 	
 	// Create server with FP16 transport
-	srv := NewServer(emb, mfc, "test-dataset", 10, 0, "fp16")
+	srv := NewServer(emb, mfc, "test-dataset", 10, 0, "fp16", "bert-tiny")
 	
 	t.Run("Verify FP16 Conversion", func(t *testing.T) {
 		// Mock EmbedBatch to return a chunk with known values
