@@ -153,7 +153,7 @@ func BenchmarkMetalAttention(b *testing.B) {
 			scale := float32(1.0 / float32(size.hidden))
 			
 			// Warm-up
-			result := q.Attention(q, k, v, size.batch, size.seq, scale)
+			result := q.Attention(q, k, v, size.batch, size.seq, 1, scale)
 			backend.Synchronize()
 			backend.PutTensor(result)
 			
@@ -161,7 +161,7 @@ func BenchmarkMetalAttention(b *testing.B) {
 			b.ReportAllocs()
 			
 			for i := 0; i < b.N; i++ {
-				result = q.Attention(q, k, v, size.batch, size.seq, scale)
+				result = q.Attention(q, k, v, size.batch, size.seq, 1, scale)
 				backend.PutTensor(result)
 			}
 			backend.Synchronize()

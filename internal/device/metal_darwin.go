@@ -730,29 +730,82 @@ func (t *MetalTensor) linearActivationInternal(input, weight, bias Tensor, activ
 
 func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor {
 	if t.backend.useFP16 {
-		qt := q.(*MetalTensor)
-		kt := k.(*MetalTensor)
-		vt := v.(*MetalTensor)
-		
-		r, c := qt.Dims()
-		if r != batchSize*seqLen {
-			panic("Attention: dims mismatch")
-		}
-		
-		result := t.backend.NewTensor(r, c, nil)
-		rst := result.(*MetalTensor)
-		
-		C.Metal_Attention_Graph(t.backend.ctx,
-			qt.buf, C.int(qt.offset),
-			kt.buf, C.int(kt.offset),
-			vt.buf, C.int(vt.offset),
-			rst.buf, C.int(rst.offset),
-			C.int(batchSize), C.int(seqLen), C.int(c), C.float(scale))
-			
-		return result
-	} else {
-		panic("Attention not implemented for Metal FP32")
+		return t.FlashAttention(q, k, v, batchSize, seqLen, numHeads, scale)
 	}
+	panic("Attention not implemented for Metal FP32")
+}
+
+func (t *MetalTensor) FlashAttention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor {
+	if !t.backend.useFP16 {
+		panic("FlashAttention only supports FP16")
+	}
+
+	qt := q.(*MetalTensor)
+	kt := k.(*MetalTensor)
+	vt := v.(*MetalTensor)
+
+	// Dimensions
+	// q: [batch_size * seq_len, hidden_size]
+	r, hiddenSize := qt.Dims()
+	if r != batchSize*seqLen {
+		panic(fmt.Sprintf("FlashAttention: dims mismatch q.rows=%d expected=%d", r, batchSize*seqLen))
+	}
+	
+	headDim := hiddenSize / numHeads
+	if headDim*numHeads != hiddenSize {
+		panic("FlashAttention: hiddenSize not divisible by numHeads")
+	}
+	
+	// Check constraints
+	if headDim > 128 {
+		// Fallback to Graph implementation if headDim is too large for our kernel
+		return t.AttentionGraph(q, k, v, batchSize, seqLen, numHeads, scale)
+	}
+
+	// Result tensor
+	result := t.backend.NewTensor(r, hiddenSize, nil)
+	rst := result.(*MetalTensor)
+
+	// Strides (Assuming packed row-major layout (Batch*Seq, Hidden))
+	// row_stride = hiddenSize
+	// head_stride = headDim
+	// batch_stride = seqLen * hiddenSize
+	
+	rowStride := hiddenSize
+	headStride := headDim
+	batchStride := seqLen * hiddenSize
+	
+	totalBatches := batchSize * numHeads
+	
+	C.Metal_FlashAttention(t.backend.ctx,
+		qt.buf, C.int(qt.offset),
+		kt.buf, C.int(kt.offset),
+		vt.buf, C.int(vt.offset),
+		rst.buf, C.int(rst.offset),
+		C.int(seqLen), C.int(headDim), C.float(scale),
+		C.int(batchStride), C.int(headStride), C.int(rowStride),
+		C.int(numHeads), C.int(totalBatches))
+		
+	return result
+}
+
+func (t *MetalTensor) AttentionGraph(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor {
+	qt := q.(*MetalTensor)
+	kt := k.(*MetalTensor)
+	vt := v.(*MetalTensor)
+	
+	r, c := qt.Dims()
+	result := t.backend.NewTensor(r, c, nil)
+	rst := result.(*MetalTensor)
+	
+	C.Metal_Attention_Graph(t.backend.ctx,
+		qt.buf, C.int(qt.offset),
+		kt.buf, C.int(kt.offset),
+		vt.buf, C.int(vt.offset),
+		rst.buf, C.int(rst.offset),
+		C.int(batchSize), C.int(seqLen), C.int(c), C.float(scale))
+		
+	return result
 }
 
 func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {

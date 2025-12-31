@@ -35,6 +35,7 @@
 @property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F16;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix_F16;
+@property(strong) id<MTLComputePipelineState> pipelineFlashAttn;
 
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
 @property(strong) id<MTLComputeCommandEncoder> currentEncoder;
@@ -57,7 +58,16 @@
       self.currentCommandBuffer = [self.commandQueue commandBuffer];
     }
     if (!self.currentEncoder) {
-      self.currentEncoder = [self.currentCommandBuffer computeCommandEncoder];
+      if (@available(macOS 10.14, *)) {
+        MTLComputePassDescriptor *desc =
+            [MTLComputePassDescriptor computePassDescriptor];
+        desc.dispatchType = MTLDispatchTypeConcurrent;
+        self.currentEncoder = [self.currentCommandBuffer
+            computeCommandEncoderWithDescriptor:desc];
+      } else {
+        // Fallback for older macOS
+        self.currentEncoder = [self.currentCommandBuffer computeCommandEncoder];
+      }
     }
   }
 }
@@ -148,6 +158,7 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineCast_F32_to_F16 = loadPipeline(ctx, @"cast_f32_to_f16");
   ctx.pipelineCopySubmatrix = loadPipeline(ctx, @"copy_submatrix");
   ctx.pipelineCopySubmatrix_F16 = loadPipeline(ctx, @"copy_submatrix_f16");
+  ctx.pipelineFlashAttn = loadPipeline(ctx, @"flash_attn_fwd_f16");
 
   return (__bridge_retained MetalContextRef)ctx;
 }
@@ -808,6 +819,32 @@ void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
                           hiddenSize, seqLen, batchSize);
 
   Metal_FreeBuffer(ctx, scoresBuf);
+}
+
+void Metal_FlashAttention(MetalContextRef ctx, MetalBufferRef Q, int offQ,
+                          MetalBufferRef K, int offK, MetalBufferRef V,
+                          int offV, MetalBufferRef O, int offO, int N, int d,
+                          float scale, int batch_stride, int head_stride,
+                          int row_stride, int num_heads, int total_batches) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineFlashAttn);
+
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)Q offset:offQ atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)K offset:offK atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)V offset:offV atIndex:2];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)O offset:offO atIndex:3];
+
+  [c.currentEncoder setBytes:&N length:4 atIndex:4];
+  [c.currentEncoder setBytes:&d length:4 atIndex:5];
+  [c.currentEncoder setBytes:&scale length:4 atIndex:6];
+  [c.currentEncoder setBytes:&batch_stride length:4 atIndex:7];
+  [c.currentEncoder setBytes:&head_stride length:4 atIndex:8];
+  [c.currentEncoder setBytes:&row_stride length:4 atIndex:9];
+  [c.currentEncoder setBytes:&num_heads length:4 atIndex:10];
+
+  int blocks_n = (N + 31) / 32;
+  [c.currentEncoder dispatchThreadgroups:MTLSizeMake(blocks_n, total_batches, 1)
+                   threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
 }
 
 void Metal_Linear_Graph(MetalContextRef ctx, MetalBufferRef input, int offIn,

@@ -51,7 +51,7 @@ func TestFusedAttentionCorrectness(t *testing.T) {
 			scale := float32(1.0 / math.Sqrt(float64(tc.hiddenSize)))
 			
 			// Run unfused attention (current implementation)
-			unfusedResult := q1.Attention(q1, k1, v1, tc.batch, tc.seqLen, scale)
+			unfusedResult := q1.Attention(q1, k1, v1, tc.batch, tc.seqLen, 1, scale)
 			backend.Synchronize()
 			unfusedOutput := unfusedResult.ToHost()
 			
@@ -116,7 +116,7 @@ func BenchmarkFusedAttentionComparison(b *testing.B) {
 		
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			result := q.Attention(q, k, v, batch, seqLen, scale)
+			result := q.Attention(q, k, v, batch, seqLen, 1, scale)
 			backend.PutTensor(result)
 		}
 		backend.Synchronize()

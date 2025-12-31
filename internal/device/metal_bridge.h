@@ -110,6 +110,12 @@ void Metal_ApplyRoPE_F16(MetalContextRef ctx, MetalBufferRef data, int offData,
 void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                       MetalBufferRef output, int offOut, int n, int interSize);
 
+void Metal_FlashAttention(MetalContextRef ctx, MetalBufferRef Q, int offQ,
+                          MetalBufferRef K, int offK, MetalBufferRef V,
+                          int offV, MetalBufferRef O, int offO, int N, int d,
+                          float scale, int batch_stride, int head_stride,
+                          int row_stride, int num_heads, int total_batches);
+
 // Matrix Mul (MPS)
 void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   MetalBufferRef b, int offB, bool transB, MetalBufferRef c,

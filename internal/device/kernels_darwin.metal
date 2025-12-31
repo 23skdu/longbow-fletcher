@@ -483,3 +483,146 @@ kernel void copy_submatrix_f16(device const half *src [[ buffer(0) ]],
     
     dest[dest_idx] = src[src_idx];
 }
+
+// ============ Flash Attention ============
+
+// Constants for loop unrolling and shared memory sizes
+constant int BLOCK_SIZE_M = 32;
+constant int BLOCK_SIZE_N = 32;
+
+// Tiled Flash Attention Kernel (Forward)
+// Grid: (N / BLOCK_SIZE_M, batch_size * num_heads, 1)
+// Threadgroup: (BLOCK_SIZE_M, 1, 1) - using 32 threads.
+kernel void flash_attn_fwd_f16(
+    device const half* Q [[ buffer(0) ]],
+    device const half* K [[ buffer(1) ]],
+    device const half* V [[ buffer(2) ]],
+    device half* O [[ buffer(3) ]],
+    constant int& N [[ buffer(4) ]],         // seq_len
+    constant int& d [[ buffer(5) ]],         // head_dim
+    constant float& scale [[ buffer(6) ]],
+    constant int& batch_stride [[ buffer(7) ]],
+    constant int& head_stride [[ buffer(8) ]],
+    constant int& row_stride [[ buffer(9) ]], 
+    constant int& num_heads [[ buffer(10) ]],
+    
+    uint3 gid [[ thread_position_in_grid ]],
+    uint3 tid [[ thread_position_in_threadgroup ]],
+    uint3 bid [[ threadgroup_position_in_grid ]]
+) {
+    // Grid X: Block index along Sequence length
+    // Grid Y: Flattened index of (Batch * NumHeads)
+    
+    // 1. Setup Offsets
+    int tx = tid.x; 
+    int bx = bid.x; 
+    int by = bid.y; 
+    
+    // Decompose batch/head index
+    int batch_idx = by / num_heads;
+    int head_idx = by % num_heads;
+    
+    long base_offset = (long)batch_idx * (long)batch_stride + (long)head_idx * (long)head_stride;
+    
+    device const half* q_ptr = Q + base_offset;
+    device const half* k_ptr = K + base_offset;
+    device const half* v_ptr = V + base_offset;
+    device half* o_ptr = O + base_offset;
+    
+    // 2. Shared Memory
+    threadgroup half shared_Q[32 * 128]; 
+    threadgroup half shared_K[32 * 128];
+    threadgroup half shared_V[32 * 128];
+    
+    int q_row_start = bx * 32;
+    int q_len = min(32, N - q_row_start);
+    
+    // Load Q
+    if (tx < q_len) {
+        for (int i = 0; i < d; i++) {
+           shared_Q[tx * d + i] = q_ptr[(q_row_start + tx) * row_stride + i];
+        }
+    } else {
+         for (int i = 0; i < d; i++) shared_Q[tx * d + i] = 0.0h;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // Accumulators
+    float l_i = 0.0f; 
+    float m_i = -1e30f; 
+    float acc_O[128]; 
+    for (int i=0; i<d; i++) acc_O[i] = 0.0f;
+    
+    // Loop over KV blocks
+    int num_steps = (N + 31) / 32;
+    
+    for (int j = 0; j < num_steps; j++) {
+        int kv_row_start = j * 32;
+        int kv_len = min(32, N - kv_row_start);
+        
+        // Load K and V
+        if (tx < kv_len) {
+            for (int i = 0; i < d; i++) {
+                shared_K[tx * d + i] = k_ptr[(kv_row_start + tx) * row_stride + i];
+                shared_V[tx * d + i] = v_ptr[(kv_row_start + tx) * row_stride + i];
+            }
+        }
+        
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        
+        // Process block
+        if (tx < q_len) {
+            float scores[32]; 
+            float local_max = -1e30f;
+            
+            for (int k = 0; k < 32; k++) {
+                if (k >= kv_len) {
+                    scores[k] = -1e30f; 
+                    continue;
+                }
+                
+                float dot = 0.0f;
+                int idx_q = tx * d;
+                int idx_k = k * d;
+                for (int i = 0; i < d; i++) {
+                    dot += float(shared_Q[idx_q + i]) * float(shared_K[idx_k + i]);
+                }
+                scores[k] = dot * scale;
+                if (scores[k] > local_max) local_max = scores[k];
+            }
+            
+            float m_prev = m_i;
+            m_i = max(m_prev, local_max);
+            float exp_diff = exp(m_prev - m_i); 
+            
+            for (int i = 0; i < d; i++) {
+                acc_O[i] *= exp_diff;
+            }
+            
+            float block_sum = 0.0f;
+            for (int k = 0; k < 32; k++) {
+                if (k >= kv_len) continue;
+                float p_val = exp(scores[k] - m_i); 
+                block_sum += p_val;
+                
+                int idx_v = k * d;
+                for (int i = 0; i < d; i++) {
+                    acc_O[i] += p_val * float(shared_V[idx_v + i]);
+                }
+            }
+            
+            l_i = l_i * exp_diff + block_sum;
+        }
+        
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    // Write Output
+    if (tx < q_len) {
+        float inv_l = 1.0f / l_i;
+        int row_idx = (q_row_start + tx);
+        for (int i = 0; i < d; i++) {
+            o_ptr[row_idx * row_stride + i] = half(acc_O[i] * inv_l);
+        }
+    }
+}
