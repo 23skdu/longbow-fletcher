@@ -5,34 +5,34 @@
 
 ## High Priority: Performance & Scalability (Weeks 5-6)
 
-1. **[Performance] Implement SIMD Tokenization**
-    - Replace generic string splitting with NEON/AVX2 optimized WordPiece tokenizer to remove CPU bottlenecks.
+1. **[x] [Performance] Implement SIMD Tokenization**
+2.     - Replace generic string splitting with NEON/AVX2 optimized WordPiece tokenizer to >> Go Lookup Table optimization.
 
-2. **[Performance] Implement Flash Attention (Metal)**
+3. **[Performance] Implement Flash Attention (Metal)**
     - Implement IO-aware attention kernel to reduce VRAM BW usage by 3-4x for sequences >128.
 
-3. **[Performance] Multi-Stream GPU Dispatch**
+4. **[Performance] Multi-Stream GPU Dispatch**
     - usage concurrent command encoders to overlap copy, compute, and host-transfer operations.
 
-4. **[Performance] SwiGLU Fused Kernel Optimization**
+5. **[Performance] SwiGLU Fused Kernel Optimization**
     - Further optimize the Nomic SwiGLU kernel to use SIMD groups and reduce register pressure.
 
-5. **[Performance] RoPE Fused Kernel Optimization**
+6. **[Performance] RoPE Fused Kernel Optimization**
     - Optimize Rotary Positional Embeddings to minimize complex number arithmetic overhead.
 
-6. **[Performance] Async Flight Streaming**
+7. **[Performance] Async Flight Streaming**
     - Implement `DoPut` stream without blocking on batch completion to saturate network link.
 
-7. **[Performance] Embedding Compression (FP16 Transport)**
+8. **[Performance] Embedding Compression (FP16 Transport)**
     - Implement zero-copy FP16 Arrow transport to halve network bandwidth usage.
 
-8. **[Performance] Dynamic Batch Sizing**
+9. **[Performance] Dynamic Batch Sizing**
     - Implement adaptive batching size based on current sequence length distribution and VRAM availability.
 
-9. **[Performance] Memory Arena Allocator**
+10. **[Performance] Memory Arena Allocator**
     - Replace `sync.Pool` with a slab/arena allocator for tensors to guarantee locality and reduce fragmentation.
 
-10. **[Performance] Dataset-Aware Caching**
+11. **[Performance] Dataset-Aware Caching**
     - Implement an LRU cache for frequently requested text hashes to bypass inference entirely.
 
 ## High Priority: Stability & Reliability (Weeks 7-8)
