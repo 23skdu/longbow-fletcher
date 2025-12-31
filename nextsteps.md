@@ -8,13 +8,13 @@
 1. **[x] [Performance] Implement SIMD Tokenization**
 2.     - Replace generic string splitting with NEON/AVX2 optimized WordPiece tokenizer to >> Go Lookup Table optimization.
 
-3. **[Performance] Implement Flash Attention (Metal)**
+3. **[x] [Performance] Implement Flash Attention (Metal)**
     - Implement IO-aware attention kernel to reduce VRAM BW usage by 3-4x for sequences >128.
 
-4. **[Performance] Multi-Stream GPU Dispatch**
+4. **[x] [Performance] Multi-Stream GPU Dispatch**
     - usage concurrent command encoders to overlap copy, compute, and host-transfer operations.
 
-5. **[Performance] SwiGLU Fused Kernel Optimization**
+5. **[x] [Performance] SwiGLU Fused Kernel Optimization**
     - Further optimize the Nomic SwiGLU kernel to use SIMD groups and reduce register pressure.
 
 6. **[Performance] RoPE Fused Kernel Optimization**

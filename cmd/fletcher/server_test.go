@@ -12,6 +12,7 @@ import (
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -27,6 +28,10 @@ func (m *mockFlightClient) DoPut(ctx context.Context, datasetName string, record
 }
 
 func (m *mockFlightClient) Close() error {
+	return nil
+}
+
+func (m *mockFlightClient) StartStream(ctx context.Context, datasetName string) *client.AsyncStream {
 	return nil
 }
 

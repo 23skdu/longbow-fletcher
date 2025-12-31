@@ -511,9 +511,11 @@ void Metal_ApplyRoPE_F16(MetalContextRef ctx, MetalBufferRef data, int offData,
   [c.currentEncoder setBytes:&headDim length:4 atIndex:1];
   [c.currentEncoder setBytes:&numHeads length:4 atIndex:2];
   [c.currentEncoder setBytes:&seqLen length:4 atIndex:3];
-  [c.currentEncoder dispatchThreads:MTLSizeMake(headDim / 2, numHeads,
-                                                batchSize * seqLen)
-              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+  // Vectorized kernel handles 4 pairs (8 elements) per thread
+  int threadsX = (headDim / 2 + 3) / 4;
+  [c.currentEncoder
+            dispatchThreads:MTLSizeMake(threadsX, numHeads, batchSize * seqLen)
+      threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
 }
 
 void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
@@ -527,8 +529,10 @@ void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                        offset:offOut
                       atIndex:1];
   [c.currentEncoder setBytes:&interSize length:4 atIndex:2];
-  [c.currentEncoder dispatchThreads:MTLSizeMake(interSize, n, 1)
-              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+  // Vectorized kernel handles 4 elements per thread
+  int threadsX = (interSize + 3) / 4;
+  [c.currentEncoder dispatchThreads:MTLSizeMake(threadsX, n, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(threadsX, 512), 1, 1)];
 }
 
 // Matrix Multiplication (MPS)

@@ -22,6 +22,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"sync"
 
+	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 )
 
@@ -63,11 +64,13 @@ type EmbedderInterface interface {
 type FlightClientInterface interface {
 	DoPut(ctx context.Context, datasetName string, record arrow.RecordBatch) error
 	Close() error
+	StartStream(ctx context.Context, datasetName string) *client.AsyncStream
 }
 
 type Server struct {
 	embedder     EmbedderInterface
 	flightClient FlightClientInterface
+	stream       *client.AsyncStream
 	datasetName  string
 	alloc        memory.Allocator
 	sbPool       sync.Pool
@@ -83,7 +86,7 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 		vs = semaphore.NewWeighted(maxVRAM)
 	}
 	
-	return &Server{
+	s := &Server{
 		embedder:     embedder,
 		flightClient: fc,
 		datasetName:  dataset,
@@ -98,6 +101,11 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 		TransportFmt: transportFmt,
 		ModelType:    modelType,
 	}
+
+	if fc != nil {
+		s.stream = fc.StartStream(context.Background(), dataset)
+	}
+	return s
 }
 
 func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string, modelType string) {
@@ -340,14 +348,23 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 	defer rec.Release()
 	
 	start := time.Now()
-	err := s.flightClient.DoPut(ctx, s.datasetName, rec)
+	// Use Async Stream
+	if s.stream != nil {
+		s.stream.Send(rec)
+	} else {
+		// Fallback (should not happen if fc is not nil)
+		err := s.flightClient.DoPut(ctx, s.datasetName, rec)
+		if err != nil {
+			return err
+		}
+	}
 	duration := time.Since(start).Seconds()
 
 	flightRequests.Inc()
 	flightDuration.Observe(duration)
 	flightBytesSent.Add(float64(embedBytes)) // Estimate
 
-	return err
+	return nil
 }
 
 

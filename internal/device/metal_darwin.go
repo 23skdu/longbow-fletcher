@@ -386,11 +386,40 @@ func (t *MetalTensor) CopyFromFloat32(data []float32) {
 }
 
 func (t *MetalTensor) Copy(from Tensor) {
-	_, ok := from.(*MetalTensor)
+	ft, ok := from.(*MetalTensor)
 	if !ok {
 		panic("Cross-backend copy not supported")
 	}
-	// TODO: Metal_CopyBuffer
+	
+	// Check size
+	size := t.rows * t.cols
+	fSize := ft.rows * ft.cols
+	if size != fSize {
+		panic(fmt.Sprintf("Copy size mismatch: %d vs %d", size, fSize))
+	}
+	
+	// We can treat as 1D copy (1 row, N cols) for simplicity with CopySubmatrix
+	// provided strides align (which they do for 1D/contiguous 2D).
+	
+	// Determine correct kernel based on type.
+	// If both usage FP16 vs FP32 matches?
+	// Actually CopySubmatrix takes float pointers for FP32 version and half pointers for F16.
+	// We should check backend type or tensor dtype.
+	
+	// If types differ, we need Cast, not Copy. Copy assumes same type.
+	if t.dtype != ft.dtype {
+		panic("Copy requires matching data types (use Cast)")
+	}
+	
+	if t.dtype == Float16 {
+		C.Metal_CopySubmatrix_F16(t.backend.ctx, ft.buf, C.int(ft.offset), C.int(size),
+			t.buf, C.int(t.offset), C.int(size),
+			0, 0, 1, C.int(size))
+	} else {
+		C.Metal_CopySubmatrix(t.backend.ctx, ft.buf, C.int(ft.offset), C.int(size),
+			t.buf, C.int(t.offset), C.int(size),
+			0, 0, 1, C.int(size))
+	}
 }
 
 func (t *MetalTensor) Slice(i, k, j, l int) Tensor {

@@ -405,22 +405,62 @@ kernel void rope_kernel_f16(device half *data [[ buffer(0) ]],
                             constant int &num_heads [[ buffer(2) ]],
                             constant int &seq_len [[ buffer(3) ]],
                             uint3 gid [[ thread_position_in_grid ]]) {
-    uint i = gid.x; // feature pair index (0 to head_dim/2 - 1)
+    uint vec_i = gid.x; // vectorized feature index
     uint h = gid.y; // head index
     uint b_s = gid.z; // (batch * seq) index
+    
+    // Each thread handles 4 elements (indices i, i+1, i+2, i+3)
+    // Corresponding pairs are at (i+d/2, ...).
+    // range of i is [0, head_dim/2).
+    // So we need (head_dim/2 + 3)/4 threads.
+    
+    uint i = vec_i * 4;
+    
+    // Check bounds. processing 4 indices starting at i.
+    // We assume head_dim >= 8 and even (standard is 64/128).
+    if (i >= uint(head_dim/2)) return;
     
     uint seq_idx = b_s % seq_len;
     uint offset = b_s * (num_heads * head_dim) + h * head_dim;
     
-    float theta = (float)seq_idx * pow(10000.0, -2.0 * (float)i / (float)head_dim);
-    float cos_theta = cos(theta);
-    float sin_theta = sin(theta);
+    // Calculate 4 thetas
+    // theta_k = seq_idx * base^( -2 * (i+k) / head_dim )
+    // We can compute this in float4.
     
-    half x1 = data[offset + i];
-    half x2 = data[offset + i + head_dim/2];
+    float4 indices = float4(float(i), float(i+1), float(i+2), float(i+3));
+    // exp2 is usually faster than pow
+    // base^(-2*k/d) = exp2( log2(base) * (-2*k/d) )
+    // log2(10000) approx 13.287712
+    const float log2_base = 13.2877123795f; 
+    float4 exponents = indices * (-2.0f / float(head_dim));
+    float4 thetas = float(seq_idx) * exp2(exponents * log2_base);
     
-    data[offset + i] = half((float)x1 * cos_theta - (float)x2 * sin_theta);
-    data[offset + i + head_dim/2] = half((float)x1 * sin_theta + (float)x2 * cos_theta);
+    float4 cos_theta = cos(thetas);
+    float4 sin_theta = sin(thetas);
+    
+    // Load 4 pairs
+    // ptr1 points to x[i...i+3]
+    // ptr2 points to x[i+d/2...i+3+d/2]
+    
+    // Handle alignment. If head_dim/2 is multiple of 4, we are good for aligned loads.
+    // If not, unaligned loads or scalar fallback.
+    // Standard models (Llama/Mistral) have head_dim=128 (d/2=64) or head_dim=64 (d/2=32).
+    // Both are multiples of 4. We assume alignment.
+    
+    device half4* ptr1 = (device half4*)(data + offset + i);
+    device half4* ptr2 = (device half4*)(data + offset + i + head_dim/2);
+    
+    half4 x1_h = ptr1[0];
+    half4 x2_h = ptr2[0];
+    
+    float4 x1 = float4(x1_h);
+    float4 x2 = float4(x2_h);
+    
+    float4 res1 = x1 * cos_theta - x2 * sin_theta;
+    float4 res2 = x1 * sin_theta + x2 * cos_theta;
+    
+    ptr1[0] = half4(res1);
+    ptr2[0] = half4(res2);
 }
 
 // SwiGLU Activation FP16
@@ -430,18 +470,65 @@ kernel void swiglu_kernel_f16(device const half *input [[ buffer(0) ]],
                               device half *output [[ buffer(1) ]],
                               constant int &inter_size [[ buffer(2) ]],
                               uint2 gid [[ thread_position_in_grid ]]) {
-    uint i = gid.x; // index in inter_size
-    uint n = gid.y; // index in N
+    // Each thread handles 4 elements
+    uint vec_i = gid.x; 
+    uint n = gid.y;
+    
+    // We assume the grid is launched with (inter_size + 3) / 4 threads in X
+    uint i = vec_i * 4;
+    
+    if (i >= uint(inter_size)) return;
     
     int row_offset_in = n * (2 * inter_size);
     int row_offset_out = n * inter_size;
     
-    float x = (float)input[row_offset_in + i];
-    float y = (float)input[row_offset_in + i + inter_size];
-    
-    // Swish(x) = x * sigmoid(x)
-    float swish_x = x / (1.0f + exp(-x));
-    output[row_offset_out + i] = half(swish_x * y);
+    // Check bounds for full vector load
+    if (i + 3 < uint(inter_size)) {
+        // Fast path: load 4
+        device const half4* in_ptr = (device const half4*)(input + row_offset_in + i);
+        half4 x_vec = in_ptr[0];
+        // y is at offset + inter_size. Note: alignment might be tricky if inter_size isn't multiple of 4.
+        // If inter_size is multiple of 4, we can cast.
+        // Assuming inter_size is a multiple of 4 for now (typical in deep learning).
+        // If not, we fall back to scalar or unaligned loads.
+        // Let's assume input buffers are aligned or we accept unaligned reads (Slow on some archs, ok on M1).
+        
+        // Load y vector
+        // We cannot just offset pointer by inter_size/4 if inter_size isn't multiple of 4 bytes/elements.
+        // Pointer arithmetic on half4* moves by 4 halves.
+        // Safe way: load from raw pointer
+        
+        half4 y_vec;
+        y_vec.x = input[row_offset_in + i + inter_size];
+        y_vec.y = input[row_offset_in + i + 1 + inter_size];
+        y_vec.z = input[row_offset_in + i + 2 + inter_size];
+        y_vec.w = input[row_offset_in + i + 3 + inter_size];
+        
+        // Compute Swish: x * sigmoid(x) = x / (1 + exp(-x))
+        // Metal has optimized sigmoid. swish(x) = x * sigmoid(x).
+        // float4 math usually better precision, but half4 might be faster.
+        // M-series supports half precision arithmetic well.
+        
+        float4 x_f = float4(x_vec);
+        float4 y_f = float4(y_vec);
+        
+        float4 swish = x_f / (1.0f + exp(-x_f));
+        half4 res = half4(swish * y_f);
+        
+        device half4* out_ptr = (device half4*)(output + row_offset_out + i);
+        out_ptr[0] = res;
+    } else {
+        // Scalar fallback for remaining elements
+        for (int k = 0; k < 4; k++) {
+            if (i + k < uint(inter_size)) {
+                int idx = i + k;
+                float x = (float)input[row_offset_in + idx];
+                float y = (float)input[row_offset_in + idx + inter_size];
+                float swish = x / (1.0f + exp(-x));
+                output[row_offset_out + idx] = half(swish * y);
+            }
+        }
+    }
 }
 
 

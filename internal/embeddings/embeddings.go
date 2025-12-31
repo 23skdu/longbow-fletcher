@@ -33,6 +33,7 @@ type Embedder struct {
 	models            []*model.BertModel
 	tokenizer         *tokenizer.WordPieceTokenizer
 	internalBatchSize int
+	maxBatchTokens    int
 	gpuMetrics        []GPUMetrics
 	metricsMu         sync.RWMutex
 }
@@ -128,13 +129,16 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 
 	// Default batch sizes based on device
 	batchSize := 32
+	maxTokens := 2048 // Conservative default
 	if useGPU {
 		// Dynamic batch sizing based on platform
 		switch runtime.GOOS {
 		case "darwin":
 			batchSize = 256
+			maxTokens = 16384 // ~16k tokens allows good utilization of M1/M2/M3
 		case "linux":
 			batchSize = 512
+			maxTokens = 16384 // VRAM dependent, keeping safe default
 		}
 	}
 
@@ -151,6 +155,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 		models:            models,
 		tokenizer:         tok,
 		internalBatchSize: batchSize,
+		maxBatchTokens:    maxTokens,
 		gpuMetrics:        metrics,
 	}, nil
 }
@@ -386,7 +391,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 					Float64("throughput", e.gpuMetrics[devId].AvgThroughput).
 					Msg("Dispatching batch")
 				m := e.models[devId]
-				runInferenceOnDevice(m, e.internalBatchSize, results[s:eIdx], s, dim, format, out, &e.gpuMetrics[devId])
+				runInferenceOnDevice(m, e.internalBatchSize, e.maxBatchTokens, results[s:eIdx], s, dim, format, out, &e.gpuMetrics[devId])
 			}(d, startIndex, endIndex)
 			
 			startIndex = endIndex
@@ -510,7 +515,7 @@ type tokenizedResult struct {
 	len int
 }
 
-func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedResult, baseOffset int, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics) {
+func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, inputs []tokenizedResult, baseOffset int, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics) {
 	// Track overall batch performance
 	batchStart := time.Now()
 	totalSequences := len(inputs)
@@ -522,29 +527,49 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 	var prevOffset int
 
 	count := len(inputs)
-	for i := 0; i < count; i += batchSize {
-		batchEnd := i + batchSize
-		if batchEnd > count {
-			batchEnd = count
+	i := 0
+	for i < count {
+		// Dynamic Batching: Fill batch until maxBatchSize OR maxTokens reached
+		currentBatchTokens := 0
+		currentBatchSize := 0
+		
+		for j := i; j < count; j++ {
+			seqLen := inputs[j].len
+			
+			// Check limits
+			if currentBatchSize >= maxBatchSize {
+				break
+			}
+			if currentBatchTokens+seqLen > maxTokens && currentBatchSize > 0 {
+				break
+			}
+			
+			currentBatchTokens += seqLen
+			currentBatchSize++
 		}
-
-		batchCount := batchEnd - i
-		totalTokens := 0
-		for j := i; j < batchEnd; j++ {
-			totalTokens += inputs[j].len
+		
+		if currentBatchSize == 0 {
+			// Should not happen unless maxTokens < single sequence length
+			// Force valid batch to avoid infinite loop
+			currentBatchSize = 1
+			currentBatchTokens = inputs[i].len
 		}
-		totalTokensProcessed += totalTokens
+		
+		batchEndIdx := i + currentBatchSize
+		
+		// Prepare inputs
+		flatInputs := make([]int, 0, currentBatchTokens)
+		lengths := make([]int, currentBatchSize)
 
-		flatInputs := make([]int, 0, totalTokens)
-		lengths := make([]int, batchCount)
-
-		for j := 0; j < batchCount; j++ {
-			res := inputs[i+j]
+		for k := 0; k < currentBatchSize; k++ {
+			res := inputs[i+k]
 			flatInputs = append(flatInputs, 101) // [CLS]
 			flatInputs = append(flatInputs, res.ids...)
 			flatInputs = append(flatInputs, 102) // [SEP]
-			lengths[j] = res.len
+			lengths[k] = res.len
 		}
+		
+		totalTokensProcessed += currentBatchTokens
 
 		// Start GPU for current batch
 		currentOutput := m.ForwardBatch(flatInputs, lengths)
@@ -556,8 +581,11 @@ func runInferenceOnDevice(m *model.BertModel, batchSize int, inputs []tokenizedR
 		}
 
 		prevOutput = currentOutput
-		prevBatchCount = batchCount
+		prevBatchCount = currentBatchSize
 		prevOffset = baseOffset + i
+		
+		// Advance
+		i = batchEndIdx
 	}
 
 	// Handle the final batch
