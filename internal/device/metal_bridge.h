@@ -34,6 +34,16 @@ void Metal_Cast_F32_to_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                            MetalBufferRef output, int offOut, int count);
 
 // Ops
+void Metal_CopySubmatrix(MetalContextRef ctx, MetalBufferRef src, int offSrc,
+                         int srcCols, MetalBufferRef dest, int offDest,
+                         int destCols, int srcRowOff, int srcColOff, int rows,
+                         int cols);
+
+void Metal_CopySubmatrix_F16(MetalContextRef ctx, MetalBufferRef src,
+                             int offSrc, int srcCols, MetalBufferRef dest,
+                             int offDest, int destCols, int srcRowOff,
+                             int srcColOff, int rows, int cols);
+
 void Metal_Add(MetalContextRef ctx, MetalBufferRef a, int offA,
                MetalBufferRef b, int offB, MetalBufferRef result, int offRes,
                int count);

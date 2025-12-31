@@ -451,3 +451,35 @@ kernel void cast_f32_to_f16(device const float *input [[ buffer(0) ]],
                             uint index [[ thread_position_in_grid ]]) {
     output[index] = half(input[index]);
 }
+
+kernel void copy_submatrix(device const float *src [[ buffer(0) ]],
+                           device float *dest [[ buffer(1) ]],
+                           constant int &src_cols [[ buffer(2) ]],
+                           constant int &dest_cols [[ buffer(3) ]],
+                           constant int &src_r_off [[ buffer(4) ]],
+                           constant int &src_c_off [[ buffer(5) ]],
+                           uint2 gid [[ thread_position_in_grid ]]) {
+    uint c = gid.x;
+    uint r = gid.y;
+    
+    int src_idx = (src_r_off + r) * src_cols + (src_c_off + c);
+    int dest_idx = r * dest_cols + c;
+    
+    dest[dest_idx] = src[src_idx];
+}
+
+kernel void copy_submatrix_f16(device const half *src [[ buffer(0) ]],
+                               device half *dest [[ buffer(1) ]],
+                               constant int &src_cols [[ buffer(2) ]],
+                               constant int &dest_cols [[ buffer(3) ]],
+                               constant int &src_r_off [[ buffer(4) ]],
+                               constant int &src_c_off [[ buffer(5) ]],
+                               uint2 gid [[ thread_position_in_grid ]]) {
+    uint c = gid.x;
+    uint r = gid.y;
+    
+    int src_idx = (src_r_off + r) * src_cols + (src_c_off + c);
+    int dest_idx = r * dest_cols + c;
+    
+    dest[dest_idx] = src[src_idx];
+}

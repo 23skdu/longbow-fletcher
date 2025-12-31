@@ -424,9 +424,28 @@ func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
 			buf:     t.buf,
 			offset:  byteOffset,
 		}
+	} else {
+		// General sub-tensor slicing (including column slicing)
+		// Since MetalTensor is contiguous, we MUST create a COPY if we slice columns
+		
+		newRows := k - i
+		newCols := l - j
+		
+		res := t.backend.NewTensor(newRows, newCols, nil)
+		resT := res.(*MetalTensor)
+		
+		if t.backend.useFP16 {
+			C.Metal_CopySubmatrix_F16(t.backend.ctx, t.buf, C.int(t.offset), C.int(t.cols),
+				resT.buf, C.int(resT.offset), C.int(newCols),
+				C.int(i), C.int(j), C.int(newRows), C.int(newCols))
+		} else {
+			C.Metal_CopySubmatrix(t.backend.ctx, t.buf, C.int(t.offset), C.int(t.cols),
+				resT.buf, C.int(resT.offset), C.int(newCols),
+				C.int(i), C.int(j), C.int(newRows), C.int(newCols))
+		}
+		
+		return res
 	}
-	
-	panic("Non-row slice not supported in Metal yet")
 }
 
 func (t *MetalTensor) T() Tensor {
@@ -709,7 +728,7 @@ func (t *MetalTensor) linearActivationInternal(input, weight, bias Tensor, activ
 	}
 }
 
-func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
+func (t *MetalTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor {
 	if t.backend.useFP16 {
 		qt := q.(*MetalTensor)
 		kt := k.(*MetalTensor)

@@ -136,6 +136,9 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
 	m.Backend.PutTensor(hiddenStates)
 	
+	// Ensure all GPU operations are finished and memory is coherent before return
+	m.Backend.Synchronize()
+	
 	return res
 }
 
@@ -455,31 +458,57 @@ func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 	r, _ := hiddenStates.Dims()
 	
 	// Q, K, V Projections - use backend buffers
-	// Q, K, V Projections - use backend buffers
 	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
 	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
 	valueLayer := s.Value.Linear(hiddenStates, s.Value, s.ValueBias)
 
-	// attentionScores = Q * K^T / sqrt(d_k)
-	attentionScores := s.Backend.GetTensor(r, r)
-	keyLayerT := keyLayer.T()
-	attentionScores.Mul(queryLayer, keyLayerT)
-	
+	// Context Layer to accumulate heads
+	contextLayer := s.Backend.NewTensor(r, s.AllHeadSize, nil) // Zero initialized
+
 	scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
-	attentionScores.Scale(scale)
+
+	// Multi-Head Attention Loop
+	for h := 0; h < s.NumAttentionHeads; h++ {
+		start := h * s.AttentionHeadSize
+		end := start + s.AttentionHeadSize
+		
+		// Slice returns a COPY in current backend implementation
+		qHead := queryLayer.Slice(0, r, start, end)
+		kHead := keyLayer.Slice(0, r, start, end)
+		vHead := valueLayer.Slice(0, r, start, end)
+		
+		// scores = Q * K^T
+		scores := s.Backend.GetTensor(r, r)
+		kHeadT := kHead.T()
+		scores.Mul(qHead, kHeadT)
+		scores.Scale(scale)
+		scores.Softmax()
+		
+		// ctx = scores * V
+		ctxHead := s.Backend.GetTensor(r, s.AttentionHeadSize)
+		ctxHead.Mul(scores, vHead)
+		
+		// Copy ctxHead into contextLayer manually
+		// TODO: Add Paste/SetSlice to Tensor interface for performance
+		for i := 0; i < r; i++ {
+			for j := 0; j < s.AttentionHeadSize; j++ {
+				val := ctxHead.At(i, j)
+				contextLayer.Set(i, start+j, val)
+			}
+		}
+		
+		// Cleanup intermediate tensors
+		s.Backend.PutTensor(qHead) // slice created new tensor
+		s.Backend.PutTensor(kHead)
+		s.Backend.PutTensor(vHead)
+		s.Backend.PutTensor(scores) // pooled
+		s.Backend.PutTensor(ctxHead) 
+	}
 	
-	// Softmax in-place
-	attentionScores.Softmax()
-	
-	// contextLayer = attentionScores * V
-	contextLayer := s.Backend.GetTensor(r, s.AllHeadSize)
-	contextLayer.Mul(attentionScores, valueLayer)
-	
-	// Return Q, K, V, attentionScores to pool
+	// Return Q, K, V to pool
 	s.Backend.PutTensor(queryLayer)
 	s.Backend.PutTensor(keyLayer)
 	s.Backend.PutTensor(valueLayer)
-	s.Backend.PutTensor(attentionScores)
 	
 	return contextLayer
 }
@@ -522,7 +551,7 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 		
 		// Use Fused Attention Graph (Batch MatMul + Softmax + Context)
 		// Returns (Batch*Seq, Hidden)
-		contextLayer := queryLayer.Attention(queryLayer, keyLayer, valueLayer, batchSize, seqLen, scale)
+		contextLayer := queryLayer.Attention(queryLayer, keyLayer, valueLayer, batchSize, seqLen, s.NumAttentionHeads, scale)
 		
 		// Result is the output
 		output = contextLayer
@@ -548,26 +577,40 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 		computeAttention := func(start, length int) {
 			endIdx := start + length
 			
-			seqQ := queryLayer.Slice(start, endIdx, 0, c)
-			seqK := keyLayer.Slice(start, endIdx, 0, c)
-			seqV := valueLayer.Slice(start, endIdx, 0, c)
-			
-			attentionScores := s.Backend.GetTensor(length, length)
-			seqKT := seqK.T()
-			attentionScores.Mul(seqQ, seqKT)
-			
-			scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
-			attentionScores.Scale(scale)
-			attentionScores.Softmax()
-			
-			seqContext := s.Backend.GetTensor(length, s.AllHeadSize)
-			seqContext.Mul(attentionScores, seqV)
-			
-			outSlice := output.Slice(start, endIdx, 0, c)
-			outSlice.Copy(seqContext)
-			
-			s.Backend.PutTensor(attentionScores)
-			s.Backend.PutTensor(seqContext)
+			// Compute self attention for this sequence manually with MHA
+			for h := 0; h < s.NumAttentionHeads; h++ {
+				headStart := h * s.AttentionHeadSize
+				headEnd := headStart + s.AttentionHeadSize
+				
+				seqQ := queryLayer.Slice(start, endIdx, headStart, headEnd)
+				seqK := keyLayer.Slice(start, endIdx, headStart, headEnd)
+				seqV := valueLayer.Slice(start, endIdx, headStart, headEnd)
+				
+				attentionScores := s.Backend.GetTensor(length, length)
+				seqKT := seqK.T()
+				attentionScores.Mul(seqQ, seqKT)
+				
+				scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
+				attentionScores.Scale(scale)
+				attentionScores.Softmax()
+				
+				seqContext := s.Backend.GetTensor(length, s.AttentionHeadSize)
+				seqContext.Mul(attentionScores, seqV)
+				
+				// Copy back to output (manual Set loop)
+				// output[start:endIdx, headStart:headEnd] = seqContext
+				for i := 0; i < length; i++ {
+					for j := 0; j < s.AttentionHeadSize; j++ {
+						output.Set(start+i, headStart+j, seqContext.At(i, j))
+					}
+				}
+				
+				s.Backend.PutTensor(seqQ)
+				s.Backend.PutTensor(seqK)
+				s.Backend.PutTensor(seqV)
+				s.Backend.PutTensor(attentionScores)
+				s.Backend.PutTensor(seqContext)
+			}
 		}
 		
 		if useParallel {

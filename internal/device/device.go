@@ -73,7 +73,7 @@ type Tensor interface {
 	// equivalent to: Softmax(Q * K^T * scale) * V
 	// Assumes q, k, v are flattened (Batch*Seq, Hidden)
 	// Returns flattend (Batch*Seq, Hidden)
-	Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor
+	Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor
 
 	// RoPE applies Rotary Positional Embeddings to this tensor (In-Place).
 	// Assumes tensor is (Batch*Seq, Hidden)

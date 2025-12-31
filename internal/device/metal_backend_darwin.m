@@ -33,6 +33,8 @@
 @property(strong) id<MTLComputePipelineState> pipelineRope_F16;
 @property(strong) id<MTLComputePipelineState> pipelineSwiglu_F16;
 @property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F16;
+@property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix;
+@property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix_F16;
 
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
 @property(strong) id<MTLComputeCommandEncoder> currentEncoder;
@@ -144,6 +146,8 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineRope_F16 = loadPipeline(ctx, @"rope_kernel_f16");
   ctx.pipelineSwiglu_F16 = loadPipeline(ctx, @"swiglu_kernel_f16");
   ctx.pipelineCast_F32_to_F16 = loadPipeline(ctx, @"cast_f32_to_f16");
+  ctx.pipelineCopySubmatrix = loadPipeline(ctx, @"copy_submatrix");
+  ctx.pipelineCopySubmatrix_F16 = loadPipeline(ctx, @"copy_submatrix_f16");
 
   return (__bridge_retained MetalContextRef)ctx;
 }
@@ -853,4 +857,53 @@ void Metal_Tanh_Graph(MetalContextRef ctx, MetalBufferRef i, int oI,
 void Metal_Gelu_Graph(MetalContextRef ctx, MetalBufferRef i, int oI,
                       MetalBufferRef r, int oR, int c) {
   Metal_Gelu_F16(ctx, i, oI, r, oR, c);
+}
+
+// CopySubmatrix Implementations
+void Metal_CopySubmatrix(MetalContextRef ctx, MetalBufferRef src, int offSrc,
+                         int srcCols, MetalBufferRef dest, int offDest,
+                         int destCols, int srcRowOff, int srcColOff, int rows,
+                         int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCopySubmatrix);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)src
+                       offset:offSrc
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)dest
+                       offset:offDest
+                      atIndex:1];
+
+  [c.currentEncoder setBytes:&srcCols length:4 atIndex:2];
+  [c.currentEncoder setBytes:&destCols length:4 atIndex:3];
+  [c.currentEncoder setBytes:&srcRowOff length:4 atIndex:4];
+  [c.currentEncoder setBytes:&srcColOff length:4 atIndex:5];
+
+  // Grid: (cols, rows, 1)
+  [c.currentEncoder
+            dispatchThreads:MTLSizeMake(cols, rows, 1)
+      threadsPerThreadgroup:MTLSizeMake(MIN(cols, 32), MIN(rows, 32), 1)];
+}
+
+void Metal_CopySubmatrix_F16(MetalContextRef ctx, MetalBufferRef src,
+                             int offSrc, int srcCols, MetalBufferRef dest,
+                             int offDest, int destCols, int srcRowOff,
+                             int srcColOff, int rows, int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCopySubmatrix_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)src
+                       offset:offSrc
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)dest
+                       offset:offDest
+                      atIndex:1];
+
+  [c.currentEncoder setBytes:&srcCols length:4 atIndex:2];
+  [c.currentEncoder setBytes:&destCols length:4 atIndex:3];
+  [c.currentEncoder setBytes:&srcRowOff length:4 atIndex:4];
+  [c.currentEncoder setBytes:&srcColOff length:4 atIndex:5];
+
+  // Grid: (cols, rows, 1)
+  [c.currentEncoder
+            dispatchThreads:MTLSizeMake(cols, rows, 1)
+      threadsPerThreadgroup:MTLSizeMake(MIN(cols, 32), MIN(rows, 32), 1)];
 }

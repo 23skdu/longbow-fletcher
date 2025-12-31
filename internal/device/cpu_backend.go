@@ -574,7 +574,7 @@ func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation Acti
 	return result
 }
 
-func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
+func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor {
 	qt := q.(*CPUTensor)
 	kt := k.(*CPUTensor)
 	vt := v.(*CPUTensor)
@@ -583,6 +583,8 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 	if r != batchSize*seqLen {
 		panic("Attention: dims mismatch")
 	}
+	
+	headSize := c / numHeads
 	
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*CPUTensor)
@@ -614,34 +616,54 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float
 			for i := start; i < end; i++ {
 				offset := i * seqLen
 				qStart := offset * c
-				qData := qt.data[qStart : qStart+seqLen*c]
-				kData := kt.data[qStart : qStart+seqLen*c]
-				vData := vt.data[qStart : qStart+seqLen*c]
 				
-				// scores = Q @ K^T using BLAS
-				blas32.Gemm(blas.NoTrans, blas.Trans,
-					scale,
-					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: qData},
-					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: kData},
-					0.0,
-					blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
-				)
-				
-				// Apply softmax to each row
-				for row := 0; row < seqLen; row++ {
-					rowIdx := row * seqLen
-					simd.SoftmaxFast(scores[rowIdx : rowIdx+seqLen])
+				// Loop over heads
+				for h := 0; h < numHeads; h++ {
+					headOffset := h * headSize
+					
+					// qData for this head
+					// Strided BLAS allows picking columns
+					// But our implementation of mulBLAS or helper below needs careful stride setup
+					// qData starts at qt.data[qStart + headOffset]
+					// Stride is c (full hidden size)
+					
+					qPtr := qt.data[qStart+headOffset:]
+					kPtr := kt.data[qStart+headOffset:]
+					vPtr := vt.data[qStart+headOffset:]
+					outPtr := rst.data[qStart+headOffset:]
+					
+					// scores = Q_h @ K_h^T
+					// Q: (Seq, HeadSize), Stride=Hidden
+					// K: (Seq, HeadSize), Stride=Hidden (Transposed logically)
+					// Result: (Seq, Seq), Stride=Seq (Contiguous)
+					
+					blas32.Gemm(blas.NoTrans, blas.Trans,
+						scale,
+						blas32.General{Rows: seqLen, Cols: headSize, Stride: c, Data: qPtr},
+						blas32.General{Rows: seqLen, Cols: headSize, Stride: c, Data: kPtr},
+						0.0,
+						blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
+					)
+					
+					// Apply softmax to each row of scores
+					for row := 0; row < seqLen; row++ {
+						rowIdx := row * seqLen
+						simd.SoftmaxFast(scores[rowIdx : rowIdx+seqLen])
+					}
+					
+					// context = scores @ V_h
+					// Scores: (Seq, Seq)
+					// V: (Seq, HeadSize), Stride=Hidden
+					// Out: (Seq, HeadSize), Stride=Hidden
+					
+					blas32.Gemm(blas.NoTrans, blas.NoTrans,
+						1.0,
+						blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
+						blas32.General{Rows: seqLen, Cols: headSize, Stride: c, Data: vPtr},
+						0.0,
+						blas32.General{Rows: seqLen, Cols: headSize, Stride: c, Data: outPtr},
+					)
 				}
-				
-				// context = scores @ V using BLAS
-				outData := rst.data[qStart : qStart+seqLen*c]
-				blas32.Gemm(blas.NoTrans, blas.NoTrans,
-					1.0,
-					blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
-					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: vData},
-					0.0,
-					blas32.General{Rows: seqLen, Cols: c, Stride: c, Data: outData},
-				)
 			}
 		}(startBatch, endBatch)
 	}

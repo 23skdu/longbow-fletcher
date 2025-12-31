@@ -31,7 +31,7 @@ def main():
     # Add Accelerate framework for macOS BLAS
     env = os.environ.copy()
     env["CGO_LDFLAGS"] = "-framework Accelerate"
-    cmd = ["go", "run", "./cmd/fletcher", "-input", "fletcher_input.json"]
+    cmd = ["go", "run", "-tags", "metal", "./cmd/fletcher", "-input", "fletcher_input.json", "-gpu"]
     
     # Check if we should use GPU (optional, based on env or flag, defaulted to CPU for stability unless user requested GPU explicitly)
     # The user request mentioned "metal-kernel-optimization", implying testing on Metal.
@@ -40,6 +40,8 @@ def main():
     
     try:
         result = subprocess.run(cmd, capture_output=True, check=True, env=env)
+        if result.stderr:
+            print(f"Fletcher stderr:\n{result.stderr.decode('utf-8')}")
     except subprocess.CalledProcessError as e:
         print(f"Fletcher failed: {e.stderr.decode()}")
         sys.exit(1)
