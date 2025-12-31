@@ -20,7 +20,67 @@
 
 ---
 
-## Priority 1: Performance & Throughput
+## Priority 1: Numerical Refinement & Accuracy (Current Focus)
+
+### Goal: Improve Cosine Similarity from 0.63 to >0.99 (vs HuggingFace)
+
+- [x] **Step 1: Verify Tokenizer** (Vocab & ID generation)
+  - Verified vocab match and punctuation splitting logic.
+- [x] **Step 2: Verify Weights Loading** (Layout & Checksums)
+  - Verified binary weights match PyTorch reference (confirmed strict adherence to transposition).
+
+### Step 3: Verify Embeddings Layer (Word+Pos+Type+LN) 🔍 NEXT
+
+- [ ] Isolate Word Embedding lookup vs PyTorch
+- [ ] Isolate Position Embedding lookup vs PyTorch
+- [ ] Isolate Token Type Embedding lookup vs PyTorch
+- [ ] Verify LayerNorm (Gamma/Beta) accumulation
+- [ ] Verify final Embeddings output tensor
+
+### Step 4: Verify Attention Projections (Q/K/V)
+
+- [ ] Inspect Query projection output
+- [ ] Inspect Key projection output
+- [ ] Inspect Value projection output
+- [ ] Check for axis permutation in projection results
+
+### Step 5: Verify Attention Mechanism (Scores & Softmax) 🚩 CRITICAL
+
+- [ ] Inspect raw scores (Q * K^T)
+- [ ] Inspect scaled scores (/ sqrt(d))
+- [ ] Inspect Softmax probabilities (Sum=1.0)
+- [ ] Check mask application (if any)
+
+### Step 6: Verify Attention Context & Output
+
+- [ ] Inspect context layer (Scores * V) - verify weighted sum logic
+- [ ] Inspect Self-Attention Output projection (Dense + Residual + LN)
+
+### Step 7: Verify Intermediate & Layer Outputs
+
+- [ ] Inspect Intermediate Dense (Up projection)
+- [ ] Inspect Activation function (GELU accuracy)
+- [ ] Inspect Output Dense (Down projection) + Residual + LN
+
+### Step 8: Verify Pooler Output
+
+- [ ] Inspect Pooler Dense projection
+- [ ] Inspect Tanh activation
+- [ ] Check [CLS] extraction logic
+
+### Step 9: Verify Metal Backend Consistency
+
+- [ ] Run identical inputs on CPU vs Metal
+- [ ] Verify FP16 precision tolerance
+
+### Step 10: End-to-End Verification
+
+- [ ] Achieve >0.99 cosine similarity on `verify_outputs.py`
+- [ ] Validate Nomic specific features (RoPE, SwiGLU) with reference
+
+---
+
+## Priority 2: Performance & Throughput
 
 ### Step 1: Metal Kernel Optimization ⚡ HIGH IMPACT ✅ COMPLETE
 
