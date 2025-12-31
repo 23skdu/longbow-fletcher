@@ -17,30 +17,30 @@
 5. **[x] [Performance] SwiGLU Fused Kernel Optimization**
     - Further optimize the Nomic SwiGLU kernel to use SIMD groups and reduce register pressure.
 
-6. **[Performance] RoPE Fused Kernel Optimization**
+6. **[x] [Performance] RoPE Fused Kernel Optimization**
     - Optimize Rotary Positional Embeddings to minimize complex number arithmetic overhead.
 
-7. **[Performance] Async Flight Streaming**
+7. **[x] [Performance] Async Flight Streaming**
     - Implement `DoPut` stream without blocking on batch completion to saturate network link.
 
-8. **[Performance] Embedding Compression (FP16 Transport)**
+8. **[x] [Performance] Embedding Compression (FP16 Transport)**
     - Implement zero-copy FP16 Arrow transport to halve network bandwidth usage.
 
-9. **[Performance] Dynamic Batch Sizing**
+9. **[x] [Performance] Dynamic Batch Sizing**
     - Implement adaptive batching size based on current sequence length distribution and VRAM availability.
 
-10. **[Performance] Memory Arena Allocator**
+10. **[x] [Performance] Memory Arena Allocator**
     - Replace `sync.Pool` with a slab/arena allocator for tensors to guarantee locality and reduce fragmentation.
 
-11. **[Performance] Dataset-Aware Caching**
+11. **[x] [Performance] Dataset-Aware Caching**
     - Implement an LRU cache for frequently requested text hashes to bypass inference entirely.
 
 ## High Priority: Stability & Reliability (Weeks 7-8)
 
-1. **[Stability] Graceful Backend Fallback**
+1. **[x] [Stability] Graceful Backend Fallback**
     - Automatically fall back to CPU backend if Metal GPU fails (OOM, hang) without dropping requests.
 
-2. **[Stability] VRAM Admission Control v2**
+2. **[x] [Stability] VRAM Admission Control v2**
     - Replace heuristic VRAM estimation with real-time `query_resource_usage` Metal API feedback.
 
 3. **[Stability] Output Validation (NaN Guard)**

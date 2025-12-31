@@ -6,12 +6,17 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"strings"
 	"time"
+
+	"crypto/sha256"
+	"encoding/hex"
 
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/weights"
 	"github.com/23skdu/longbow-fletcher/internal/device"
+	"github.com/23skdu/longbow-fletcher/internal/cache"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -34,6 +39,7 @@ type Embedder struct {
 	tokenizer         *tokenizer.WordPieceTokenizer
 	internalBatchSize int
 	maxBatchTokens    int
+	cache             cache.VectorCache
 	gpuMetrics        []GPUMetrics
 	metricsMu         sync.RWMutex
 }
@@ -64,19 +70,30 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	deviceCount := 1
 	if useGPU {
 		// Probe for device count using a temporary backend
-	switch runtime.GOOS {
-	case "darwin":
-		d := device.NewMetalBackend()
-		deviceCount = d.DeviceCount()
-	case "linux":
-		d := device.NewCudaBackend()
-		deviceCount = d.DeviceCount()
-	}
+		// Wrap in recover to handle panic if GPU init fails
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().Msgf("GPU probe failed: %v. Falling back to CPU.", r)
+					useGPU = false
+				}
+			}()
+			
+			switch runtime.GOOS {
+			case "darwin":
+				d := device.NewMetalBackend()
+				deviceCount = d.DeviceCount()
+			case "linux":
+				d := device.NewCudaBackend()
+				deviceCount = d.DeviceCount()
+			}
+		}()
 	}
 
 	log.Info().
 		Int("devices", deviceCount).
 		Str("precision", precision).
+		Bool("gpu_enabled", useGPU).
 		Msg("Initializing Embedder")
 	models := make([]*model.BertModel, deviceCount)
 
@@ -85,23 +102,39 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	
 	for i := 0; i < deviceCount; i++ {
 		var backend device.Backend
+		
 		if useGPU {
-			switch runtime.GOOS {
-		case "darwin":
-			if precision == "fp16" {
-				backend = device.NewMetalBackendFP16()
-			} else {
-				backend = device.NewMetalBackend()
-			}
-		case "linux":
-			if precision == "fp16" {
-				backend = device.NewCudaBackendFP16()
-			} else {
-				backend = device.NewCudaBackend()
-			}
+			// Try to create GPU backend, fallback to CPU on panic
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error().Int("device", i).Msgf("Failed to initialize GPU backend: %v. Falling back to CPU.", r)
+						backend = device.NewCPUBackend()
+					}
+				}()
+				
+				switch runtime.GOOS {
+				case "darwin":
+					if precision == "fp16" {
+						backend = device.NewMetalBackendFP16()
+					} else {
+						backend = device.NewMetalBackend()
+					}
+				case "linux":
+					if precision == "fp16" {
+						backend = device.NewCudaBackendFP16()
+					} else {
+						backend = device.NewCudaBackend()
+					}
+				}
+				if backend != nil {
+					backend.SetDevice(i) // Pin backend to specific device
+				}
+			}()
 		}
-		backend.SetDevice(i) // Pin backend to specific device
-		} else {
+		
+		// If GPU init failed (backend still nil) or useGPU was false
+		if backend == nil {
 			backend = device.NewCPUBackend()
 		}
 
@@ -156,6 +189,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 		tokenizer:         tok,
 		internalBatchSize: batchSize,
 		maxBatchTokens:    maxTokens,
+		cache:             cache.NewMapCache(),
 		gpuMetrics:        metrics,
 	}, nil
 }
@@ -182,49 +216,77 @@ func WithOutputFormat(ctx context.Context, format string) context.Context {
 
 
 
-func processOutput(m *model.BertModel, t device.Tensor, dim int, offset, count int, format string, out chan<- StreamResult) {
-	// Helper to handle extraction and sending
-	res := StreamResult{
-		Offset: offset,
-		Count:  count,
-	}
+type ctxKeyDatasetID struct{}
 
+// WithDatasetID attaches a dataset ID to the context for caching purposes.
+func WithDatasetID(ctx context.Context, datasetID string) context.Context {
+	return context.WithValue(ctx, ctxKeyDatasetID{}, datasetID)
+}
+
+func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, format string, out chan<- StreamResult, cacheToAdd cache.VectorCache, keysToAdd []string) {
+	// Extract all data from tensor (flat)
+	count := len(indices)
+	
 	if format == "fp16" {
-		// We want FP16 bytes.
-		// If tensor is already FP16 (from backend), extract bytes.
-		// If tensor is FP32, cast to FP16 then extract.
-		
-		// We can check t.DType if we exposed it on Tensor interface?
-		// We exposed ExtractBytes.
-		// `Cast` handles conversion.
-		
-		t16 := t.Cast(device.Float16) // Returns new tensor or same if already FP16
-		// If Cast returns new tensor, we must free it (if it owns memory).
-		// Tensor interface doesn't expose Free (Backends handle it or Finalizers).
-		// Our Cast implementation returns a Tensor with Finalizer or Pool management.
-		
-		res.RawBytes = t16.ExtractBytes()
-		res.RawDataType = device.Float16
-		
-		// If t16 was a new tensor copy, we should signal we are done with it?
-		// PutTensor might handle returning to pool if it's a pooled tensor.
-		// Cast implementation returned a manual alloc in some cases.
-		// If we use PutTensor on it, the backend needs to know how to handle it.
-		// MetalBackend.PutTensor checks ownsBuffer. 
-		// So safe to PutTensor(t16) if different from t.
+		t16 := t.Cast(device.Float16)
+		bytes := t16.ExtractBytes()
 		
 		if t16 != t {
 			m.Backend.PutTensor(t16)
 		}
 		
+		// FP16 is 2 bytes per element
+		rowBytes := dim * 2
+		
+		for k, originalIdx := range indices {
+			start := k * rowBytes
+			end := start + rowBytes
+			
+			// Copy for safety/independence
+			row := make([]byte, rowBytes)
+			copy(row, bytes[start:end])
+			
+			// Note: We don't cache RawBytes currently in VectorCache (it stores []float32)
+			// Enhancing cache to support raw bytes is future work.
+			// For now, only cache misses if not using raw mode? 
+			// Or we decode to float32 to cache? That's expensive.
+			// Let's Skip caching on FP16 path for now OR implement caching later.
+			// Assuming cache stores float32, we can't put raw bytes easily.
+			
+			out <- StreamResult{
+				Offset:      originalIdx,
+				Count:       1,
+				RawBytes:    row,
+				RawDataType: device.Float16,
+			}
+		}
 	} else {
-		// Default FP32 Vectors
+		// FP32
 		chunk := make([]float32, count*dim)
 		t.ExtractToFlat(chunk, 0)
-		res.Vectors = chunk
+		
+		for k, originalIdx := range indices {
+			start := k * dim
+			end := start + dim
+			vec := chunk[start:end]
+			
+			// Send Result
+			// Note: vec is a slice of chunk. StreamResult usually wants independent ownership?
+			// But for channel sending, if receiver copies, it's fine.
+			// ProxyEmbedBatch copies.
+			// If we cache it, we MUST copy.
+			
+			if cacheToAdd != nil && k < len(keysToAdd) {
+				cacheToAdd.Put(keysToAdd[k], vec)
+			}
+			
+			out <- StreamResult{
+				Offset:  originalIdx,
+				Count:   1,
+				Vectors: vec,
+			}
+		}
 	}
-	
-	out <- res
 }
 
 
@@ -272,6 +334,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 				results[idx] = tokenizedResult{
 					ids: ids,
 					len: len(ids) + 2, // [CLS] + [SEP]
+					originalIdx: idx,
 				}
 			}
 		}()
@@ -295,9 +358,52 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	dim := e.models[0].Config.HiddenSize
 	numDevices := len(e.models)
 	
-	// Calculate total tokens for balancing
+	// Check Cache (on Main Thread)
+	datasetID, _ := ctx.Value(ctxKeyDatasetID{}).(string)
+	
+	var missInputs []tokenizedResult
+	var cacheKeys []string
+	
+	if datasetID != "" && e.cache != nil {
+		missInputs = make([]tokenizedResult, 0, len(results))
+		cacheKeys = make([]string, 0, len(results)) // Aligned with missInputs
+		
+		for _, res := range results {
+			// Compute hash key: SHA256(DatasetID + Text)
+			// access text via tokenizer? No, we lost original text in results struct.
+			// Using offset is tricky. 
+			// We MUST check cache BEFORE tokenization to save tokenization?
+			// Or check using text during tokenization? 
+			// Tokenization is fast. Let's do it after tokenization using original text?
+			// The `results` struct doesn't have text. `texts` slice does.
+			
+			// Let's use `texts[res.originalIdx]`
+			text := texts[res.originalIdx]
+			
+			h := sha256.New()
+			h.Write([]byte(datasetID))
+			h.Write([]byte(text))
+			key := hex.EncodeToString(h.Sum(nil))
+			
+			if vec, found := e.cache.Get(key); found {
+				cacheHits.Inc()
+				out <- StreamResult{
+					Offset:  res.originalIdx,
+					Count:   1,
+					Vectors: vec,
+				}
+			} else {
+				cacheMisses.Inc()
+				missInputs = append(missInputs, res)
+				cacheKeys = append(cacheKeys, key)
+			}
+		}
+	} else {
+		missInputs = results
+	}
+	
 	totalTokens = 0
-	for _, res := range results {
+	for _, res := range missInputs {
 		totalTokens += res.len
 	}
 	
@@ -373,8 +479,14 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 				endIndex = len(results)
 			}
 			
-			if endIndex > len(results) {
-				endIndex = len(results)
+			if endIndex > len(missInputs) {
+				endIndex = len(missInputs)
+			}
+			
+			batchInputs := missInputs[startIndex:endIndex]
+			batchKeys := []string(nil)
+			if len(cacheKeys) > 0 {
+				batchKeys = cacheKeys[startIndex:endIndex]
 			}
 			
 			
@@ -391,7 +503,10 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 					Float64("throughput", e.gpuMetrics[devId].AvgThroughput).
 					Msg("Dispatching batch")
 				m := e.models[devId]
-				runInferenceOnDevice(m, e.internalBatchSize, e.maxBatchTokens, results[s:eIdx], s, dim, format, out, &e.gpuMetrics[devId])
+				
+				// runInference expects explicit indicesMap now? No, we refactor runInference to accept originalIdx in Result.
+				// But we need to pass cache keys to populate cache.
+				runInferenceOnDevice(m, e.internalBatchSize, e.maxBatchTokens, batchInputs, dim, format, out, &e.gpuMetrics[devId], e.cache, batchKeys)
 			}(d, startIndex, endIndex)
 			
 			startIndex = endIndex
@@ -467,33 +582,33 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 	hiddenSize := e.models[0].Config.HiddenSize // e.g., 128
 	layers := e.models[0].Config.NumHiddenLayers // e.g., 2
 	
-	// Float32 = 4 bytes
+	// 3. Calculate Memory Usage per Sequence (Heuristic)
+	// Check Backend Precision
 	bytesPerElement := 4
+	if strings.Contains(e.models[0].Backend.Name(), "FP16") {
+		bytesPerElement = 2
+	}
 	
-	// Per Layer:
-	// Q, K, V, Out: 4 * (SeqLen * Hidden)
-	// Attention Scores: (SeqLen * SeqLen) * Heads (optimization: reused?)
-	// Let's assume naive scores allocation: SeqLen^2
-	// Intermediates (MLP): SeqLen * IntermediateSize (usually 4*Hidden)
-	
-	// Simplified per-token cost (activations):
-	// roughly: Layers * (4*Hidden + Intermediate + Hidden) * Bytes
-	// + Attention Scores: Layers * Heads * SeqLen * Bytes (if linear attention) or SeqLen^2
-	
-	// For BERT Tiny (H=128, I=512, L=2):
-	// Per Token: 2 * (512 + 512 + 128) * 4 ~= 10KB ?
-	// Let's use a simpler linear constant derived from empirics or conservative bounds.
-	// A standard BERT-base (Seq 512) takes ~1GB for batch 32? -> ~30MB/seq.
-	// BERT Tiny is much smaller (1/20th parameters, smaller activations).
+	// Dynamic Batching Cap: We never process more than maxBatchTokens at once per device
+	if avgTokens*effectiveBatchSize > e.maxBatchTokens {
+		// Effective concurrent tokens is capped
+		effectiveBatchSize = e.maxBatchTokens / int(avgTokens)
+		if effectiveBatchSize < 1 {
+			effectiveBatchSize = 1
+		}
+		// Adjust for double buffering
+		effectiveBatchSize *= 2
+	}
+
+	hiddenSize = e.models[0].Config.HiddenSize
+	layers = e.models[0].Config.NumHiddenLayers
 	
 	// Heuristic Factors (Tunable):
 	// Fixed overhead per batch
 	const fixedOverhead = 10 * 1024 * 1024 // 10MB base overhead
 	
 	// Linear cost per token (Activations)
-	// H=128, L=2 -> Small.
-	// H=768, L=12 -> Large.
-	// Estimate: 4 bytes * Layers * (10 * Hidden)
+	// Estimate: Bytes * Layers * (10 * Hidden)
 	linearFactor := int64(layers * 10 * hiddenSize * bytesPerElement)
 	
 	// Quadratic cost (Attention Matrix): Layers * Heads * SeqLen
@@ -506,16 +621,22 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 	
 	totalEst := fixedOverhead + (int64(effectiveBatchSize) * costPerSeq)
 	
+	// Add Safety Margin (20%)
+	totalEst = int64(float64(totalEst) * 1.2)
+	
 	return totalEst
 }
+	
+
 
 // tokenizedResult is a helper struct for passing data
 type tokenizedResult struct {
 	ids []int
 	len int
+	originalIdx int
 }
 
-func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, inputs []tokenizedResult, baseOffset int, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics) {
+func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, inputs []tokenizedResult, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics, reportCache cache.VectorCache, cacheKeys []string) {
 	// Track overall batch performance
 	batchStart := time.Now()
 	totalSequences := len(inputs)
@@ -523,8 +644,8 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 	
 	// Double-buffered GPU Processing (per device)
 	var prevOutput device.Tensor
-	var prevBatchCount int
-	var prevOffset int
+	var prevIndices []int
+	var prevKeys []string
 
 	count := len(inputs)
 	i := 0
@@ -550,7 +671,6 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 		
 		if currentBatchSize == 0 {
 			// Should not happen unless maxTokens < single sequence length
-			// Force valid batch to avoid infinite loop
 			currentBatchSize = 1
 			currentBatchTokens = inputs[i].len
 		}
@@ -560,6 +680,11 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 		// Prepare inputs
 		flatInputs := make([]int, 0, currentBatchTokens)
 		lengths := make([]int, currentBatchSize)
+		batchIndices := make([]int, currentBatchSize)
+		batchKeysSubset := []string(nil)
+		if len(cacheKeys) > 0 {
+			batchKeysSubset = cacheKeys[i:batchEndIdx]
+		}
 
 		for k := 0; k < currentBatchSize; k++ {
 			res := inputs[i+k]
@@ -567,6 +692,7 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 			flatInputs = append(flatInputs, res.ids...)
 			flatInputs = append(flatInputs, 102) // [SEP]
 			lengths[k] = res.len
+			batchIndices[k] = res.originalIdx
 		}
 		
 		totalTokensProcessed += currentBatchTokens
@@ -576,13 +702,13 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 
 		// Async handle previous batch
 		if prevOutput != nil {
-			processOutput(m, prevOutput, dim, prevOffset, prevBatchCount, format, out)
+			processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys)
 			m.Backend.PutTensor(prevOutput)
 		}
 
 		prevOutput = currentOutput
-		prevBatchCount = currentBatchSize
-		prevOffset = baseOffset + i
+		prevIndices = batchIndices
+		prevKeys = batchKeysSubset
 		
 		// Advance
 		i = batchEndIdx
@@ -590,7 +716,7 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 
 	// Handle the final batch
 	if prevOutput != nil {
-		processOutput(m, prevOutput, dim, prevOffset, prevBatchCount, format, out)
+		processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys)
 		m.Backend.PutTensor(prevOutput)
 	}
 	

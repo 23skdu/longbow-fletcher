@@ -178,10 +178,19 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 			if bestIdx != -1 {
 				buf := list[bestIdx].buf
 				b.buckets[i] = append(list[:bestIdx], list[bestIdx+1:]...)
+				
+				// Metrics: Hit
+				poolHits.Inc()
+				poolSizeBytes.Sub(float64(list[bestIdx].size))
+				poolBuffers.Dec()
+				
 				return buf
 			}
 		}
 	}
+	
+	// Metrics: Miss
+	poolMisses.Inc()
 	return nil
 }
 
@@ -192,6 +201,10 @@ func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
 	bucket := getBucket(sizeBytes)
 	// Add to pending (in-flight) queue until next getPooledBuffer drains it
 	b.pendingBuckets[bucket] = append(b.pendingBuckets[bucket], bufferPoolEntry{buf: buf, size: sizeBytes})
+	
+	// Metrics: Return
+	poolSizeBytes.Add(float64(sizeBytes))
+	poolBuffers.Inc()
 }
 
 func (b *MetalBackend) GetTensor(r, c int) Tensor {

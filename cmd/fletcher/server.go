@@ -229,8 +229,11 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 	if s.vramSem != nil {
 		estVRAM := s.embedder.EstimateVRAM(len(texts), totalBytes)
 		if err := s.vramSem.Acquire(ctx, estVRAM); err != nil {
-			logger.Error().Err(err).Msg("Failed to acquire VRAM semaphore")
-			http.Error(w, "Server busy (VRAM)", http.StatusServiceUnavailable)
+			logger.Error().
+				Err(err).
+				Int64("requested_vram", estVRAM).
+				Msg("Failed to acquire VRAM semaphore: insufficient capacity")
+			http.Error(w, fmt.Sprintf("Server busy (VRAM): requested %d bytes", estVRAM), http.StatusServiceUnavailable)
 			return
 		}
 		defer s.vramSem.Release(estVRAM)
@@ -238,8 +241,18 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 
 	// 2 & 3. Embed and Forward (Pipelined)
 	embedCtx := ctx
+
+	// Dataset ID for caching
+	reqDataset := r.URL.Query().Get("dataset")
+	if reqDataset == "" {
+		reqDataset = s.datasetName
+	}
+	if reqDataset != "" {
+		embedCtx = embeddings.WithDatasetID(embedCtx, reqDataset)
+	}
+
 	if s.TransportFmt == "fp16" {
-		embedCtx = embeddings.WithOutputFormat(ctx, "fp16")
+		embedCtx = embeddings.WithOutputFormat(embedCtx, "fp16")
 	}
 	ch := s.embedder.EmbedBatch(embedCtx, texts)
 	vectorsProcessed.Add(float64(len(texts)))
