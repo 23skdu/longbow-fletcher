@@ -65,4 +65,9 @@ var (
 		Name: "fletcher_cache_misses_total",
 		Help: "Total number of embedding cache misses",
 	})
+	
+	invalidOutputs = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fletcher_output_invalid_total",
+		Help: "Total number of outputs invalidated due to NaNs or other errors",
+	})
 )

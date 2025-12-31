@@ -571,6 +571,26 @@ kernel void copy_submatrix_f16(device const half *src [[ buffer(0) ]],
     dest[dest_idx] = src[src_idx];
 }
 
+// Check for NaNs
+// count[0] will be set to non-zero if NaN found.
+// We use atomic_store if possible, or just write.
+// Since we only care *if* there is a NaN, a race to write 1 is fine.
+kernel void check_nan_f32(device const float *input [[ buffer(0) ]],
+                          device volatile int *count [[ buffer(1) ]],
+                          uint index [[ thread_position_in_grid ]]) {
+    if (isnan(input[index])) {
+        count[0] = 1;
+    }
+}
+
+kernel void check_nan_f16(device const half *input [[ buffer(0) ]],
+                          device volatile int *count [[ buffer(1) ]],
+                          uint index [[ thread_position_in_grid ]]) {
+    if (isnan(input[index])) {
+        count[0] = 1;
+    }
+}
+
 // ============ Flash Attention ============
 
 // Constants for loop unrolling and shared memory sizes

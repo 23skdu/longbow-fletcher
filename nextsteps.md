@@ -43,26 +43,25 @@
 2. **[x] [Stability] VRAM Admission Control v2**
     - Replace heuristic VRAM estimation with real-time `query_resource_usage` Metal API feedback.
 
-3. **[Stability] Output Validation (NaN Guard)**
-    - Add low-overhead kernel to check for NaNs in final embeddings and reject/warn before sending.
+- [x] **[Stability] Output Validation (NaN Guard)**: Implement `check_nan` kernel and integration.
 
-4. **[Stability] Circuit Breaker Pattern**
+1. **[Stability] Circuit Breaker Pattern**
     - Implement circuit breakers for Longbow connection failures to prevent cascade waiting.
 
-5. **[Stability] Request Timeouts & Cancellation**
+2. **[Stability] Request Timeouts & Cancellation**
     - Propagate context cancellations down to the GPU command buffer (via `commit` check) to stop wasted work.
 
-6. **[Observability] Prometheus Granular Metrics**
+3. **[Observability] Prometheus Granular Metrics**
     - Add per-layer latency histograms and GPU utilization heatmaps.
 
-7. **[Observability] Distributed Tracing (OpenTelemetry)**
+4. **[Observability] Distributed Tracing (OpenTelemetry)**
     - Instrument the full request lifecycle (HTTP -> Tokenizer -> GPU -> Flight) with trace context.
 
-8. **[Stability] Health Check Probes**
+5. **[Stability] Health Check Probes**
     - Implement `/healthz` and `/readyz` endpoints that perform actual dummy inference checks.
 
-9. **[Infrastructure] End-to-End CI Benchmark Suite**
+6. **[Infrastructure] End-to-End CI Benchmark Suite**
     - Automated regression testing for throughput (vecs/s) and latency (p99) on every commit.
 
-10. **[Stability] Panic Recovery & Isolation**
+7. **[Stability] Panic Recovery & Isolation**
     - Ensure individual request panics (e.g., malformed input) are recovered in the worker pool without crashing the process.

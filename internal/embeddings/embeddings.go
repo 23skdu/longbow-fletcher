@@ -223,9 +223,21 @@ func WithDatasetID(ctx context.Context, datasetID string) context.Context {
 	return context.WithValue(ctx, ctxKeyDatasetID{}, datasetID)
 }
 
-func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, format string, out chan<- StreamResult, cacheToAdd cache.VectorCache, keysToAdd []string) {
+func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, format string, out chan<- StreamResult, cacheToAdd cache.VectorCache, keysToAdd []string, validationErr error) {
 	// Extract all data from tensor (flat)
 	count := len(indices)
+	
+	if validationErr != nil {
+		// If validation failed (e.g. NaN), fail all items in this batch
+		for _, originalIdx := range indices {
+			out <- StreamResult{
+				Offset: originalIdx,
+				Count:  1,
+				Err:    validationErr,
+			}
+		}
+		return
+	}
 	
 	if format == "fp16" {
 		t16 := t.Cast(device.Float16)
@@ -646,6 +658,7 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 	var prevOutput device.Tensor
 	var prevIndices []int
 	var prevKeys []string
+	var prevValidationErr error
 
 	count := len(inputs)
 	i := 0
@@ -697,18 +710,29 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 		
 		totalTokensProcessed += currentBatchTokens
 
-		// Start GPU for current batch
+// Start GPU for current batch
 		currentOutput := m.ForwardBatch(flatInputs, lengths)
+		
+		// Validate output
+		var validationErr error
+		if hasNaN, err := currentOutput.HasNaN(); err == nil && hasNaN {
+			validationErr = fmt.Errorf("NaN detected in embedding output")
+			log.Error().Msg("NaN detected in embedding output")
+			invalidOutputs.Inc()
+		} else if err != nil {
+			log.Warn().Err(err).Msg("Failed to check for NaNs")
+		}
 
 		// Async handle previous batch
 		if prevOutput != nil {
-			processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys)
+			processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys, prevValidationErr)
 			m.Backend.PutTensor(prevOutput)
 		}
 
 		prevOutput = currentOutput
 		prevIndices = batchIndices
 		prevKeys = batchKeysSubset
+		prevValidationErr = validationErr
 		
 		// Advance
 		i = batchEndIdx
@@ -716,7 +740,7 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 
 	// Handle the final batch
 	if prevOutput != nil {
-		processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys)
+		processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys, prevValidationErr)
 		m.Backend.PutTensor(prevOutput)
 	}
 	

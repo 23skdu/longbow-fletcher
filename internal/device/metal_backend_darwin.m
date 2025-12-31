@@ -36,6 +36,8 @@
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix_F16;
 @property(strong) id<MTLComputePipelineState> pipelineFlashAttn;
+@property(strong) id<MTLComputePipelineState> pipelineCheckNaN_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCheckNaN_F16;
 
 @property(strong) id<MTLCommandBuffer> currentCommandBuffer;
 @property(strong) id<MTLComputeCommandEncoder> currentEncoder;
@@ -159,6 +161,8 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineCopySubmatrix = loadPipeline(ctx, @"copy_submatrix");
   ctx.pipelineCopySubmatrix_F16 = loadPipeline(ctx, @"copy_submatrix_f16");
   ctx.pipelineFlashAttn = loadPipeline(ctx, @"flash_attn_fwd_f16");
+  ctx.pipelineCheckNaN_F32 = loadPipeline(ctx, @"check_nan_f32");
+  ctx.pipelineCheckNaN_F16 = loadPipeline(ctx, @"check_nan_f16");
 
   return (__bridge_retained MetalContextRef)ctx;
 }
@@ -947,4 +951,32 @@ void Metal_CopySubmatrix_F16(MetalContextRef ctx, MetalBufferRef src,
   [c.currentEncoder
             dispatchThreads:MTLSizeMake(cols, rows, 1)
       threadsPerThreadgroup:MTLSizeMake(MIN(cols, 32), MIN(rows, 32), 1)];
+}
+
+void Metal_CheckNaN_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        int count, MetalBufferRef result) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCheckNaN_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:0
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_CheckNaN_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        int count, MetalBufferRef result) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCheckNaN_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:0
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
 }

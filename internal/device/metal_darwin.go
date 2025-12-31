@@ -194,6 +194,41 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 	return nil
 }
 
+// HasNaN checks if the tensor contains any NaN values.
+// This is a blocking operation that synchronizes with the GPU.
+func (t *MetalTensor) HasNaN() (bool, error) {
+	// Allocate a 4-byte result buffer on GPU (int32)
+	// We use an existing pool or just alloc/free for now since checks are rare/sparse?
+	// Or we can use a small persistent buffer?
+	// Let's alloc new for safety/simplicity first.
+	// 4 bytes = 1 x int32
+	
+	resBuf := C.Metal_Alloc(t.backend.ctx, 4)
+	if resBuf == nil {
+		return false, fmt.Errorf("failed to allocate result buffer for NaN check")
+	}
+	defer C.Metal_FreeBuffer(t.backend.ctx, resBuf)
+	
+	// Initialize to 0
+	C.Metal_Memset(resBuf, 0, 0, 4) // Memset 0
+	
+	count := t.rows * t.cols
+	
+	if t.backend.useFP16 {
+		C.Metal_CheckNaN_F16(t.backend.ctx, t.buf, C.int(t.offset), C.int(count), resBuf)
+	} else {
+		C.Metal_CheckNaN_F32(t.backend.ctx, t.buf, C.int(t.offset), C.int(count), resBuf)
+	}
+	
+	// Blocking read
+	t.backend.Synchronize()
+	
+	var result int32
+	C.Metal_ExtractBytes(resBuf, 0, unsafe.Pointer(&result), 4)
+	
+	return result != 0, nil
+}
+
 func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

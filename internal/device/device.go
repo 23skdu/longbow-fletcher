@@ -92,6 +92,9 @@ type Tensor interface {
 	// Cast returns a new Tensor with the specified data type (cast performed on device).
 	// returns new Tensor
 	Cast(dtype DataType) Tensor
+
+	// HasNaN checks for NaN values in the tensor.
+	HasNaN() (bool, error)
 }
 
 type DataType int

@@ -757,3 +757,23 @@ func (t *CPUTensor) Cast(dtype DataType) Tensor {
 	panic("Cast: CPU backend does not support non-Float32 tensors")
 }
 
+func (t *CPUTensor) HasNaN() (bool, error) {
+	if t.trans {
+		// Just iterate host copy? Or optimize. 
+		// Iterate underlying data is safe unless row usage is sparse (not supported here).
+		for _, v := range t.data {
+			if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	
+	for _, v := range t.data {
+		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+

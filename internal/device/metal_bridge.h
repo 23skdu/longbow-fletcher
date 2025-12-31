@@ -128,6 +128,11 @@ void Metal_BatchedMatMul(MetalContextRef ctx, MetalBufferRef a, int offA,
                          int strideB, bool transB, MetalBufferRef c, int offC,
                          int strideC, int M, int N, int K, int batchCount);
 
+void Metal_CheckNaN_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        int count, MetalBufferRef result);
+void Metal_CheckNaN_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        int count, MetalBufferRef result);
+
 #ifdef __cplusplus
 }
 #endif
