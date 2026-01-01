@@ -1,0 +1,11 @@
+.git
+*.bin
+*.safetensors
+*.zip
+*.tar.gz
+tmp/
+brain/
+scripts/
+benchmark/
+internal/device/attention_test.go
+internal/device/fused_attention_test.go

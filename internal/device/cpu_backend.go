@@ -39,6 +39,10 @@ func (b *CPUBackend) Name() string {
 }
 
 func (b *CPUBackend) NewTensor(r, c int, data []float32) Tensor {
+	return b.NewTensorWithType(r, c, Float32, data)
+}
+
+func (b *CPUBackend) NewTensorWithType(r, c int, dtype DataType, data []float32) Tensor {
 	size := r * c
 	t := &CPUTensor{
 		backend: b,

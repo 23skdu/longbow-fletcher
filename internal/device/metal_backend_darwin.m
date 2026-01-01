@@ -37,6 +37,7 @@
 @property(strong) id<MTLComputePipelineState> pipelineRope_F16;
 @property(strong) id<MTLComputePipelineState> pipelineSwiglu_F16;
 @property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F16;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F16_to_F32;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix_F16;
 @property(strong) id<MTLComputePipelineState> pipelineFlashAttn;
@@ -166,6 +167,7 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineRope_F16 = loadPipeline(ctx, @"rope_kernel_f16");
   ctx.pipelineSwiglu_F16 = loadPipeline(ctx, @"swiglu_kernel_f16");
   ctx.pipelineCast_F32_to_F16 = loadPipeline(ctx, @"cast_f32_to_f16");
+  ctx.pipelineCast_F16_to_F32 = loadPipeline(ctx, @"cast_f16_to_f32");
   ctx.pipelineCopySubmatrix = loadPipeline(ctx, @"copy_submatrix");
   ctx.pipelineCopySubmatrix_F16 = loadPipeline(ctx, @"copy_submatrix_f16");
   ctx.pipelineFlashAttn = loadPipeline(ctx, @"flash_attn_fwd_f16");
@@ -217,6 +219,7 @@ void Metal_Blit(MetalContextRef ctx, MetalBufferRef src, int srcOff,
     [c.currentEncoder endEncoding];
     c.currentEncoder = nil;
   }
+  [c ensureCommandBuffer];
 
   // Use Blit Encoder
   id<MTLBlitCommandEncoder> blit = [c.currentCommandBuffer blitCommandEncoder];
@@ -283,6 +286,20 @@ void Metal_Cast_F32_to_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                            MetalBufferRef output, int offOut, int count) {
   MetalWrapper *c = (__bridge MetalWrapper *)ctx;
   ENCODE(c, pipelineCast_F32_to_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F16_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F16_to_F32);
   [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
                        offset:offIn
                       atIndex:0];
@@ -972,8 +989,8 @@ void Metal_MatMul_F16_F32_Stride(MetalContextRef ctx, MetalBufferRef a,
                                            rowBytes:strideA
                                            dataType:MPSDataTypeFloat16];
   MPSMatrixDescriptor *dB =
-      [MPSMatrixDescriptor matrixDescriptorWithRows:K
-                                            columns:N
+      [MPSMatrixDescriptor matrixDescriptorWithRows:N
+                                            columns:K
                                            rowBytes:strideB
                                            dataType:MPSDataTypeFloat16];
   MPSMatrixDescriptor *dC =
@@ -1053,11 +1070,11 @@ void Metal_MatMul_F16_Stride(MetalContextRef ctx, MetalBufferRef a, int offA,
 }
 
 // Composite Ops
-void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
-                           MetalBufferRef k, int offK, MetalBufferRef v,
-                           int offV, MetalBufferRef result, int offRes,
-                           int batchSize, int seqLen, int hiddenSize,
-                           int numHeads, float scale) {
+void Metal_Attention_Graph_v3(MetalContextRef ctx, MetalBufferRef q, int offQ,
+                              MetalBufferRef k, int offK, MetalBufferRef v,
+                              int offV, MetalBufferRef result, int offRes,
+                              int batchSize, int seqLen, int hiddenSize,
+                              int numHeads, float scale) {
   int headDim = hiddenSize / numHeads;
   int totalHeads = batchSize * numHeads;
 
@@ -1097,9 +1114,11 @@ void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
 
   // Scale (F32)
   Metal_Scale(ctx, scoresBuf, 0, scale, scoresBuf, 0, scoresElems);
+  Metal_Synchronize(ctx);
 
   // Softmax (F32)
   Metal_Softmax(ctx, scoresBuf, 0, scoresBuf, 0, totalHeads * seqLen, seqLen);
+  Metal_Synchronize(ctx);
 
   // Cast Scores F32 -> F16
   int scoresSizeF16 = scoresElems * 2;
@@ -1122,6 +1141,7 @@ void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
     }
   }
 
+  Metal_Synchronize(ctx);
   Metal_FreeBuffer(ctx, scoresBuf);
   Metal_FreeBuffer(ctx, scoresBufF16);
 }

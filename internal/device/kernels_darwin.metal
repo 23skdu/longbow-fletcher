@@ -68,13 +68,7 @@ kernel void gelu_approx_kernel_f16(device const half *a [[ buffer(0) ]],
     result[index] = half(0.5 * x * (1.0 + tanh(inner)));
 }
 
-kernel void gelu_kernel_f16(device const half *a [[ buffer(0) ]],
-                            device half *result [[ buffer(1) ]],
-                            uint index [[ thread_position_in_grid ]]) {
-    float x = float(a[index]);
-    float sqrt1_2 = 0.70710678118654752440f;
-    result[index] = half(0.5 * x * (1.0 + erf_custom(x * sqrt1_2)));
-}
+
 
 kernel void add_scalar_kernel(device const float *a [[ buffer(0) ]],
                               constant float &val [[ buffer(1) ]],
@@ -743,6 +737,12 @@ kernel void cast_f32_to_f16(device const float *input [[ buffer(0) ]],
                             device half *output [[ buffer(1) ]],
                             uint index [[ thread_position_in_grid ]]) {
     output[index] = half(input[index]);
+}
+
+kernel void cast_f16_to_f32(device const half *input [[ buffer(0) ]],
+                            device float *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
 }
 
 kernel void copy_submatrix(device const float *src [[ buffer(0) ]],

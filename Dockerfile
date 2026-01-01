@@ -14,7 +14,9 @@ RUN go mod download
 COPY . .
 
 # Build binary
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o fletcher ./cmd/fletcher
+# Note: we use -tags metal as a build tag even on linux to ensure consistency, 
+# but the CGO will link against OpenBLAS.
+RUN CGO_ENABLED=1 GOOS=linux go build -tags metal -ldflags="-s -w -extldflags '-lopenblas'" -o fletcher ./cmd/fletcher
 
 # Stage 2: Runtime image
 FROM alpine:latest

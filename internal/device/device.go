@@ -137,6 +137,7 @@ const (
 type Backend interface {
 	Name() string
 	NewTensor(r, c int, data []float32) Tensor
+	NewTensorWithType(r, c int, dtype DataType, data []float32) Tensor
 	
 	// GetTensor gets a tensor from the pool or creates a new one.
 	GetTensor(r, c int) Tensor

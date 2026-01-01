@@ -9,7 +9,6 @@ import (
 )
 
 
-
 type PositionEmbeddingType int
 
 const (
@@ -27,6 +26,7 @@ type BertConfig struct {
 	MaxPositionEmbeddings int
 	Activation            device.ActivationType
 	PositionEmbedding      PositionEmbeddingType
+	LayerNormEps          float32
 }
 
 // DefaultBertTinyConfig returns the configuration for BERT-Tiny.
@@ -40,6 +40,7 @@ func DefaultBertTinyConfig() BertConfig {
 		MaxPositionEmbeddings: 512,
 		Activation:            device.ActivationGELU,
 		PositionEmbedding:      PositionalAbsolute,
+		LayerNormEps:          1e-7,
 	}
 }
 
@@ -54,6 +55,7 @@ func DefaultNomicConfig() BertConfig {
 		MaxPositionEmbeddings: 8192,
 		Activation:            device.ActivationSwiGLU,
 		PositionEmbedding:      PositionalRoPE,
+		LayerNormEps:          1e-5,
 	}
 }
 
@@ -226,24 +228,28 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 	embeddings.Add(typeEmbeds)
 	e.Backend.PutTensor(typeEmbeds)
 	
-	// 4. Norm + Dropout
+	// 4. Layer Norm
 	output := e.LayerNorm.Forward(embeddings)
 	
 	// Dropout is identity for now, returning same tensor.
 	output = e.Dropout.Forward(output)
 	
-	// Normalize
-	// shape: (Batch, Hidden)
-	// Output is already pooled (from Pooler)
+	// Ensure the final embeddings are Float32 (the master stream)
+	if output.DataType() != device.Float32 {
+		tmp := output.Cast(device.Float32)
+		e.Backend.PutTensor(output)
+		output = tmp
+	}
 	
 	return output
 }
 
 // LayerNorm implements Layer Normalization.
 type LayerNorm struct {
-	Gamma device.Tensor
-	Beta  device.Tensor
-	Eps   float32
+	Backend device.Backend
+	Gamma   device.Tensor
+	Beta    device.Tensor
+	Eps     float32
 }
 
 func NewLayerNorm(size int, backend device.Backend) *LayerNorm {
@@ -252,8 +258,10 @@ func NewLayerNorm(size int, backend device.Backend) *LayerNorm {
 	for i := range ones { ones[i] = 1.0 }
 	
 	return &LayerNorm{
-		Gamma: backend.NewTensor(1, size, ones),
-		Beta:  backend.NewTensor(1, size, nil), // Zeros
+		Backend: backend,
+		// Force FP32 for LayerNorm weights to maintain precision during normalization
+		Gamma: backend.NewTensorWithType(1, size, device.Float32, ones),
+		Beta:  backend.NewTensorWithType(1, size, device.Float32, nil), // Zeros
 		Eps:   1e-7, // 1e-12 is too small for FP16 stability, 1e-7 is reasonable compromise
 	}
 }
@@ -266,11 +274,13 @@ func (l *LayerNorm) Forward(input device.Tensor) device.Tensor {
 }
 
 // ForwardAdd performs fused Add + LayerNorm.
-// result = LayerNorm(input + sumTensor)
-// input is modified in-place to contain the result.
-func (l *LayerNorm) ForwardAdd(input, sumTensor device.Tensor) device.Tensor {
-	input.AddLayerNorm(sumTensor, l.Gamma, l.Beta, l.Eps)
-	return input
+// result = LayerNorm(residual + branchOutput)
+// residual is prioritized for accumulation to maintain precision (e.g. if it is FP32).
+// branchOutput is released.
+func (l *LayerNorm) ForwardAdd(branchOutput, residual device.Tensor) device.Tensor {
+	residual.AddLayerNorm(branchOutput, l.Gamma, l.Beta, l.Eps)
+	l.Backend.PutTensor(branchOutput)
+	return residual
 }
 
 // BertEncoder is a stack of Transformer layers.
@@ -306,7 +316,9 @@ func (e *BertEncoder) ForwardBatch(hiddenStates device.Tensor, lengths []int) de
 		nextStates := layer.ForwardBatch(hiddenStates, lengths)
 		LayerDuration.WithLabelValues("transformer_layer", e.Backend.Name()).Observe(time.Since(start).Seconds())
 
-		e.Backend.PutTensor(hiddenStates)
+		if nextStates != hiddenStates {
+			e.Backend.PutTensor(hiddenStates)
+		}
 		hiddenStates = nextStates
 	}
 	return hiddenStates
@@ -349,10 +361,8 @@ func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) devi
 	
 	LayerDuration.WithLabelValues("output", l.Output.Backend.Name()).Observe(time.Since(startOut).Seconds())
 	
-	// Release intermediates
-	// selfAttention was used by Intermediate and Output, now done.
-	l.Attention.Self.Backend.PutTensor(selfAttention)
-	// intermediate is consumed by Output layer
+	// intermediate is consumed and released by Output layer
+	// selfAttention (the reservoir) is NOT released, it is returned as res
 	
 	return res
 }
@@ -394,10 +404,10 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 	// Sequences are stacked in `output`.
 	// cls index for sequence i is sum(lengths[:i]).
 	indices := make([]int, batchSize)
-	current := 0
+	offset := 0
 	for i, l := range lengths {
-		indices[i] = current
-		current += l
+		indices[i] = offset
+		offset += l
 	}
 	
 	// Use Gather to extract CLS tokens efficiently on backend
@@ -611,42 +621,41 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	    // Q: (Seq, Hidden) -> flattened (1*Seq, Hidden)
 	    // Output: (1*Seq, Hidden)
 	    scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
+
+		// Pre-scale Q and K to prevent FP16 overflow in MatMul
+		sqrtScale := float32(math.Sqrt(float64(scale)))
+		qSlice.Scale(sqrtScale)
+		kSlice.Scale(sqrtScale)
 	    
-	    // Use standard Attention
-	    // Note: Attention expects flattened Q, K, V. Slices are flattened views.
-	    // It returns new tensor.
-	    res := qSlice.Attention(qSlice, kSlice, vSlice, 1, l, s.NumAttentionHeads, scale)
+	    // Manual Attention components for debugging
+		// 1. Scores = Q * K^T
+		// Allocate scores tensor (Seq, Seq)
+		scores := s.Backend.NewTensor(l, l, nil)
+		scores.Mul(qSlice, kSlice.T())
+		
+		// 2. Softmax
+		scores.Softmax()
+
+		// 3. Context = Probs * V
+		// Allocate context tensor (Seq, Hidden)
+		// V is (Seq, Hidden)
+		res := s.Backend.NewTensor(l, s.AttentionHeadSize * s.NumAttentionHeads, nil)
+		res.Mul(scores, vSlice)
 	    
 	    // Copy result to output tensor
-	    // Output is same shape as queryLayer
-	    // We need to copy into the correct slice of output
-	    // output.Slice(offset, offset+l, ...).Copy(res)
-	    // But Slice returns a view? Can we copy into view?
-	    // device.go says Copy(from Tensor).
-	    // If output slice is a view, Copy should work.
-	    
-	    // Since output is not allocated primarily?
-	    // Actually, we need to assemble the output.
-	    // OR: we can't allocate output as one big tensor easily if we iterate?
-	    // Wait, queryLayer is (BatchTotal, Hidden). Output should be same.
-	    // We can pre-allocate output.
-	    
-	    // Copy res to output slice
-	    // Currently device.go doesn't support Copy to Slice directly unless Slice works as R-value/L-value.
-	    // Assuming Slice returns a Tensor that wraps the memory correctly.
 	    outSlice := output.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
 	    
 	    // Ensure types match before copy
 	    if res.DataType() != outSlice.DataType() {
-	        // Cast res to match output (e.g. if one is FP16 and other is FP32 somehow)
-	        // Note: calling Cast allocates new tensor, so we must free it.
 	        resCast := res.Cast(outSlice.DataType())
-	        s.Backend.PutTensor(res) // Free old res
+	        s.Backend.PutTensor(res)
 	        res = resCast
 	    }
 	    
 	    outSlice.Copy(res)
 	    
+	    // Free intermediates
+	    s.Backend.PutTensor(scores)
 	    s.Backend.PutTensor(res)
 	    // Slices (qSlice, kSlice, vSlice) are views, no need to PutTensor for them.
 	    

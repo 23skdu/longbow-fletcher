@@ -32,6 +32,8 @@ void Metal_SetAt(MetalBufferRef buf, int offset, float val);
 void Metal_ExtractBytes(MetalBufferRef buf, int offset, void *dest, int size);
 void Metal_Cast_F32_to_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                            MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F16_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
 
 // Ops
 void Metal_CopySubmatrix(MetalContextRef ctx, MetalBufferRef src, int offSrc,
@@ -110,11 +112,11 @@ void Metal_LinearActivation_Graph(MetalContextRef ctx, MetalBufferRef input,
                                   int outCols, MetalBufferRef bias, int offBias,
                                   MetalBufferRef result, int offRes,
                                   int activationType);
-void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
-                           MetalBufferRef k, int offK, MetalBufferRef v,
-                           int offV, MetalBufferRef result, int offRes,
-                           int batchSize, int seqLen, int hiddenSize,
-                           int numHeads, float scale);
+void Metal_Attention_Graph_v3(MetalContextRef ctx, MetalBufferRef q, int offQ,
+                              MetalBufferRef k, int offK, MetalBufferRef v,
+                              int offV, MetalBufferRef result, int offRes,
+                              int batchSize, int seqLen, int hiddenSize,
+                              int numHeads, float scale);
 void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
                               MetalBufferRef k, int offK, MetalBufferRef v,
                               int offV, MetalBufferRef result, int offRes,
