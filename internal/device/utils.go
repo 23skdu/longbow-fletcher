@@ -49,7 +49,8 @@ func Float32ToFloat16(f float32) uint16 {
 	
 	bits := math.Float32bits(f)
 	sign := (bits >> 16) & 0x8000
-	exp := ((bits >> 23) & 0xFF) - 127 + 15
+	// Use signed integer to handle underflow (negative exponent)
+	exp := int((bits >> 23) & 0xFF) - 127 + 15
 	frac := (bits >> 13) & 0x3FF
 	
 	// Handle overflow (exponent too large for FP16)
@@ -67,7 +68,7 @@ func Float32ToFloat16(f float32) uint16 {
 		return uint16(sign)
 	}
 	
-	return uint16(sign | (exp << 10) | frac)
+	return uint16(sign | (uint32(exp) << 10) | frac)
 }
 
 // Float16ToFloat32 converts a float16 (uint16 representation) to a float32

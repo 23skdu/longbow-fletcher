@@ -56,6 +56,8 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	switch modelType {
 	case "bert-tiny":
 		config = model.DefaultBertTinyConfig()
+	case "all-MiniLM-L6-v2":
+		config = model.DefaultMiniLMConfig()
 	case "nomic-embed-text":
 		config = model.DefaultNomicConfig()
 	default:

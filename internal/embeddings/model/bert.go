@@ -4,7 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"time"
-
+	
 	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
@@ -56,6 +56,21 @@ func DefaultNomicConfig() BertConfig {
 		Activation:            device.ActivationSwiGLU,
 		PositionEmbedding:      PositionalRoPE,
 		LayerNormEps:          1e-5,
+	}
+}
+
+// DefaultMiniLMConfig returns the configuration for all-MiniLM-L6-v2.
+func DefaultMiniLMConfig() BertConfig {
+	return BertConfig{
+		VocabSize:             30522,
+		HiddenSize:            384,
+		NumHiddenLayers:       6,
+		NumAttentionHeads:     12,
+		IntermediateSize:      1536,
+		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:      PositionalAbsolute,
+		LayerNormEps:          1e-12,
 	}
 }
 
@@ -133,7 +148,7 @@ func xavierInit(m device.Tensor) {
 // inputIDs is flattened, lengths contains the length of each sequence.
 func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	embeddings := m.Embeddings.ForwardBatch(inputIDs, lengths)
-	
+
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
 	// embeddings is released by Encoder.
 	
@@ -437,7 +452,7 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 		offset += l
 	}
 	
-	// Use Gather to extract CLS tokens efficiently on backend
+    // Use Gather to extract CLS tokens efficiently on backend
     // Gather is part of Tensor interface
     clsStack := output.Gather(indices)
     
