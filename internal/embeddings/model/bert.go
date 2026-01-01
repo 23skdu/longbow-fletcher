@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"time"
 
 	"github.com/23skdu/longbow-fletcher/internal/device"
 )
@@ -133,11 +134,14 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
 	// embeddings is released by Encoder.
 	
+	start := time.Now()
 	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
+	LayerDuration.WithLabelValues("pooler", m.Backend.Name()).Observe(time.Since(start).Seconds())
 	m.Backend.PutTensor(hiddenStates)
 	
 	// Ensure all GPU operations are finished and memory is coherent before return
-	m.Backend.Synchronize()
+	// Start sync is handled by data consumers (e.g. ToHost, ExtractTo)
+
 	
 	return res
 }
@@ -242,7 +246,7 @@ func NewLayerNorm(size int, backend device.Backend) *LayerNorm {
 	return &LayerNorm{
 		Gamma: backend.NewTensor(1, size, ones),
 		Beta:  backend.NewTensor(1, size, nil), // Zeros
-		Eps:   1e-12,
+		Eps:   1e-7, // 1e-12 is too small for FP16 stability, 1e-7 is reasonable compromise
 	}
 }
 
@@ -282,7 +286,10 @@ func (e *BertEncoder) Forward(hiddenStates device.Tensor) device.Tensor {
 
 func (e *BertEncoder) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	for _, layer := range e.Layers {
+		start := time.Now()
 		nextStates := layer.ForwardBatch(hiddenStates, lengths)
+		LayerDuration.WithLabelValues("transformer_layer", e.Backend.Name()).Observe(time.Since(start).Seconds())
+
 		e.Backend.PutTensor(hiddenStates)
 		hiddenStates = nextStates
 	}
@@ -311,12 +318,18 @@ func (l *BertLayer) Forward(hiddenStates device.Tensor) device.Tensor {
 }
 
 func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
+	startAttn := time.Now()
 	selfAttention := l.Attention.ForwardBatch(hiddenStates, lengths)
+	LayerDuration.WithLabelValues("attention", l.Attention.Self.Backend.Name()).Observe(time.Since(startAttn).Seconds())
 	// hiddenStates is NOT released here because it's released by the caller (Encoder)
 
+	startInter := time.Now()
 	intermediate := l.Intermediate.ForwardBatch(selfAttention)
+	LayerDuration.WithLabelValues("intermediate", l.Intermediate.Backend.Name()).Observe(time.Since(startInter).Seconds())
 	
+	startOut := time.Now()
 	res := l.Output.ForwardBatch(intermediate, selfAttention)
+	LayerDuration.WithLabelValues("output", l.Output.Backend.Name()).Observe(time.Since(startOut).Seconds())
 	
 	// Release intermediates
 	// selfAttention was used by Intermediate and Output, now done.
@@ -525,7 +538,6 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	if s.Config.PositionEmbedding == PositionalRoPE {
 		batchSize := len(lengths)
 		seqLen := lengths[0] // Assume uniform for RoPE optimization or handle variable
-		s.Backend.Synchronize() // Ensure linear projections are done
 		queryLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
 		keyLayer.ApplyRoPE(batchSize, seqLen, s.NumAttentionHeads, s.AttentionHeadSize)
 	}

@@ -1,6 +1,25 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// Custom erf implementation (Abramowitz & Stegun 7.1.26)
+// Max error 1.5e-7
+float erf_custom(float x) {
+    bool sign = x < 0;
+    float a = sign ? -x : x;
+    
+    float p = 0.3275911;
+    float a1 = 0.254829592;
+    float a2 = -0.284496736;
+    float a3 = 1.421413741;
+    float a4 = -1.453152027;
+    float a5 = 1.061405429;
+    
+    float t = 1.0 / (1.0 + p * a);
+    float y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-a * a);
+    
+    return sign ? -y : y;
+}
+
 // ============ FP32 Kernels ============
 
 kernel void add_kernel(device const float *a [[ buffer(0) ]],
@@ -54,7 +73,7 @@ kernel void gelu_kernel_f16(device const half *a [[ buffer(0) ]],
                             uint index [[ thread_position_in_grid ]]) {
     float x = float(a[index]);
     float sqrt1_2 = 0.70710678118654752440f;
-    result[index] = half(0.5 * x * (1.0 + erf(x * sqrt1_2)));
+    result[index] = half(0.5 * x * (1.0 + erf_custom(x * sqrt1_2)));
 }
 
 kernel void add_scalar_kernel(device const float *a [[ buffer(0) ]],
@@ -94,7 +113,7 @@ kernel void gelu_kernel(device const float *a [[ buffer(0) ]],
     float x = a[index];
     // Exact GELU: 0.5 * x * (1 + erf(x / sqrt(2)))
     float sqrt1_2 = 0.70710678118654752440f; 
-    result[index] = 0.5 * x * (1.0 + erf(x * sqrt1_2));
+    result[index] = 0.5 * x * (1.0 + erf_custom(x * sqrt1_2));
 }
 
 // Fused Add+GELU kernel (Exact)
@@ -104,7 +123,7 @@ kernel void add_gelu_kernel(device const float *a [[ buffer(0) ]],
                             uint index [[ thread_position_in_grid ]]) {
     float x = a[index] + b[index];
     float sqrt1_2 = 0.70710678118654752440f; 
-    result[index] = 0.5 * x * (1.0 + erf(x * sqrt1_2));
+    result[index] = 0.5 * x * (1.0 + erf_custom(x * sqrt1_2));
 }
 
 // Fused Add+Tanh kernel

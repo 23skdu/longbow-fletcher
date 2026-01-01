@@ -947,6 +947,7 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 }
 
 func (t *MetalTensor) ExtractToFlat(dest []float32, start int) {
+	t.backend.Synchronize()
 	ptr := C.Metal_GetBufferContents(t.buf)
 	if ptr == nil {
 		return
