@@ -18,7 +18,11 @@ func (b *MetalBackend) Name() string {
 }
 
 func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
-	panic("Metal backend is not supported on this platform. Build with -tags metal on macOS.")
+	panic("Metal backend not available on this platform")
+}
+
+func (b *MetalBackend) NewTensorWithType(r, c int, dtype DataType, data []float32) Tensor {
+	panic("Metal backend not available on this platform")
 }
 
 func (b *MetalBackend) GetTensor(r, c int) Tensor {
@@ -74,3 +78,8 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int)                    
 func (t *MetalTensor) ExtractToFlat(dest []float32, start int)                     {}
 func (t *MetalTensor) ExtractBytes() []byte                                        { return nil }
 func (t *MetalTensor) Cast(dtype DataType) Tensor                                  { return nil }
+func (t *MetalTensor) DataType() DataType                                          { return Float32 }
+func (t *MetalTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32)      {}
+func (t *MetalTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int, scale float32) Tensor { return nil }
+func (t *MetalTensor) HasNaN() (bool, error)                                       { return false, nil }
+
