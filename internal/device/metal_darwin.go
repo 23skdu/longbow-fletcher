@@ -299,6 +299,10 @@ type MetalTensor struct {
 	dtype      DataType
 }
 
+func (t *MetalTensor) Address() uintptr {
+	return uintptr(unsafe.Pointer(t.buf))
+}
+
 func (t *MetalTensor) Dims() (int, int) {
 	if t.trans {
 		return t.cols, t.rows
@@ -476,6 +480,8 @@ func (t *MetalTensor) Copy(from Tensor) {
 	byteSize := size * elemSize
 	
 	C.Metal_Blit(t.backend.ctx, ft.buf, C.int(ft.offset), t.buf, C.int(t.offset), C.int(byteSize))
+	// Ensure Blit is committed before subsequent graph operations (which use different CB)
+	t.backend.Synchronize()
 }
 
 func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
@@ -1262,5 +1268,68 @@ func (t *MetalTensor) FusedAttention(q, k, v Tensor, batchSize, seqLen, numHeads
 		rst.buf, C.int(rst.offset),
 		C.int(batchSize), C.int(seqLen), C.int(c), C.int(numHeads), C.float(scale))
 	
+	return result
+}
+func (t *MetalTensor) FusedBertLayer(
+	q, k, v, out, inter, outFFN,
+	biasQ, biasK, biasV, biasOut, biasInter, biasOutFFN,
+	gammaAttn, betaAttn, gammaFFN, betaFFN Tensor,
+	batchSize, seqLen, hiddenSize, numHeads, intermediateSize int, eps float32,
+) Tensor {
+	// 1. Validate Inputs (ensure all are MetalTensor and correct types)
+	// For performance, we assume caller checks types or we panic on cast.
+	tQ := q.(*MetalTensor)
+	tK := k.(*MetalTensor)
+	tV := v.(*MetalTensor)
+	tOut := out.(*MetalTensor)
+	tInter := inter.(*MetalTensor)
+	tOutFFN := outFFN.(*MetalTensor)
+	
+	tBQ := biasQ.(*MetalTensor)
+	tBK := biasK.(*MetalTensor)
+	tBV := biasV.(*MetalTensor)
+	tBOut := biasOut.(*MetalTensor)
+	tBInter := biasInter.(*MetalTensor)
+	tBOutFFN := biasOutFFN.(*MetalTensor)
+	
+	tGammaAttn := gammaAttn.(*MetalTensor)
+	tBetaAttn := betaAttn.(*MetalTensor)
+	tGammaFFN := gammaFFN.(*MetalTensor)
+	tBetaFFN := betaFFN.(*MetalTensor)
+	
+	// 2. Allocate Result
+	// Default to F32, but if input is F16, we want F16 result to match graph output precision and avoid export size mismatches
+	resF32 := t.backend.NewTensor(batchSize * seqLen, hiddenSize, nil)
+	var result Tensor = resF32
+	if t.dtype == Float16 {
+		result = resF32.Cast(Float16)
+	}
+	tRes := result.(*MetalTensor)
+	
+	// Ensure all inputs are ready (flush pending command buffers from Cast/Copy)
+	t.backend.Synchronize()
+	
+	// 3. Dispatch
+	C.Metal_BertLayer_Graph(t.backend.ctx,
+		t.buf, C.int(t.offset),
+		tQ.buf, C.int(tQ.offset),
+		tK.buf, C.int(tK.offset),
+		tV.buf, C.int(tV.offset),
+		tOut.buf, C.int(tOut.offset),
+		tInter.buf, C.int(tInter.offset),
+		tOutFFN.buf, C.int(tOutFFN.offset),
+		tBQ.buf, C.int(tBQ.offset),
+		tBK.buf, C.int(tBK.offset),
+		tBV.buf, C.int(tBV.offset),
+		tBOut.buf, C.int(tBOut.offset),
+		tBInter.buf, C.int(tBInter.offset),
+		tBOutFFN.buf, C.int(tBOutFFN.offset),
+		tGammaAttn.buf, C.int(tGammaAttn.offset),
+		tBetaAttn.buf, C.int(tBetaAttn.offset),
+		tGammaFFN.buf, C.int(tGammaFFN.offset),
+		tBetaFFN.buf, C.int(tBetaFFN.offset),
+		tRes.buf, C.int(tRes.offset),
+		C.int(batchSize), C.int(seqLen), C.int(hiddenSize), C.int(numHeads), C.int(intermediateSize), C.float(eps))
+		
 	return result
 }

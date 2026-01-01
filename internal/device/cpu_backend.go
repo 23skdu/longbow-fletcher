@@ -862,3 +862,7 @@ func (t *CPUTensor) HasNaN() (bool, error) {
 	return false, nil
 }
 
+func (t *CPUTensor) FusedBertLayer(q, k, v, out, inter, outFFN, bq, bk, bv, bo, bi, boFFN, gammaAttn, betaAttn, gammaFFN, betaFFN Tensor,
+	batchSize, seqLen, hiddenSize, numHeads, intermediateSize int, eps float32) Tensor {
+	panic("FusedBertLayer not implemented for CPU backend")
+}

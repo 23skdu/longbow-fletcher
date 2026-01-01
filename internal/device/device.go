@@ -112,6 +112,19 @@ type Tensor interface {
 	// returns new Tensor
 	Cast(dtype DataType) Tensor
 
+	// FusedBertLayer performs the entire BERT layer operation in a single graph execution.
+	// Input: this tensor (Batch, Seq, Hidden)
+	// Weights: Q, K, V, Out, Inter, OutFFN ([Hidden, Hidden] or similar)
+	// Biases: Q, K, V, Out, Inter, OutFFN ([Hidden] or [Inter])
+	// Norms: GammaAttn, BetaAttn, GammaFFN, BetaFFN ([Hidden])
+	// Returns: Output tensor (Batch, Seq, Hidden)
+	FusedBertLayer(
+		q, k, v, out, inter, outFFN,
+		biasQ, biasK, biasV, biasOut, biasInter, biasOutFFN,
+		gammaAttn, betaAttn, gammaFFN, betaFFN Tensor,
+		batchSize, seqLen, hiddenSize, numHeads, intermediateSize int, eps float32,
+	) Tensor
+
 	// HasNaN checks for NaN values in the tensor.
 	HasNaN() (bool, error)
 }
