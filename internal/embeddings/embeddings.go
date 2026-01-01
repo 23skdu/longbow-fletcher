@@ -142,8 +142,14 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 
 		if weightsPath != "" && weightsPath != "bert_tiny.bin" {
 			loader := weights.NewLoader(bert)
-			if err := loader.LoadFromRawBinary(weightsPath); err != nil {
-				return nil, fmt.Errorf("failed to load weights for device %d: %w", i, err)
+			if strings.HasSuffix(weightsPath, ".safetensors") {
+				if err := loader.LoadFromSafeTensors(weightsPath); err != nil {
+					return nil, fmt.Errorf("failed to load SafeTensors for device %d: %w", i, err)
+				}
+			} else {
+				if err := loader.LoadFromRawBinary(weightsPath); err != nil {
+					return nil, fmt.Errorf("failed to load weights for device %d: %w", i, err)
+				}
 			}
 		} else if weightsPath == "bert_tiny.bin" {
 			if _, err := os.Stat(weightsPath); os.IsNotExist(err) {
@@ -152,8 +158,14 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 				}
 			} else {
 				loader := weights.NewLoader(bert)
-				if err := loader.LoadFromRawBinary(weightsPath); err != nil {
-					return nil, fmt.Errorf("failed to load weights for device %d: %w", i, err)
+				if strings.HasSuffix(weightsPath, ".safetensors") {
+					if err := loader.LoadFromSafeTensors(weightsPath); err != nil {
+						return nil, fmt.Errorf("failed to load SafeTensors for device %d: %w", i, err) 
+					}
+				} else {
+					if err := loader.LoadFromRawBinary(weightsPath); err != nil {
+						return nil, fmt.Errorf("failed to load weights for device %d: %w", i, err)
+					}
 				}
 			}
 		}
@@ -507,6 +519,19 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 			deviceWg.Add(1)
 			go func(devId, s, eIdx int) {
 				defer deviceWg.Done()
+				defer func() {
+					if err := recover(); err != nil {
+						PanicTotal.Inc()
+						log.Error().
+							Interface("panic", err).
+							Int("device", devId).
+							Msg("Panic recovered in EmbedBatch worker")
+						// We can't easily return error for specific batch here because output channel is shared 
+						// and we might lose sync if we just drop it. 
+						// Ideal fix: Send error result for all items in this batch so client didn't hang.
+						// For now, at least we don't crash.
+					}
+				}()
 				log.Info().
 					Int("device", devId).
 					Int("sequences", eIdx-s).
@@ -518,7 +543,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 				
 				// runInference expects explicit indicesMap now? No, we refactor runInference to accept originalIdx in Result.
 				// But we need to pass cache keys to populate cache.
-				runInferenceOnDevice(m, e.internalBatchSize, e.maxBatchTokens, batchInputs, dim, format, out, &e.gpuMetrics[devId], e.cache, batchKeys)
+				runInferenceOnDevice(ctx, m, e.internalBatchSize, e.maxBatchTokens, batchInputs, dim, format, out, &e.gpuMetrics[devId], e.cache, batchKeys)
 			}(d, startIndex, endIndex)
 			
 			startIndex = endIndex
@@ -648,7 +673,7 @@ type tokenizedResult struct {
 	originalIdx int
 }
 
-func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, inputs []tokenizedResult, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics, reportCache cache.VectorCache, cacheKeys []string) {
+func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize int, maxTokens int, inputs []tokenizedResult, dim int, format string, out chan<- StreamResult, metrics *GPUMetrics, reportCache cache.VectorCache, cacheKeys []string) {
 	// Track overall batch performance
 	batchStart := time.Now()
 	totalSequences := len(inputs)
@@ -663,6 +688,17 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 	count := len(inputs)
 	i := 0
 	for i < count {
+		// Check Cancellation
+		select {
+		case <-ctx.Done():
+			// Clean up previous batch if pending
+			if prevOutput != nil {
+				m.Backend.PutTensor(prevOutput)
+			}
+			return
+		default:
+		}
+		
 		// Dynamic Batching: Fill batch until maxBatchSize OR maxTokens reached
 		currentBatchTokens := 0
 		currentBatchSize := 0
@@ -681,6 +717,8 @@ func runInferenceOnDevice(m *model.BertModel, maxBatchSize int, maxTokens int, i
 			currentBatchTokens += seqLen
 			currentBatchSize++
 		}
+		
+		batchSizeDistribution.Observe(float64(currentBatchSize))
 		
 		if currentBatchSize == 0 {
 			// Should not happen unless maxTokens < single sequence length
