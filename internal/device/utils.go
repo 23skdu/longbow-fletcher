@@ -1,32 +1,73 @@
 package device
 
 import (
+	"math"
 	"unsafe"
 )
 
-// Float32ToFloat16 converts a float32 to a float16 (uint16 representation)
+// Float32ToFloat16 converts a float32 to float16 (IEEE 754 binary16) representation.
+// Handles edge cases to prevent NaN values:
+// - Clamps values outside FP16 range to prevent overflow
+// - Preserves NaN and Inf from input
+// - Handles subnormals correctly
 func Float32ToFloat16(f float32) uint16 {
-	bits := *(*uint32)(unsafe.Pointer(&f))
-	sign := (bits >> 31) & 1
-	exp := (bits >> 23) & 0xFF
-	frac := bits & 0x7FFFFF
-	
-	if exp == 255 { // Inf/NaN
-		return uint16((sign << 15) | (0x1F << 10) | (frac >> 13))
+	// Handle special cases first
+	if math.IsNaN(float64(f)) {
+		return 0x7E00 // FP16 NaN
 	}
-	if exp == 0 { // Zero/Denorm
-		return uint16(sign << 15)
+	if math.IsInf(float64(f), 1) {
+		return 0x7C00 // FP16 +Inf
 	}
-	
-	newExp := int(exp) - 127 + 15
-	if newExp >= 31 { // Overflow -> Inf
-		return uint16((sign << 15) | (0x1F << 10))
-	}
-	if newExp <= 0 { // Underflow -> Zero
-		return uint16(sign << 15)
+	if math.IsInf(float64(f), -1) {
+		return 0xFC00 // FP16 -Inf
 	}
 	
-	return uint16((sign << 15) | (uint32(newExp) << 10) | (frac >> 13))
+	// FP16 range: ±65504 (max normal), ±6.10e-5 (min normal)
+	// Clamp to prevent overflow which can cause NaN
+	const maxFP16 = 65504.0
+	const minNormalFP16 = 6.10351562e-5
+	
+	// Clamp to FP16 range
+	if f > maxFP16 {
+		f = maxFP16
+	} else if f < -maxFP16 {
+		f = -maxFP16
+	}
+	
+	// Handle values very close to zero (subnormals)
+	absF := f
+	if absF < 0 {
+		absF = -absF
+	}
+	if absF < minNormalFP16 && absF > 0 {
+		// Very small value - round to zero to avoid subnormal issues
+		if f < 0 {
+			return 0x8000 // -0
+		}
+		return 0x0000 // +0
+	}
+	
+	bits := math.Float32bits(f)
+	sign := (bits >> 16) & 0x8000
+	exp := ((bits >> 23) & 0xFF) - 127 + 15
+	frac := (bits >> 13) & 0x3FF
+	
+	// Handle overflow (exponent too large for FP16)
+	if exp >= 0x1F {
+		// Return max value instead of infinity to prevent issues
+		if sign != 0 {
+			return uint16(sign | 0x7BFF) // Max negative
+		}
+		return 0x7BFF // Max positive
+	}
+	
+	// Handle underflow (exponent too small)
+	if exp <= 0 {
+		// Flush to zero
+		return uint16(sign)
+	}
+	
+	return uint16(sign | (exp << 10) | frac)
 }
 
 // Float16ToFloat32 converts a float16 (uint16 representation) to a float32

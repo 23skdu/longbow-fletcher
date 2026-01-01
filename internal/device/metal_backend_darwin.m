@@ -23,6 +23,7 @@
 @property(strong) id<MTLComputePipelineState> pipelineAddLayerNorm;
 @property(strong) id<MTLComputePipelineState> pipelineSoftmax;
 @property(strong) id<MTLComputePipelineState> pipelineGather;
+@property(strong) id<MTLComputePipelineState> pipelineGather_F16;
 @property(strong) id<MTLComputePipelineState> pipelineAddBias;
 
 @property(strong) id<MTLComputePipelineState> pipelineAdd_F16;
@@ -154,6 +155,7 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineAddLayerNorm = loadPipeline(ctx, @"add_layernorm_kernel");
   ctx.pipelineSoftmax = loadPipeline(ctx, @"softmax_kernel");
   ctx.pipelineGather = loadPipeline(ctx, @"gather_kernel");
+  ctx.pipelineGather_F16 = loadPipeline(ctx, @"gather_kernel_f16");
   ctx.pipelineAddBias = loadPipeline(ctx, @"add_bias_kernel");
 
   ctx.pipelineAdd_F16 = loadPipeline(ctx, @"add_kernel_f16");
@@ -436,6 +438,26 @@ void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   int offOut, int indicesCount, int cols) {
   MetalWrapper *c = (__bridge MetalWrapper *)ctx;
   ENCODE(c, pipelineGather);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)table
+                       offset:offTable
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)indices
+                       offset:offIndices
+                      atIndex:2];
+  [c.currentEncoder setBytes:&cols length:4 atIndex:3];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(indicesCount, cols, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+}
+
+void Metal_Gather_F16(MetalContextRef ctx, MetalBufferRef table, int offTable,
+                      MetalBufferRef indices, int offIndices,
+                      MetalBufferRef output, int offOut, int indicesCount,
+                      int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineGather_F16);
   [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)table
                        offset:offTable
                       atIndex:0];
@@ -1555,4 +1577,3 @@ void Metal_CheckNaN_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
   [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
               threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
 }
-

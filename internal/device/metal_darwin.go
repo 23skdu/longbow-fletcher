@@ -733,11 +733,16 @@ func (t *MetalTensor) Gather(indices []int) Tensor {
 	outRows := len(indices)
 	outCols := t.cols 
 	
-	output := t.backend.NewTensor(outRows, outCols, nil)
+	// Create output with same dtype as input
+	output := t.backend.NewTensorWithType(outRows, outCols, t.dtype, nil)
 	mtOut := output.(*MetalTensor)
 	
 	// 3. Dispatch
-	C.Metal_Gather(t.backend.ctx, t.buf, C.int(t.offset), indicesBuf, 0, mtOut.buf, C.int(mtOut.offset), C.int(outRows), C.int(outCols))
+	if t.dtype == Float16 {
+		C.Metal_Gather_F16(t.backend.ctx, t.buf, C.int(t.offset), indicesBuf, 0, mtOut.buf, C.int(mtOut.offset), C.int(outRows), C.int(outCols))
+	} else {
+		C.Metal_Gather(t.backend.ctx, t.buf, C.int(t.offset), indicesBuf, 0, mtOut.buf, C.int(mtOut.offset), C.int(outRows), C.int(outCols))
+	}
 	
 	return output
 }

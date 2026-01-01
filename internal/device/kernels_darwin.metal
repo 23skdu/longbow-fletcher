@@ -585,6 +585,17 @@ kernel void gather_kernel(device const float *table [[ buffer(0) ]],
     output[row * cols + col] = table[table_row * cols + col];
 }
 
+kernel void gather_kernel_f16(device const half *table [[ buffer(0) ]],
+                              device half *output [[ buffer(1) ]],
+                              device const int *indices [[ buffer(2) ]],
+                              constant int &cols [[ buffer(3) ]],
+                              uint2 id [[ thread_position_in_grid ]]) {
+    uint row = id.x;
+    uint col = id.y;
+    int table_row = indices[row];
+    output[row * cols + col] = table[table_row * cols + col];
+}
+
 kernel void add_bias_kernel(device float *component [[ buffer(0) ]],
                             device const float *bias [[ buffer(1) ]],
                             constant int &cols [[ buffer(2) ]],

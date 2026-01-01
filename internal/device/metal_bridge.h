@@ -131,6 +131,10 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   MetalBufferRef indices, int offIndices, MetalBufferRef output,
                   int offOut, int indicesCount, int cols);
+void Metal_Gather_F16(MetalContextRef ctx, MetalBufferRef table, int offTable,
+                      MetalBufferRef indices, int offIndices,
+                      MetalBufferRef output, int offOut, int indicesCount,
+                      int cols);
 void Metal_AddBias(MetalContextRef ctx, MetalBufferRef component, int offComp,
                    MetalBufferRef bias, int offBias, int rows, int cols);
 

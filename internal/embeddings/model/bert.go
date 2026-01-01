@@ -139,12 +139,13 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	
 	// Ensure Encoder is done before Pooler starts (Safety check for NaNs/Race)
 	m.Backend.Synchronize()
-	
-	start := time.Now()
-	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
-	LayerDuration.WithLabelValues("pooler", m.Backend.Name()).Observe(time.Since(start).Seconds())
-	m.Backend.PutTensor(hiddenStates)
-	
+    
+    start := time.Now() // Pooler
+    res := m.Pooler.ForwardBatch(hiddenStates, lengths)
+    
+    LayerDuration.WithLabelValues("pooler", m.Backend.Name()).Observe(time.Since(start).Seconds())
+    m.Backend.PutTensor(hiddenStates)
+    
 	// Ensure all GPU operations are finished and memory is coherent before return
 	// Start sync is handled by data consumers (e.g. ToHost, ExtractTo)
 
@@ -385,13 +386,39 @@ func NewBertPooler(config BertConfig, backend device.Backend) *BertPooler {
 func (p *BertPooler) Forward(hiddenStates device.Tensor) device.Tensor {
 	// Take [CLS] token (first token at index 0)
 	// clsToken is 1xH matrix
-	// Take [CLS] token (first token at index 0)
-	// clsToken is 1xH matrix
 	_, h := hiddenStates.Dims()
 	clsToken := hiddenStates.Slice(0, 1, 0, h)
+
+	// FP16 Tanh in Pooler can cause NaN due to overflow in Linear step before Tanh.
+	// We force the Pooler to run in FP32 if the weights are FP16.
+	// This adds overhead (casting weights) but ensures stability for the final token.
+	if p.Dense.DataType() == device.Float16 {
+		// Cast inputs and weights to FP32
+		cls32 := clsToken.Cast(device.Float32)
+		dense32 := p.Dense.Cast(device.Float32)
+		bias32 := p.Bias.Cast(device.Float32)
+
+		// Compute in FP32
+		output := dense32.LinearActivation(cls32, dense32, bias32, device.ActivationTanh)
+
+		// Cleanup temporary FP32 tensors
+		p.Backend.PutTensor(clsToken) // input slice
+		p.Backend.PutTensor(cls32)
+		p.Backend.PutTensor(dense32)
+		p.Backend.PutTensor(bias32)
+
+		return output
+	}
 	
 	// output = clsToken * Dense + Bias + Tanh
 	output := p.Dense.LinearActivation(clsToken, p.Dense, p.Bias, device.ActivationTanh)
+	
+	// Slice created a new view/tensor depending on backend, but LinearActivation returns new tensor.
+	// We should clean up clsToken if it's not needed. Tensor interface semantics for Slice vary.
+	// Assuming Slice result is owned by caller.
+	// Backends usually handle views or copies. Metal backend usually returns Copy or View.
+	// Proper cleanup:
+	p.Backend.PutTensor(clsToken)
 	
 	return output
 }
@@ -411,25 +438,36 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 	}
 	
 	// Use Gather to extract CLS tokens efficiently on backend
-	// Gather is part of Tensor interface
-	clsStack := output.Gather(indices)
+    // Gather is part of Tensor interface
+    clsStack := output.Gather(indices)
+    
+    // FP16 Tanh in Pooler can cause NaN due to overflow in Linear step before Tanh.
+	// We force the Pooler to run in FP32 if the weights are FP16.
+	if p.Dense.DataType() == device.Float16 {
+		// Cast inputs and weights to FP32
+		cls32 := clsStack.Cast(device.Float32)
+		dense32 := p.Dense.Cast(device.Float32)
+		bias32 := p.Bias.Cast(device.Float32)
+
+		// Compute in FP32
+		result := dense32.LinearActivation(cls32, dense32, bias32, device.ActivationTanh)
+
+		// Cleanup temporary FP32 tensors
+		p.Backend.PutTensor(clsStack)
+		p.Backend.PutTensor(cls32)
+		p.Backend.PutTensor(dense32)
+		p.Backend.PutTensor(bias32)
+
+		return result
+	}
 	
-	// Compute Result = CLS * Dense
+	// Compute Result = CLS * Dense + Bias + Tanh
 	// Result dims: (BatchSize, Hidden)
 	// Dense dims: (Hidden, Hidden)
 	// clsStack dims: (BatchSize, Hidden)
 	
-	// Compute Result = CLS * Dense + Bias + Tanh
 	result := p.Dense.LinearActivation(clsStack, p.Dense, p.Bias, device.ActivationTanh)
 	p.Backend.PutTensor(clsStack)
-	
-	// Check if clsStack needs pooling?
-	// It was created by Gather (NewTensor). 
-	// We should probably rely on backend to manage lifecycle or return it?
-	// But here it's a temporary intermediate.
-    // If backend uses pooling, we might want to release it.
-    // But current Tensor interface doesn't support manual release (Go GC handles it).
-    // So just let it go.
 	
 	return result
 }
