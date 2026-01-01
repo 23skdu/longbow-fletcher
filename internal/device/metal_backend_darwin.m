@@ -1604,32 +1604,69 @@ MPSGraphTensorData *dataFromBuffer(MetalContextRef ctx, MetalBufferRef buf,
     rows = 1;
   }
 
+  // Calculate Padding Requirements
+  BOOL needsPadding = NO;
   NSUInteger rowBytesPacked = cols * elemSize;
+  NSUInteger rowBytesPadded = (rowBytesPacked + 255) & ~255;
 
-  // MPSGraphTensorData doesn't support offset parameter in initWithMTLBuffer
-  // So if offset > 0, we must copy to a new buffer
-  if (offset > 0) {
-    NSUInteger allocSize = rows * rowBytesPacked;
+  // Force Padding if mismatch AND rows > 1.
+  // Exception: If rows=1, packed=padded for access purposes?
+  // But MatrixDescriptor requires rowBytes>=packed.
+  // If we specify Padded rowBytes, we MUST have allocated enough space.
+
+  if (rowBytesPadded > rowBytesPacked && rows > 1) {
+    needsPadding = YES;
+  }
+  // Also enforce padding if offset > 0 (to align to 0).
+  if (offset > 0)
+    needsPadding = YES;
+
+  id<MTLBuffer> targetBuf = mtlBuf; // Default
+  NSUInteger targetRowBytes = rowBytesPacked;
+
+  if (needsPadding) {
+    targetRowBytes = rowBytesPadded;
+    NSUInteger allocSize = rows * targetRowBytes;
     id<MTLBuffer> tmp =
         [wrapper.device newBufferWithLength:allocSize
                                     options:MTLResourceStorageModeShared];
+
     id<MTLCommandBuffer> cb = [wrapper.commandQueue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-    [blit copyFromBuffer:mtlBuf
-             sourceOffset:offset
-                 toBuffer:tmp
-        destinationOffset:0
-                     size:allocSize];
+
+    for (NSUInteger i = 0; i < rows; i++) {
+      [blit copyFromBuffer:mtlBuf
+               sourceOffset:offset + (i * rowBytesPacked)
+                   toBuffer:tmp
+          destinationOffset:(i * targetRowBytes)
+                       size:rowBytesPacked];
+    }
+
     [blit endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
-    mtlBuf = tmp;
+
+    targetBuf = tmp;
   }
 
-  // Use packed layout - MPSGraph will write/read in packed format
-  return [[MPSGraphTensorData alloc] initWithMTLBuffer:mtlBuf
-                                                 shape:shape
-                                              dataType:dtype];
+  // Create MPSMatrix
+  MPSMatrixDescriptor *desc =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:rows
+                                            columns:cols
+                                           rowBytes:targetRowBytes
+                                           dataType:dtype];
+  MPSMatrix *matrix = [[MPSMatrix alloc] initWithBuffer:targetBuf
+                                             descriptor:desc];
+
+  // Debug Inspection of Matrix Buffer (Verify Input -0.5)
+  // Only for [B*S, H] -> likely rows=8, cols=64
+  if (rows == 8 && cols == 64) {
+    uint16_t *ptr = (uint16_t *)targetBuf.contents;
+    fprintf(stderr, "DEBUG Matrix Input: 0x%04x 0x%04x\n", ptr[0], ptr[1]);
+  }
+
+  // Wrap Matrix
+  return [[MPSGraphTensorData alloc] initWithMPSMatrix:matrix];
 }
 
 void Metal_BertLayer_Graph(
@@ -2034,9 +2071,12 @@ void Metal_BertLayer_Graph(
     if ([context.graph respondsToSelector:runSel]) {
       fprintf(stderr, "DEBUG: MPSGraph supports resultsDictionary!\n");
 
-      // Use packed layout since MPSGraph ignores rowBytes hints
+      // 1. Alloc Padded Tmp Buffer (256-byte align rows)
+      // Rank 2 [8, 64]. 64 F16 = 128 bytes. Align->256 bytes.
+      // Total = 8 * 256 = 2048 bytes.
       NSUInteger rowBytes = hiddenSize * 2;
-      NSUInteger totalBytes = batchSize * seqLen * rowBytes;
+      NSUInteger alignedRowBytes = (rowBytes + 255) & ~255;
+      NSUInteger totalBytes = MAX(seqLen * alignedRowBytes, 2048);
 
       id<MTLBuffer> tmp =
           [wrapper.device newBufferWithLength:totalBytes
@@ -2045,12 +2085,22 @@ void Metal_BertLayer_Graph(
       if (tmp) {
         memset(tmp.contents, 0xAA, totalBytes);
 
-        // Use standard packed layout
-        MPSGraphTensorData *outputData = [[MPSGraphTensorData alloc]
-            initWithMTLBuffer:tmp
-                        shape:@[ @(batchSize * seqLen), @(hiddenSize) ]
-                     dataType:MPSDataTypeFloat16];
+        // Use MPSMatrix to enforce Padded Stride (256 bytes)
+        MPSMatrixDescriptor *outDesc =
+            [MPSMatrixDescriptor matrixDescriptorWithRows:batchSize * seqLen
+                                                  columns:hiddenSize
+                                                 rowBytes:alignedRowBytes
+                                                 dataType:MPSDataTypeFloat16];
+        MPSMatrix *outMatrix = [[MPSMatrix alloc] initWithBuffer:tmp
+                                                          offset:0
+                                                      descriptor:outDesc];
+
+        MPSGraphTensorData *outputData =
+            [[MPSGraphTensorData alloc] initWithMPSMatrix:outMatrix];
+        // Note: initWithMPSMatrix implicitly sets shape/dtype from matrix
         resultsDict[context.tFinal] = outputData;
+
+        id<MTLCommandBuffer> cb = [wrapper.commandQueue commandBuffer];
 
         // Force compute of final tensor's operation
         NSArray *ops = @[ context.tFinal.operation ];
@@ -2060,14 +2110,15 @@ void Metal_BertLayer_Graph(
                              targetOperations:ops
                             resultsDictionary:resultsDict];
 
-        // Copy packed output to result buffer
-        id<MTLCommandBuffer> cb = [wrapper.commandQueue commandBuffer];
+        // Blit Padded->Packed
         id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-        [blit copyFromBuffer:tmp
-                 sourceOffset:0
-                     toBuffer:(__bridge id<MTLBuffer>)result
-            destinationOffset:offRes
-                         size:totalBytes];
+        for (int i = 0; i < seqLen; i++) {
+          [blit copyFromBuffer:tmp
+                   sourceOffset:i * rowBytes
+                       toBuffer:(__bridge id<MTLBuffer>)result
+              destinationOffset:offRes + (i * rowBytes)
+                           size:rowBytes];
+        }
         [blit endEncoding];
 
         [cb commit];
