@@ -156,7 +156,7 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineAddScalar_F16 = loadPipeline(ctx, @"add_scalar_kernel_f16");
   ctx.pipelineScale_F16 = loadPipeline(ctx, @"scale_kernel_f16");
   ctx.pipelineTanh_F16 = loadPipeline(ctx, @"tanh_kernel_f16");
-  ctx.pipelineGelu_F16 = loadPipeline(ctx, @"gelu_kernel_f16");
+  ctx.pipelineGelu_F16 = loadPipeline(ctx, @"gelu_approx_kernel_f16");
   ctx.pipelineSoftmax_F16 = loadPipeline(ctx, @"softmax_kernel_f16");
   ctx.pipelineLayerNorm_F16 = loadPipeline(ctx, @"layernorm_kernel_f16");
   ctx.pipelineAddLayerNorm_F16 = loadPipeline(ctx, @"add_layernorm_kernel_f16");
@@ -248,6 +248,14 @@ void Metal_ExtractBytes(MetalBufferRef buf, int offset, void *dest, int size) {
   id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)buf;
   memcpy(dest, (char *)[buffer contents] + offset, size);
 }
+
+// Forward Declarations
+void Metal_MatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                      bool transA, MetalBufferRef b, int offB, bool transB,
+                      MetalBufferRef c, int offC, int M, int N, int K);
+void Metal_MatMul_F16_F32(MetalContextRef ctx, MetalBufferRef a, int offA,
+                          bool transA, MetalBufferRef b, int offB, bool transB,
+                          MetalBufferRef c, int offC, int M, int N, int K);
 
 // Kernels Implementation
 #define ENCODE(wrapper, pipeline)                                              \
@@ -847,46 +855,290 @@ void Metal_BatchedMatMul_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
                   resultMatrix:mC];
   }
 }
+// Mixed Precision MatMul: F16 Inputs -> F32 Output (for Scores accumulation)
+void Metal_BatchedMatMul_F16_F32(MetalContextRef ctx, MetalBufferRef a,
+                                 int offA, int strideA, bool transA,
+                                 MetalBufferRef b, int offB, int strideB,
+                                 bool transB, MetalBufferRef c, int offC,
+                                 int strideC, int M, int N, int K,
+                                 int batchCount) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc stopEncoder];
+  [mc ensureCommandBuffer];
+
+  // Inputs are F16
+  MPSMatrixDescriptor *dA = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transA ? K : M)
+                       columns:(transA ? M : K)rowBytes:(transA ? M : K) * 2
+                      dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dB = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transB ? N : K)
+                       columns:(transB ? K : N)rowBytes:(transB ? K : N) * 2
+                      dataType:MPSDataTypeFloat16];
+
+  // Output is F32 (!), strides passed are in bytes (or elements? Go sends bytes
+  // usually? Wait, stride arguments in Metal_BatchedMatMul_F16 are passed as
+  // just ints. In Go `Metal_Attention_Graph` calc: `strideQ = seqLen *
+  // hiddenSize * 2`. So stride is BYTES. dA rowBytes check above uses element
+  // count * 2? `matrixDescriptorWithRows` rowBytes argument expects BYTES. My
+  // check `(transA ? M : K) * 2` calculates bytes assuming dense-packed row.
+  // The passed `stride` args are batch strides (bytes between matrices).
+  // Yes.
+
+  MPSMatrixDescriptor *dC = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:M
+                       columns:N
+                      rowBytes:N * 4 // FP32 dense row bytes
+                      dataType:MPSDataTypeFloat32];
+
+  MPSMatrixMultiplication *mul =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:transA
+                                       transposeRight:transB
+                                           resultRows:M
+                                        resultColumns:N
+                                      interiorColumns:K
+                                                alpha:1.0
+                                                 beta:0.0];
+  for (int i = 0; i < batchCount; i++) {
+    MPSMatrix *mA = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)a
+                                               offset:offA + i * strideA
+                                           descriptor:dA];
+    MPSMatrix *mB = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)b
+                                               offset:offB + i * strideB
+                                           descriptor:dB];
+    MPSMatrix *mC = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)c
+                                               offset:offC + i * strideC
+                                           descriptor:dC];
+    [mul encodeToCommandBuffer:mc.currentCommandBuffer
+                    leftMatrix:mA
+                   rightMatrix:mB
+                  resultMatrix:mC];
+  }
+}
+
+void Metal_MatMul_F16_F32(MetalContextRef ctx, MetalBufferRef a, int offA,
+                          bool transA, MetalBufferRef b, int offB, bool transB,
+                          MetalBufferRef c, int offC, int M, int N, int K) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc stopEncoder];
+  [mc ensureCommandBuffer];
+  MPSMatrixDescriptor *dA = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transA ? K : M)
+                       columns:(transA ? M : K)rowBytes:(transA ? M : K) * 2
+                      dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dB = [MPSMatrixDescriptor
+      matrixDescriptorWithRows:(transB ? N : K)
+                       columns:(transB ? K : N)rowBytes:(transB ? K : N) * 2
+                      dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dC =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:N
+                                           rowBytes:N * 4
+                                           dataType:MPSDataTypeFloat32];
+  MPSMatrix *mA = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)a
+                                             offset:offA
+                                         descriptor:dA];
+  MPSMatrix *mB = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)b
+                                             offset:offB
+                                         descriptor:dB];
+  MPSMatrix *mC = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)c
+                                             offset:offC
+                                         descriptor:dC];
+  MPSMatrixMultiplication *mul =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:transA
+                                       transposeRight:transB
+                                           resultRows:M
+                                        resultColumns:N
+                                      interiorColumns:K
+                                                alpha:1.0
+                                                 beta:0.0];
+  [mul encodeToCommandBuffer:mc.currentCommandBuffer
+                  leftMatrix:mA
+                 rightMatrix:mB
+                resultMatrix:mC];
+}
+void Metal_MatMul_F16_F32_Stride(MetalContextRef ctx, MetalBufferRef a,
+                                 int offA, int strideA, MetalBufferRef b,
+                                 int offB, int strideB, MetalBufferRef c,
+                                 int offC, int M, int N, int K) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc stopEncoder];
+  [mc ensureCommandBuffer];
+  MPSMatrixDescriptor *dA =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:K
+                                           rowBytes:strideA
+                                           dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dB =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:K
+                                            columns:N
+                                           rowBytes:strideB
+                                           dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dC =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:N
+                                           rowBytes:N * 4
+                                           dataType:MPSDataTypeFloat32];
+  MPSMatrix *mA = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)a
+                                             offset:offA
+                                         descriptor:dA];
+  MPSMatrix *mB = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)b
+                                             offset:offB
+                                         descriptor:dB];
+  MPSMatrix *mC = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)c
+                                             offset:offC
+                                         descriptor:dC];
+  MPSMatrixMultiplication *mul =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:false
+                                       transposeRight:true
+                                           resultRows:M
+                                        resultColumns:N
+                                      interiorColumns:K
+                                                alpha:1.0
+                                                 beta:0.0];
+  [mul encodeToCommandBuffer:mc.currentCommandBuffer
+                  leftMatrix:mA
+                 rightMatrix:mB
+                resultMatrix:mC];
+}
+
+void Metal_MatMul_F16_Stride(MetalContextRef ctx, MetalBufferRef a, int offA,
+                             int strideA, MetalBufferRef b, int offB,
+                             int strideB, MetalBufferRef result, int offRes,
+                             int strideRes, int M, int N, int K) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  [mc stopEncoder];
+  [mc ensureCommandBuffer];
+  MPSMatrixDescriptor *dA =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:K
+                                           rowBytes:strideA
+                                           dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dB =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:K
+                                            columns:N
+                                           rowBytes:strideB
+                                           dataType:MPSDataTypeFloat16];
+  MPSMatrixDescriptor *dC =
+      [MPSMatrixDescriptor matrixDescriptorWithRows:M
+                                            columns:N
+                                           rowBytes:strideRes
+                                           dataType:MPSDataTypeFloat16];
+  MPSMatrix *mA = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)a
+                                             offset:offA
+                                         descriptor:dA];
+  MPSMatrix *mB = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)b
+                                             offset:offB
+                                         descriptor:dB];
+  MPSMatrix *mC =
+      [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)result
+                                 offset:offRes
+                             descriptor:dC];
+  MPSMatrixMultiplication *mul =
+      [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                        transposeLeft:false
+                                       transposeRight:false
+                                           resultRows:M
+                                        resultColumns:N
+                                      interiorColumns:K
+                                                alpha:1.0
+                                                 beta:0.0];
+  [mul encodeToCommandBuffer:mc.currentCommandBuffer
+                  leftMatrix:mA
+                 rightMatrix:mB
+                resultMatrix:mC];
+}
 
 // Composite Ops
 void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
                            MetalBufferRef k, int offK, MetalBufferRef v,
                            int offV, MetalBufferRef result, int offRes,
                            int batchSize, int seqLen, int hiddenSize,
-                           float scale) {
-  int scoresSize = batchSize * seqLen * seqLen * 2;
+                           int numHeads, float scale) {
+  int headDim = hiddenSize / numHeads;
+  int totalHeads = batchSize * numHeads;
+
+  // printf("AttentionGraph: batch=%d seq=%d hidden=%d heads=%d headDim=%d\n",
+  // batchSize, seqLen, hiddenSize, numHeads, headDim);
+
+  // 1. Accumulate Scores in FP32
+  int scoresElems = totalHeads * seqLen * seqLen;
+  int scoresSize = scoresElems * 4; // FP32
   MetalBufferRef scoresBuf = Metal_Alloc(ctx, scoresSize);
-  int strideQ = seqLen * hiddenSize * 2, strideK = seqLen * hiddenSize * 2,
-      strideScores = seqLen * seqLen * 2, strideV = seqLen * hiddenSize * 2;
-  Metal_BatchedMatMul_F16(ctx, q, offQ, strideQ, false, k, offK, strideK, true,
-                          scoresBuf, 0, strideScores, seqLen, seqLen,
-                          hiddenSize, batchSize);
-  __fp16 sc16 = (__fp16)scale;
-  uint16_t sb = *(uint16_t *)&sc16;
-  Metal_Scale_F16(ctx, scoresBuf, 0, sb, scoresBuf, 0,
-                  batchSize * seqLen * seqLen);
-  Metal_Softmax_F16(ctx, scoresBuf, 0, scoresBuf, 0, batchSize * seqLen,
-                    seqLen);
-  Metal_BatchedMatMul_F16(ctx, scoresBuf, 0, strideScores, false, v, offV,
-                          strideV, false, result, offRes, strideQ, seqLen,
-                          hiddenSize, seqLen, batchSize);
+
+  int strideQ = seqLen * hiddenSize * 2;
+  int strideK = seqLen * hiddenSize * 2;
+  int strideV = seqLen * hiddenSize * 2;
+  int strideScores = seqLen * seqLen * 4;
+
+  // Step 1: Q * K^T -> Scores (FP32)
+  for (int b = 0; b < batchSize; b++) {
+    for (int h = 0; h < numHeads; h++) {
+      int headOff = h * headDim * 2;
+      int i = b * numHeads + h;
+      for (int s = 0; s < seqLen; s++) {
+        // Query weight is at: b * strideQ + s * hiddenSize * 2 + headOff
+        // but for MatMul we can pass the start of the head's matrix and a row
+        // stride. Wait, our internal MatMul takes simple offsets. We need to be
+        // careful: the heads are interleaved in the last dimension. Q: [Batch,
+        // Seq, Heads, HeadDim] -> but stored as [Batch, Seq, HiddenSize]
+      }
+      // Actually, simple offset for the head start is enough IF row stride is
+      // hiddenSize*2
+      Metal_MatMul_F16_F32_Stride(
+          ctx, q, offQ + b * strideQ + headOff, hiddenSize * 2, k,
+          offK + b * strideK + headOff, hiddenSize * 2, scoresBuf,
+          i * strideScores, seqLen, seqLen, headDim);
+    }
+  }
+
+  // Scale (F32)
+  Metal_Scale(ctx, scoresBuf, 0, scale, scoresBuf, 0, scoresElems);
+
+  // Softmax (F32)
+  Metal_Softmax(ctx, scoresBuf, 0, scoresBuf, 0, totalHeads * seqLen, seqLen);
+
+  // Cast Scores F32 -> F16
+  int scoresSizeF16 = scoresElems * 2;
+  MetalBufferRef scoresBufF16 = Metal_Alloc(ctx, scoresSizeF16);
+
+  Metal_Cast_F32_to_F16(ctx, scoresBuf, 0, scoresBufF16, 0, scoresElems);
+
+  // Scores(F16) * V(F16) -> Result(F16)
+  int strideScoresF16 = seqLen * seqLen * 2;
+
+  for (int b = 0; b < batchSize; b++) {
+    for (int h = 0; h < numHeads; h++) {
+      int headOff = h * headDim * 2;
+      int i = b * numHeads + h;
+      Metal_MatMul_F16_Stride(ctx, scoresBufF16, i * strideScoresF16,
+                              seqLen * 2, v, offV + b * strideV + headOff,
+                              hiddenSize * 2, result,
+                              offRes + b * strideQ + headOff, hiddenSize * 2,
+                              seqLen, headDim, seqLen);
+    }
+  }
+
   Metal_FreeBuffer(ctx, scoresBuf);
+  Metal_FreeBuffer(ctx, scoresBufF16);
 }
 
+// Fused Attention - Single kernel dispatch for better performance
 // Fused Attention - Single kernel dispatch for better performance
 void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
                               MetalBufferRef k, int offK, MetalBufferRef v,
                               int offV, MetalBufferRef result, int offRes,
                               int batchSize, int seqLen, int hiddenSize,
-                              float scale) {
+                              int numHeads, float scale) {
   MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
-
-  // For now, use a simple implementation that fuses scale into the first matmul
-  // and uses a custom kernel for the attention computation
-  // This eliminates the separate scale dispatch
+  int headDim = hiddenSize / numHeads;
+  int totalHeads = batchSize * numHeads;
 
   // Allocate temporary buffer for attention scores
-  int scoresSize = batchSize * seqLen * seqLen * 2; // FP16
+  int scoresSize = totalHeads * seqLen * seqLen * 2; // FP16
   MetalBufferRef scoresBuf = Metal_Alloc(ctx, scoresSize);
 
   int strideQ = seqLen * hiddenSize * 2;
@@ -895,20 +1147,19 @@ void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
   int strideV = seqLen * hiddenSize * 2;
 
   // Step 1: Q × K^T with scale fused
-  // Use batched matmul with alpha = scale instead of separate scale kernel
   [mc stopEncoder];
   [mc ensureCommandBuffer];
 
-  // Q is (seqLen, hiddenSize)
+  // Q is (seqLen, headDim) but sliced from (seqLen, hiddenSize)
   MPSMatrixDescriptor *dQ =
       [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
-                                            columns:hiddenSize
+                                            columns:headDim
                                            rowBytes:hiddenSize * 2
                                            dataType:MPSDataTypeFloat16];
-  // K is (seqLen, hiddenSize) - will be transposed in multiplication
+  // K is (seqLen, headDim)
   MPSMatrixDescriptor *dK =
       [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
-                                            columns:hiddenSize
+                                            columns:headDim
                                            rowBytes:hiddenSize * 2
                                            dataType:MPSDataTypeFloat16];
   // Scores is (seqLen, seqLen)
@@ -924,53 +1175,62 @@ void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
                                        transposeRight:true
                                            resultRows:seqLen
                                         resultColumns:seqLen
-                                      interiorColumns:hiddenSize
+                                      interiorColumns:headDim
                                                 alpha:scale // Fuse scale here!
                                                  beta:0.0];
 
   // Batch loop for Q×K^T
-  for (int i = 0; i < batchSize; i++) {
-    MPSMatrix *mQ = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)q
-                                               offset:offQ + i * strideQ
-                                           descriptor:dQ];
-    MPSMatrix *mK = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)k
-                                               offset:offK + i * strideK
-                                           descriptor:dK];
-    MPSMatrix *mScores =
-        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
-                                   offset:i * strideScores
-                               descriptor:dScores];
-    [mulQK encodeToCommandBuffer:mc.currentCommandBuffer
-                      leftMatrix:mQ
-                     rightMatrix:mK
-                    resultMatrix:mScores];
+  for (int b = 0; b < batchSize; b++) {
+    for (int h = 0; h < numHeads; h++) {
+      int headOffset = h * headDim * 2;
+      int i = b * numHeads + h;
+
+      MPSMatrix *mQ =
+          [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)q
+                                     offset:offQ + b * strideQ + headOffset
+                                 descriptor:dQ];
+      MPSMatrix *mK =
+          [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)k
+                                     offset:offK + b * strideK + headOffset
+                                 descriptor:dK];
+      MPSMatrix *mScores =
+          [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
+                                     offset:i * strideScores
+                                 descriptor:dScores];
+      [mulQK encodeToCommandBuffer:mc.currentCommandBuffer
+                        leftMatrix:mQ
+                       rightMatrix:mK
+                      resultMatrix:mScores];
+    }
   }
 
-  // Step 2: Softmax (still separate for now, but could be fused in future)
-  Metal_Softmax_F16(ctx, scoresBuf, 0, scoresBuf, 0, batchSize * seqLen,
+  // Step 2: Softmax
+  Metal_Softmax_F16(ctx, scoresBuf, 0, scoresBuf, 0, totalHeads * seqLen,
                     seqLen);
 
   // Step 3: Scores × V
+  // Scores(F16) [totalHeads, seqLen, seqLen] * V(F16) [totalHeads, seqLen,
+  // headDim] -> Result(F16) [totalHeads, seqLen, headDim]
   Metal_BatchedMatMul_F16(ctx, scoresBuf, 0, strideScores, false, v, offV,
-                          strideV, false, result, offRes, strideQ, seqLen,
-                          hiddenSize, seqLen, batchSize);
+                          strideV / numHeads, false, result, offRes,
+                          strideQ / numHeads, seqLen, headDim, seqLen,
+                          totalHeads);
 
   Metal_FreeBuffer(ctx, scoresBuf);
 }
 
-void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
-                                     int offQ, MetalBufferRef k, int offK,
-                                     MetalBufferRef v, int offV,
-                                     MetalBufferRef result, int offRes,
-                                     int *lengths, int batchSize,
-                                     int hiddenSize, float scale) {
+void Metal_FusedAttention_VarLen_F16(
+    MetalContextRef ctx, MetalBufferRef q, int offQ, MetalBufferRef k, int offK,
+    MetalBufferRef v, int offV, MetalBufferRef result, int offRes, int *lengths,
+    int batchSize, int hiddenSize, int numHeads, float scale) {
   MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+  int headDim = hiddenSize / numHeads;
 
-  // Calculate total scores size required
+  // Calculate total scores size required (totalHeads * seqLen^2)
   int totalScoresParams = 0;
   for (int i = 0; i < batchSize; i++) {
     int l = lengths[i];
-    totalScoresParams += l * l;
+    totalScoresParams += l * l * numHeads;
   }
 
   // FP16
@@ -979,8 +1239,6 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
 
   [mc stopEncoder];
   [mc ensureCommandBuffer];
-
-  // REFACTOR: 3-Pass Approach
 
   // Pass 1: Q * K^T
   int currentIO_Offset = 0;
@@ -996,16 +1254,13 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
                                          transposeRight:true
                                              resultRows:seqLen
                                           resultColumns:seqLen
-                                        interiorColumns:hiddenSize
+                                        interiorColumns:headDim
                                                   alpha:scale
                                                    beta:0.0];
 
-    int byteOffIO = currentIO_Offset * 2;
-    int byteOffScores = currentScores_Offset * 2;
-
     MPSMatrixDescriptor *dQ =
         [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
-                                              columns:hiddenSize
+                                              columns:headDim
                                              rowBytes:hiddenSize * 2
                                              dataType:MPSDataTypeFloat16];
     MPSMatrixDescriptor *dScores =
@@ -1014,24 +1269,28 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
                                              rowBytes:seqLen * 2
                                              dataType:MPSDataTypeFloat16];
 
-    MPSMatrix *mQ = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)q
-                                               offset:offQ + byteOffIO
-                                           descriptor:dQ];
-    MPSMatrix *mK = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)k
-                                               offset:offK + byteOffIO
-                                           descriptor:dQ];
-    MPSMatrix *mScores =
-        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
-                                   offset:byteOffScores
-                               descriptor:dScores];
+    for (int h = 0; h < numHeads; h++) {
+      int headOffset = h * headDim * 2;
+      MPSMatrix *mQ = [[MPSMatrix alloc]
+          initWithBuffer:(__bridge id<MTLBuffer>)q
+                  offset:offQ + currentIO_Offset * 2 + headOffset
+              descriptor:dQ];
+      MPSMatrix *mK = [[MPSMatrix alloc]
+          initWithBuffer:(__bridge id<MTLBuffer>)k
+                  offset:offK + currentIO_Offset * 2 + headOffset
+              descriptor:dQ];
+      MPSMatrix *mScores =
+          [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
+                                     offset:currentScores_Offset * 2
+                                 descriptor:dScores];
 
-    [mulQK encodeToCommandBuffer:mc.currentCommandBuffer
-                      leftMatrix:mQ
-                     rightMatrix:mK
-                    resultMatrix:mScores];
-
+      [mulQK encodeToCommandBuffer:mc.currentCommandBuffer
+                        leftMatrix:mQ
+                       rightMatrix:mK
+                      resultMatrix:mScores];
+      currentScores_Offset += seqLen * seqLen;
+    }
     currentIO_Offset += seqLen * hiddenSize;
-    currentScores_Offset += seqLen * seqLen;
   }
 
   // Pass 2: Softmax
@@ -1040,10 +1299,12 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
     int seqLen = lengths[i];
     if (seqLen == 0)
       continue;
-    int byteOffScores = currentScores_Offset * 2;
-    Metal_Softmax_F16(ctx, scoresBuf, byteOffScores, scoresBuf, byteOffScores,
-                      seqLen, seqLen);
-    currentScores_Offset += seqLen * seqLen;
+    for (int h = 0; h < numHeads; h++) {
+      int byteOffScores = currentScores_Offset * 2;
+      Metal_Softmax_F16(ctx, scoresBuf, byteOffScores, scoresBuf, byteOffScores,
+                        seqLen, seqLen);
+      currentScores_Offset += seqLen * seqLen;
+    }
   }
   [mc stopEncoder]; // Stop encoder before next MPS pass
 
@@ -1060,13 +1321,10 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
                                           transposeLeft:false
                                          transposeRight:false
                                              resultRows:seqLen
-                                          resultColumns:hiddenSize
+                                          resultColumns:headDim
                                         interiorColumns:seqLen
                                                   alpha:1.0
                                                    beta:0.0];
-
-    int byteOffIO = currentIO_Offset * 2;
-    int byteOffScores = currentScores_Offset * 2;
 
     MPSMatrixDescriptor *dScores =
         [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
@@ -1075,30 +1333,34 @@ void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
                                              dataType:MPSDataTypeFloat16];
     MPSMatrixDescriptor *dV =
         [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
-                                              columns:hiddenSize
+                                              columns:headDim
                                              rowBytes:hiddenSize * 2
                                              dataType:MPSDataTypeFloat16];
     MPSMatrixDescriptor *dO = dV;
 
-    MPSMatrix *mScores =
-        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
-                                   offset:byteOffScores
-                               descriptor:dScores];
-    MPSMatrix *mV = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)v
-                                               offset:offV + byteOffIO
-                                           descriptor:dV];
-    MPSMatrix *mO =
-        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)result
-                                   offset:offRes + byteOffIO
-                               descriptor:dO];
+    for (int h = 0; h < numHeads; h++) {
+      int headOffset = h * headDim * 2;
+      MPSMatrix *mScores =
+          [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
+                                     offset:currentScores_Offset * 2
+                                 descriptor:dScores];
+      MPSMatrix *mV = [[MPSMatrix alloc]
+          initWithBuffer:(__bridge id<MTLBuffer>)v
+                  offset:offV + currentIO_Offset * 2 + headOffset
+              descriptor:dV];
+      MPSMatrix *mO = [[MPSMatrix alloc]
+          initWithBuffer:(__bridge id<MTLBuffer>)result
+                  offset:offRes + currentIO_Offset * 2 + headOffset
+              descriptor:dO];
 
-    [mulSV encodeToCommandBuffer:mc.currentCommandBuffer
-                      leftMatrix:mScores
-                     rightMatrix:mV
-                    resultMatrix:mO];
+      [mulSV encodeToCommandBuffer:mc.currentCommandBuffer
+                        leftMatrix:mScores
+                       rightMatrix:mV
+                      resultMatrix:mO];
 
+      currentScores_Offset += seqLen * seqLen;
+    }
     currentIO_Offset += seqLen * hiddenSize;
-    currentScores_Offset += seqLen * seqLen;
   }
 
   Metal_FreeBuffer(ctx, scoresBuf);

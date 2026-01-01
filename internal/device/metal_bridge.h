@@ -47,6 +47,9 @@ void Metal_CopySubmatrix_F16(MetalContextRef ctx, MetalBufferRef src,
 void Metal_Add(MetalContextRef ctx, MetalBufferRef a, int offA,
                MetalBufferRef b, int offB, MetalBufferRef result, int offRes,
                int count);
+void Metal_Add_F16(MetalContextRef ctx, MetalBufferRef a, int offA,
+                   MetalBufferRef b, int offB, MetalBufferRef result,
+                   int offRes, int count);
 void Metal_AddScalar(MetalContextRef ctx, MetalBufferRef a, int offA, float val,
                      MetalBufferRef result, int offRes, int count);
 void Metal_Scale(MetalContextRef ctx, MetalBufferRef a, int offA, float val,
@@ -111,18 +114,18 @@ void Metal_Attention_Graph(MetalContextRef ctx, MetalBufferRef q, int offQ,
                            MetalBufferRef k, int offK, MetalBufferRef v,
                            int offV, MetalBufferRef result, int offRes,
                            int batchSize, int seqLen, int hiddenSize,
-                           float scale);
+                           int numHeads, float scale);
 void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
                               MetalBufferRef k, int offK, MetalBufferRef v,
                               int offV, MetalBufferRef result, int offRes,
                               int batchSize, int seqLen, int hiddenSize,
-                              float scale);
+                              int numHeads, float scale);
 void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
                                      int offQ, MetalBufferRef k, int offK,
                                      MetalBufferRef v, int offV,
                                      MetalBufferRef result, int offRes,
                                      int *lengths, int batchSize,
-                                     int hiddenSize, float scale);
+                                     int hiddenSize, int numHeads, float scale);
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   MetalBufferRef indices, int offIndices, MetalBufferRef output,
                   int offOut, int indicesCount, int cols);

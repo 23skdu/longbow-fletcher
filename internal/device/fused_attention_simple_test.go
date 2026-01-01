@@ -32,7 +32,7 @@ func TestFusedAttentionBasic(t *testing.T) {
 	scale := float32(1.0 / math.Sqrt(float64(hiddenSize)))
 	
 	// Run fused attention
-	result := q.(*MetalTensor).FusedAttention(q, k, v, batch, seqLen, scale)
+	result := q.(*MetalTensor).FusedAttention(q, k, v, batch, seqLen, 1, scale)
 	backend.Synchronize()
 	output := result.ToHost()
 	

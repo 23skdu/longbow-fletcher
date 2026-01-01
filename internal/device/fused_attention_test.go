@@ -57,7 +57,7 @@ func TestFusedAttentionCorrectness(t *testing.T) {
 			
 			// Run fused attention (new implementation)
 			// Note: This will call the fused kernel when implemented
-			fusedResult := q2.(*MetalTensor).FusedAttention(q2, k2, v2, tc.batch, tc.seqLen, scale)
+			fusedResult := q2.(*MetalTensor).FusedAttention(q2, k2, v2, tc.batch, tc.seqLen, 1, scale)
 			backend.Synchronize()
 			fusedOutput := fusedResult.ToHost()
 			
@@ -129,7 +129,7 @@ func BenchmarkFusedAttentionComparison(b *testing.B) {
 		
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			result := q.(*MetalTensor).FusedAttention(q, k, v, batch, seqLen, scale)
+			result := q.(*MetalTensor).FusedAttention(q, k, v, batch, seqLen, 1, scale)
 			backend.PutTensor(result)
 		}
 		backend.Synchronize()
