@@ -39,7 +39,7 @@ kernel void tanh_kernel_f16(device const half *a [[ buffer(0) ]],
     result[index] = half(tanh(float(a[index])));
 }
 
-kernel void gelu_kernel_f16(device const half *a [[ buffer(0) ]],
+kernel void gelu_approx_kernel_f16(device const half *a [[ buffer(0) ]],
                             device half *result [[ buffer(1) ]],
                             uint index [[ thread_position_in_grid ]]) {
     float x = float(a[index]);
@@ -47,6 +47,14 @@ kernel void gelu_kernel_f16(device const half *a [[ buffer(0) ]],
     float c2 = 0.044715;
     float inner = c1 * (x + c2 * x * x * x);
     result[index] = half(0.5 * x * (1.0 + tanh(inner)));
+}
+
+kernel void gelu_kernel_f16(device const half *a [[ buffer(0) ]],
+                            device half *result [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    float x = float(a[index]);
+    float sqrt1_2 = 0.70710678118654752440f;
+    result[index] = half(0.5 * x * (1.0 + erf(x * sqrt1_2)));
 }
 
 kernel void add_scalar_kernel(device const float *a [[ buffer(0) ]],
@@ -69,7 +77,7 @@ kernel void tanh_kernel(device const float *a [[ buffer(0) ]],
     result[index] = tanh(a[index]);
 }
 
-kernel void gelu_kernel(device const float *a [[ buffer(0) ]],
+kernel void gelu_approx_kernel(device const float *a [[ buffer(0) ]],
                         device float *result [[ buffer(1) ]],
                         uint index [[ thread_position_in_grid ]]) {
     float x = a[index];
@@ -80,16 +88,23 @@ kernel void gelu_kernel(device const float *a [[ buffer(0) ]],
     result[index] = 0.5 * x * (1.0 + tanh(inner));
 }
 
-// Fused Add+GELU kernel to reduce dispatch overhead
+kernel void gelu_kernel(device const float *a [[ buffer(0) ]],
+                        device float *result [[ buffer(1) ]],
+                        uint index [[ thread_position_in_grid ]]) {
+    float x = a[index];
+    // Exact GELU: 0.5 * x * (1 + erf(x / sqrt(2)))
+    float sqrt1_2 = 0.70710678118654752440f; 
+    result[index] = 0.5 * x * (1.0 + erf(x * sqrt1_2));
+}
+
+// Fused Add+GELU kernel (Exact)
 kernel void add_gelu_kernel(device const float *a [[ buffer(0) ]],
                             device const float *b [[ buffer(1) ]],
                             device float *result [[ buffer(2) ]],
                             uint index [[ thread_position_in_grid ]]) {
     float x = a[index] + b[index];
-    float c1 = 0.7978845608;
-    float c2 = 0.044715;
-    float inner = c1 * (x + c2 * x * x * x);
-    result[index] = 0.5 * x * (1.0 + tanh(inner));
+    float sqrt1_2 = 0.70710678118654752440f; 
+    result[index] = 0.5 * x * (1.0 + erf(x * sqrt1_2));
 }
 
 // Fused Add+Tanh kernel
