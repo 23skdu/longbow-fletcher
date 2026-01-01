@@ -159,20 +159,22 @@ func compareTensors(t *testing.T, expected, actual Tensor, name string, toleranc
 		t.Fatalf("%s: Size mismatch: expected %d vs actual %d", name, len(expectedData), len(actualData))
 	}
 
+	var mismatches int
 	maxDiff := float32(0.0)
 	for i := range actualData {
 		diff := float32(math.Abs(float64(actualData[i] - expectedData[i])))
 		if diff > maxDiff {
 			maxDiff = diff
 		}
-		if diff > 1e-2 { // FP16 precision tolerance
+		if diff > tolerance {
 			t.Errorf("Mismatch at %d: fused %f vs ref %f (diff %f)", i, actualData[i], expectedData[i], diff)
-			if i > 10 { break }
+			mismatches++
+			if mismatches > 10 { break }
 		}
 	}
 	t.Logf("Max Diff: %f", maxDiff)
 	
-	if maxDiff > 1e-2 {
+	if maxDiff > tolerance {
 		t.Fail()
 	}
 }
