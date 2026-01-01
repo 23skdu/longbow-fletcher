@@ -18,6 +18,7 @@
 @property(strong) id<MTLComputePipelineState> pipelineTanh;
 @property(strong) id<MTLComputePipelineState> pipelineGelu;
 @property(strong) id<MTLComputePipelineState> pipelineLayerNorm;
+@property(strong) id<MTLComputePipelineState> pipelineAddLayerNorm;
 @property(strong) id<MTLComputePipelineState> pipelineSoftmax;
 @property(strong) id<MTLComputePipelineState> pipelineGather;
 @property(strong) id<MTLComputePipelineState> pipelineAddBias;
@@ -29,7 +30,10 @@
 @property(strong) id<MTLComputePipelineState> pipelineGelu_F16;
 @property(strong) id<MTLComputePipelineState> pipelineSoftmax_F16;
 @property(strong) id<MTLComputePipelineState> pipelineLayerNorm_F16;
+@property(strong) id<MTLComputePipelineState> pipelineAddLayerNorm_F16;
 @property(strong) id<MTLComputePipelineState> pipelineAddBias_F16;
+@property(strong) id<MTLComputePipelineState> pipelineAddBiasGelu_F16;
+@property(strong) id<MTLComputePipelineState> pipelineAddBiasTanh_F16;
 @property(strong) id<MTLComputePipelineState> pipelineRope_F16;
 @property(strong) id<MTLComputePipelineState> pipelineSwiglu_F16;
 @property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F16;
@@ -143,6 +147,7 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineTanh = loadPipeline(ctx, @"tanh_kernel");
   ctx.pipelineGelu = loadPipeline(ctx, @"gelu_kernel");
   ctx.pipelineLayerNorm = loadPipeline(ctx, @"layernorm_kernel");
+  ctx.pipelineAddLayerNorm = loadPipeline(ctx, @"add_layernorm_kernel");
   ctx.pipelineSoftmax = loadPipeline(ctx, @"softmax_kernel");
   ctx.pipelineGather = loadPipeline(ctx, @"gather_kernel");
   ctx.pipelineAddBias = loadPipeline(ctx, @"add_bias_kernel");
@@ -154,7 +159,10 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineGelu_F16 = loadPipeline(ctx, @"gelu_kernel_f16");
   ctx.pipelineSoftmax_F16 = loadPipeline(ctx, @"softmax_kernel_f16");
   ctx.pipelineLayerNorm_F16 = loadPipeline(ctx, @"layernorm_kernel_f16");
+  ctx.pipelineAddLayerNorm_F16 = loadPipeline(ctx, @"add_layernorm_kernel_f16");
   ctx.pipelineAddBias_F16 = loadPipeline(ctx, @"add_bias_kernel_f16");
+  ctx.pipelineAddBiasGelu_F16 = loadPipeline(ctx, @"add_bias_gelu_kernel_f16");
+  ctx.pipelineAddBiasTanh_F16 = loadPipeline(ctx, @"add_bias_tanh_kernel_f16");
   ctx.pipelineRope_F16 = loadPipeline(ctx, @"rope_kernel_f16");
   ctx.pipelineSwiglu_F16 = loadPipeline(ctx, @"swiglu_kernel_f16");
   ctx.pipelineCast_F32_to_F16 = loadPipeline(ctx, @"cast_f32_to_f16");
@@ -198,6 +206,30 @@ void Metal_CopyToDevice(MetalBufferRef buf, int offset, const void *data,
 void Metal_CopyToHost(MetalBufferRef buf, int offset, void *data, int size) {
   id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)buf;
   memcpy(data, (char *)[buffer contents] + offset, size);
+}
+
+void Metal_Blit(MetalContextRef ctx, MetalBufferRef src, int srcOff,
+                MetalBufferRef dst, int dstOff, int len) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+
+  // End current compute encoder if active
+  if (c.currentEncoder) {
+    [c.currentEncoder endEncoding];
+    c.currentEncoder = nil;
+  }
+
+  // Use Blit Encoder
+  id<MTLBlitCommandEncoder> blit = [c.currentCommandBuffer blitCommandEncoder];
+  [blit copyFromBuffer:(__bridge id<MTLBuffer>)src
+           sourceOffset:srcOff
+               toBuffer:(__bridge id<MTLBuffer>)dst
+      destinationOffset:dstOff
+                   size:len];
+  [blit endEncoding];
+
+  // Note: We ended the compute encoder, so next compute op will start a new
+  // one. This is fine. Blit implicitly synchronizes with Compute if on same
+  // buffer in same command buffer? Metal tracks hazards.
 }
 
 void *Metal_GetBufferContents(MetalBufferRef buf) {
@@ -323,6 +355,34 @@ void Metal_LayerNorm(MetalContextRef ctx, MetalBufferRef in, int offIn,
                       atIndex:3];
   [c.currentEncoder setBytes:&cols length:4 atIndex:4];
   [c.currentEncoder setBytes:&eps length:4 atIndex:5];
+  [c.currentEncoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1)
+                   threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+void Metal_AddLayerNorm(MetalContextRef ctx, MetalBufferRef in, int offIn,
+                        MetalBufferRef residual, int offResid,
+                        MetalBufferRef gamma, int offGamma, MetalBufferRef beta,
+                        int offBeta, MetalBufferRef result, int offRes,
+                        int rows, int cols, float eps) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineAddLayerNorm);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)in
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)residual
+                       offset:offResid
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)gamma
+                       offset:offGamma
+                      atIndex:2];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)beta
+                       offset:offBeta
+                      atIndex:3];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:4];
+  [c.currentEncoder setBytes:&cols length:4 atIndex:5];
+  [c.currentEncoder setBytes:&eps length:4 atIndex:6];
   [c.currentEncoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1)
                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
@@ -486,11 +546,80 @@ void Metal_LayerNorm_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
 }
 
+void Metal_AddLayerNorm_F16(MetalContextRef ctx, MetalBufferRef in, int offIn,
+                            MetalBufferRef residual, int offResid,
+                            MetalBufferRef gamma, int offGamma,
+                            MetalBufferRef beta, int offBeta,
+                            MetalBufferRef result, int offRes, int rows,
+                            int cols, float eps) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineAddLayerNorm_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)in
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)residual
+                       offset:offResid
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)gamma
+                       offset:offGamma
+                      atIndex:2];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)beta
+                       offset:offBeta
+                      atIndex:3];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:4];
+  [c.currentEncoder setBytes:&cols length:4 atIndex:5];
+  [c.currentEncoder setBytes:&eps length:4 atIndex:6];
+  [c.currentEncoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1)
+                   threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
 void Metal_AddBias_F16(MetalContextRef ctx, MetalBufferRef matrix, int offMat,
                        MetalBufferRef bias, int offBias, MetalBufferRef result,
                        int offRes, int rows, int cols) {
   MetalWrapper *c = (__bridge MetalWrapper *)ctx;
   ENCODE(c, pipelineAddBias_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)matrix
+                       offset:offMat
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)bias
+                       offset:offBias
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:2];
+  [c.currentEncoder setBytes:&cols length:4 atIndex:3];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(cols, rows, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+}
+
+void Metal_AddBiasGelu_F16(MetalContextRef ctx, MetalBufferRef matrix,
+                           int offMat, MetalBufferRef bias, int offBias,
+                           MetalBufferRef result, int offRes, int rows,
+                           int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineAddBiasGelu_F16);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)matrix
+                       offset:offMat
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)bias
+                       offset:offBias
+                      atIndex:1];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)result
+                       offset:offRes
+                      atIndex:2];
+  [c.currentEncoder setBytes:&cols length:4 atIndex:3];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(cols, rows, 1)
+              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+}
+
+void Metal_AddBiasTanh_F16(MetalContextRef ctx, MetalBufferRef matrix,
+                           int offMat, MetalBufferRef bias, int offBias,
+                           MetalBufferRef result, int offRes, int rows,
+                           int cols) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineAddBiasTanh_F16);
   [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)matrix
                        offset:offMat
                       atIndex:0];
@@ -829,6 +958,152 @@ void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
   Metal_FreeBuffer(ctx, scoresBuf);
 }
 
+void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
+                                     int offQ, MetalBufferRef k, int offK,
+                                     MetalBufferRef v, int offV,
+                                     MetalBufferRef result, int offRes,
+                                     int *lengths, int batchSize,
+                                     int hiddenSize, float scale) {
+  MetalWrapper *mc = (__bridge MetalWrapper *)ctx;
+
+  // Calculate total scores size required
+  int totalScoresParams = 0;
+  for (int i = 0; i < batchSize; i++) {
+    int l = lengths[i];
+    totalScoresParams += l * l;
+  }
+
+  // FP16
+  int scoresSize = totalScoresParams * 2;
+  MetalBufferRef scoresBuf = Metal_Alloc(ctx, scoresSize);
+
+  [mc stopEncoder];
+  [mc ensureCommandBuffer];
+
+  // REFACTOR: 3-Pass Approach
+
+  // Pass 1: Q * K^T
+  int currentIO_Offset = 0;
+  int currentScores_Offset = 0;
+  for (int i = 0; i < batchSize; i++) {
+    int seqLen = lengths[i];
+    if (seqLen == 0)
+      continue;
+
+    MPSMatrixMultiplication *mulQK =
+        [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                          transposeLeft:false
+                                         transposeRight:true
+                                             resultRows:seqLen
+                                          resultColumns:seqLen
+                                        interiorColumns:hiddenSize
+                                                  alpha:scale
+                                                   beta:0.0];
+
+    int byteOffIO = currentIO_Offset * 2;
+    int byteOffScores = currentScores_Offset * 2;
+
+    MPSMatrixDescriptor *dQ =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                              columns:hiddenSize
+                                             rowBytes:hiddenSize * 2
+                                             dataType:MPSDataTypeFloat16];
+    MPSMatrixDescriptor *dScores =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                              columns:seqLen
+                                             rowBytes:seqLen * 2
+                                             dataType:MPSDataTypeFloat16];
+
+    MPSMatrix *mQ = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)q
+                                               offset:offQ + byteOffIO
+                                           descriptor:dQ];
+    MPSMatrix *mK = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)k
+                                               offset:offK + byteOffIO
+                                           descriptor:dQ];
+    MPSMatrix *mScores =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
+                                   offset:byteOffScores
+                               descriptor:dScores];
+
+    [mulQK encodeToCommandBuffer:mc.currentCommandBuffer
+                      leftMatrix:mQ
+                     rightMatrix:mK
+                    resultMatrix:mScores];
+
+    currentIO_Offset += seqLen * hiddenSize;
+    currentScores_Offset += seqLen * seqLen;
+  }
+
+  // Pass 2: Softmax
+  currentScores_Offset = 0;
+  for (int i = 0; i < batchSize; i++) {
+    int seqLen = lengths[i];
+    if (seqLen == 0)
+      continue;
+    int byteOffScores = currentScores_Offset * 2;
+    Metal_Softmax_F16(ctx, scoresBuf, byteOffScores, scoresBuf, byteOffScores,
+                      seqLen, seqLen);
+    currentScores_Offset += seqLen * seqLen;
+  }
+  [mc stopEncoder]; // Stop encoder before next MPS pass
+
+  // Pass 3: Scores * V
+  currentIO_Offset = 0;
+  currentScores_Offset = 0;
+  for (int i = 0; i < batchSize; i++) {
+    int seqLen = lengths[i];
+    if (seqLen == 0)
+      continue;
+
+    MPSMatrixMultiplication *mulSV =
+        [[MPSMatrixMultiplication alloc] initWithDevice:mc.device
+                                          transposeLeft:false
+                                         transposeRight:false
+                                             resultRows:seqLen
+                                          resultColumns:hiddenSize
+                                        interiorColumns:seqLen
+                                                  alpha:1.0
+                                                   beta:0.0];
+
+    int byteOffIO = currentIO_Offset * 2;
+    int byteOffScores = currentScores_Offset * 2;
+
+    MPSMatrixDescriptor *dScores =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                              columns:seqLen
+                                             rowBytes:seqLen * 2
+                                             dataType:MPSDataTypeFloat16];
+    MPSMatrixDescriptor *dV =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:seqLen
+                                              columns:hiddenSize
+                                             rowBytes:hiddenSize * 2
+                                             dataType:MPSDataTypeFloat16];
+    MPSMatrixDescriptor *dO = dV;
+
+    MPSMatrix *mScores =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)scoresBuf
+                                   offset:byteOffScores
+                               descriptor:dScores];
+    MPSMatrix *mV = [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)v
+                                               offset:offV + byteOffIO
+                                           descriptor:dV];
+    MPSMatrix *mO =
+        [[MPSMatrix alloc] initWithBuffer:(__bridge id<MTLBuffer>)result
+                                   offset:offRes + byteOffIO
+                               descriptor:dO];
+
+    [mulSV encodeToCommandBuffer:mc.currentCommandBuffer
+                      leftMatrix:mScores
+                     rightMatrix:mV
+                    resultMatrix:mO];
+
+    currentIO_Offset += seqLen * hiddenSize;
+    currentScores_Offset += seqLen * seqLen;
+  }
+
+  Metal_FreeBuffer(ctx, scoresBuf);
+}
+
 void Metal_FlashAttention(MetalContextRef ctx, MetalBufferRef Q, int offQ,
                           MetalBufferRef K, int offK, MetalBufferRef V,
                           int offV, MetalBufferRef O, int offO, int N, int d,
@@ -871,15 +1146,29 @@ void Metal_LinearActivation_Graph(MetalContextRef ctx, MetalBufferRef input,
                                   int outCols, MetalBufferRef bias, int offBias,
                                   MetalBufferRef result, int offRes,
                                   int activationType) {
-  Metal_Linear_Graph(ctx, input, offIn, rows, inCols, weight, offWeight,
-                     outCols, bias, offBias, result, offRes);
-  int count = rows * outCols;
-  if (activationType == 1)
-    Metal_Gelu_F16(ctx, result, offRes, result, offRes, count);
-  else if (activationType == 2)
-    Metal_Tanh_F16(ctx, result, offRes, result, offRes, count);
-  else if (activationType == 3)
-    Metal_Softmax_F16(ctx, result, offRes, result, offRes, rows, outCols);
+  // Optimize by fusing AddBias + Activation if possible
+  // Metal_Linear_Graph calls MatMul + AddBias.
+  // We can do MatMul + AddBiasActivation.
+
+  // 1. MatMul
+  Metal_MatMul_F16(ctx, input, offIn, false, weight, offWeight, false, result,
+                   offRes, rows, outCols, inCols);
+
+  // 2. AddBias + Activation
+  if (activationType == 1) { // GELU
+    Metal_AddBiasGelu_F16(ctx, result, offRes, bias, offBias, result, offRes,
+                          rows, outCols);
+  } else if (activationType == 2) { // Tanh
+    Metal_AddBiasTanh_F16(ctx, result, offRes, bias, offBias, result, offRes,
+                          rows, outCols);
+  } else {
+    // Fallback or just AddBias
+    Metal_AddBias_F16(ctx, result, offRes, bias, offBias, result, offRes, rows,
+                      outCols);
+    if (activationType == 3) { // Softmax
+      Metal_Softmax_F16(ctx, result, offRes, result, offRes, rows, outCols);
+    }
+  }
 }
 
 // Misc

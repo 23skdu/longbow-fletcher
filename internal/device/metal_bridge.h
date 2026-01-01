@@ -75,9 +75,28 @@ void Metal_LayerNorm_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                          MetalBufferRef beta, int offBeta,
                          MetalBufferRef result, int offRes, int rows, int cols,
                          float eps);
+void Metal_AddLayerNorm(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                        MetalBufferRef residual, int offResid,
+                        MetalBufferRef gamma, int offGamma, MetalBufferRef beta,
+                        int offBeta, MetalBufferRef result, int offRes,
+                        int rows, int cols, float eps);
+void Metal_AddLayerNorm_F16(MetalContextRef ctx, MetalBufferRef input,
+                            int offIn, MetalBufferRef residual, int offResid,
+                            MetalBufferRef gamma, int offGamma,
+                            MetalBufferRef beta, int offBeta,
+                            MetalBufferRef result, int offRes, int rows,
+                            int cols, float eps);
 void Metal_AddBias_F16(MetalContextRef ctx, MetalBufferRef matrix, int offMat,
                        MetalBufferRef bias, int offBias, MetalBufferRef result,
                        int offRes, int rows, int cols);
+void Metal_AddBiasGelu_F16(MetalContextRef ctx, MetalBufferRef matrix,
+                           int offMat, MetalBufferRef bias, int offBias,
+                           MetalBufferRef result, int offRes, int rows,
+                           int cols);
+void Metal_AddBiasTanh_F16(MetalContextRef ctx, MetalBufferRef matrix,
+                           int offMat, MetalBufferRef bias, int offBias,
+                           MetalBufferRef result, int offRes, int rows,
+                           int cols);
 void Metal_Linear_Graph(MetalContextRef ctx, MetalBufferRef input, int offIn,
                         int rows, int inCols, MetalBufferRef weight,
                         int offWeight, int outCols, MetalBufferRef bias,
@@ -98,6 +117,12 @@ void Metal_FusedAttention_F16(MetalContextRef ctx, MetalBufferRef q, int offQ,
                               int offV, MetalBufferRef result, int offRes,
                               int batchSize, int seqLen, int hiddenSize,
                               float scale);
+void Metal_FusedAttention_VarLen_F16(MetalContextRef ctx, MetalBufferRef q,
+                                     int offQ, MetalBufferRef k, int offK,
+                                     MetalBufferRef v, int offV,
+                                     MetalBufferRef result, int offRes,
+                                     int *lengths, int batchSize,
+                                     int hiddenSize, float scale);
 void Metal_Gather(MetalContextRef ctx, MetalBufferRef table, int offTable,
                   MetalBufferRef indices, int offIndices, MetalBufferRef output,
                   int offOut, int indicesCount, int cols);
@@ -116,7 +141,9 @@ void Metal_FlashAttention(MetalContextRef ctx, MetalBufferRef Q, int offQ,
                           float scale, int batch_stride, int head_stride,
                           int row_stride, int num_heads, int total_batches);
 
-// Matrix Mul (MPS)
+// Matrix Mul// Operations
+void Metal_Blit(MetalContextRef ctx, MetalBufferRef src, int srcOff,
+                MetalBufferRef dst, int dstOff, int len);
 void Metal_MatMul(MetalContextRef ctx, MetalBufferRef a, int offA, bool transA,
                   MetalBufferRef b, int offB, bool transB, MetalBufferRef c,
                   int offC, int M, int N, int K);

@@ -16,6 +16,9 @@ type Tensor interface {
 	// Data returns the underlying slice if available on CPU (nil if on GPU).
 	Data() []float32
 	
+	// DataType returns the data type of the tensor.
+	DataType() DataType
+	
 	// ToHost copies the data to a Go slice (float32).
 	ToHost() []float32
 	
@@ -57,6 +60,15 @@ type Tensor interface {
 	
 	// LayerNorm performs layer normalization (In-Place).
 	LayerNorm(gamma, beta Tensor, eps float32)
+
+	// AddLayerNorm performs fused Add + LayerNorm.
+	// t = LayerNorm(t + residual).
+	// t is updated in-place (containing the sum), then normalized.
+	// Actually, usually residual is preserved?
+	// In BERT: x = LayerNorm(x + residual)
+	// If done in-place on x: x += residual; x = LayerNorm(x).
+	// So this method modifies receiver 't'.
+	AddLayerNorm(residual, gamma, beta Tensor, eps float32)
 	
 	// Gather collects rows based on indices. Returns new Tensor.
 	Gather(indices []int) Tensor
@@ -75,6 +87,13 @@ type Tensor interface {
 	// Returns flattend (Batch*Seq, Hidden)
 	Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor
 
+	// AttentionVarLen performs fused Scaled Dot Product Attention with variable sequence lengths.
+	// equivalent to: Softmax(Q * K^T * scale) * V
+	// Assumes q, k, v are flattened (Batch*Seq, Hidden)
+	// 'lengths' specifies the actual sequence length for each batch item.
+	// Returns flattend (Batch*Seq, Hidden)
+	AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int, scale float32) Tensor
+	
 	// RoPE applies Rotary Positional Embeddings to this tensor (In-Place).
 	// Assumes tensor is (Batch*Seq, Hidden)
 	ApplyRoPE(batchSize, seqLen, numHeads, headDim int)

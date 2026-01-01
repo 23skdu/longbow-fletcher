@@ -194,6 +194,10 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 	return nil
 }
 
+func (t *MetalTensor) DataType() DataType {
+	return t.dtype
+}
+
 // HasNaN checks if the tensor contains any NaN values.
 // This is a blocking operation that synchronizes with the GPU.
 func (t *MetalTensor) HasNaN() (bool, error) {
@@ -459,15 +463,15 @@ func (t *MetalTensor) Copy(from Tensor) {
 		panic("Copy requires matching data types (use Cast)")
 	}
 	
+	// Validated sizes match. Use Blit for fast copy.
+	// Blit handles offsets and assumes bytes.size = rows*cols*elemSize
+	elemSize := 4
 	if t.dtype == Float16 {
-		C.Metal_CopySubmatrix_F16(t.backend.ctx, ft.buf, C.int(ft.offset), C.int(size),
-			t.buf, C.int(t.offset), C.int(size),
-			0, 0, 1, C.int(size))
-	} else {
-		C.Metal_CopySubmatrix(t.backend.ctx, ft.buf, C.int(ft.offset), C.int(size),
-			t.buf, C.int(t.offset), C.int(size),
-			0, 0, 1, C.int(size))
+		elemSize = 2
 	}
+	byteSize := size * elemSize
+	
+	C.Metal_Blit(t.backend.ctx, ft.buf, C.int(ft.offset), t.buf, C.int(t.offset), C.int(byteSize))
 }
 
 func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
@@ -500,6 +504,9 @@ func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
 			trans:   t.trans,
 			buf:     t.buf,
 			offset:  byteOffset,
+			sizeBytes: t.sizeBytes, // Slice doesn't own buffer but should track? No, Slice view doesn't own.
+			// ownsBuffer is false by default
+			dtype:   t.dtype,
 		}
 	} else {
 		// General sub-tensor slicing (including column slicing)
@@ -533,6 +540,7 @@ func (t *MetalTensor) T() Tensor {
 		cols:    t.cols,
 		trans:   !t.trans,
 		offset:  t.offset, // Transpose is a view, offset remains the same
+		dtype:   t.dtype,
 	}
 }
 
@@ -699,6 +707,14 @@ func (t *MetalTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 			t.buf, C.int(t.offset), gt.buf, C.int(gt.offset), bt.buf, C.int(bt.offset), t.buf, C.int(t.offset),
 			C.int(t.rows), C.int(t.cols), C.float(eps))
 	}
+}
+
+func (t *MetalTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32) {
+	// Fallback to sequential Add + LayerNorm to diagnose Fused Kernel NaN issue
+	// t = t + residual
+	t.Add(residual)
+	// t = LayerNorm(t)
+	t.LayerNorm(gamma, beta, eps)
 }
 
 func (t *MetalTensor) Linear(input, weight, bias Tensor) Tensor {
@@ -885,6 +901,47 @@ func (t *MetalTensor) AttentionGraph(q, k, v Tensor, batchSize, seqLen, numHeads
 	return result
 }
 
+func (t *MetalTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int, scale float32) Tensor {
+	qt, okQ := q.(*MetalTensor)
+	kt, okK := k.(*MetalTensor)
+	vt, okV := v.(*MetalTensor)
+	if !okQ || !okK || !okV {
+		panic("Mixed backend AttentionVarLen")
+	}
+
+	batchSize := len(lengths)
+	// qt dims are (totalTokens, hidden)
+	// result dims are same
+	r, c := qt.rows, qt.cols
+	
+	result := t.backend.NewTensor(r, c, nil).(*MetalTensor)
+
+	// Convert lengths to C int array
+	lengthsC := make([]C.int, batchSize)
+	for i, l := range lengths {
+		lengthsC[i] = C.int(l)
+	}
+
+	if t.backend.useFP16 {
+		C.Metal_FusedAttention_VarLen_F16(t.backend.ctx,
+			qt.buf, C.int(qt.offset),
+			kt.buf, C.int(kt.offset),
+			vt.buf, C.int(vt.offset),
+			result.buf, C.int(result.offset),
+			&lengthsC[0], C.int(batchSize),
+			C.int(c), C.float(scale))
+	} else {
+		// Fallback or panic
+		panic("AttentionVarLen only supported in FP16 for Metal currently")
+	}
+
+    if hasNaN, _ := result.HasNaN(); hasNaN {
+        panic("NaN detected in AttentionVarLen result")
+    }
+
+	return result
+}
+
 func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 	t.backend.Synchronize()
 	ptr := C.Metal_GetBufferContents(t.buf)
@@ -964,6 +1021,10 @@ func (t *MetalTensor) ExtractToFlat(dest []float32, start int) {
 		raw := (*[1 << 30]uint16)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset)))[:size:size]
 		// Explicit parallel conversion if large? 
 		// For now simple loop
+		// DEBUG
+		if size > 0 {
+		    fmt.Printf("DEBUG: ExtractToFlat Raw[0]=%x Val=%f\n", raw[0], Float16ToFloat32(raw[0]))
+		}
 		for i := 0; i < size; i++ {
 			dest[start+i] = Float16ToFloat32(raw[i])
 		}

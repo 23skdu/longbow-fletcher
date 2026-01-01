@@ -159,6 +159,33 @@ kernel void add_bias_kernel_f16(device half *matrix [[ buffer(0) ]],
     result[index] = matrix[index] + bias[gid.x];
 }
 
+// Fused AddBias + GELU (FP16)
+kernel void add_bias_gelu_kernel_f16(device half *matrix [[ buffer(0) ]],
+                                     device const half *bias [[ buffer(1) ]],
+                                     device half *result [[ buffer(2) ]],
+                                     constant int &cols [[ buffer(3) ]],
+                                     uint2 gid [[ thread_position_in_grid ]]) {
+    if (gid.x >= cols) return;
+    int index = gid.y * cols + gid.x;
+    
+    // Exact GELU: 0.5 * x * (1 + erf(x / sqrt(2)))
+    float x = float(matrix[index] + bias[gid.x]);
+    float sqrt1_2 = 0.70710678118654752440f; 
+    result[index] = half(0.5 * x * (1.0 + erf_custom(x * sqrt1_2)));
+}
+
+// Fused AddBias + Tanh (FP16)
+kernel void add_bias_tanh_kernel_f16(device half *matrix [[ buffer(0) ]],
+                                     device const half *bias [[ buffer(1) ]],
+                                     device half *result [[ buffer(2) ]],
+                                     constant int &cols [[ buffer(3) ]],
+                                     uint2 gid [[ thread_position_in_grid ]]) {
+    if (gid.x >= cols) return;
+    int index = gid.y * cols + gid.x;
+    
+    result[index] = half(tanh(float(matrix[index] + bias[gid.x])));
+}
+
 // Optimized LayerNorm with threadgroup parallel reduction
 // Each threadgroup processes ONE row
 // Threads within the group cooperate on reduction using threadgroup memory
@@ -225,6 +252,81 @@ kernel void layernorm_kernel(device const float *input [[ buffer(0) ]],
     }
 }
 
+// Fused Add + LayerNorm (FP32)
+// Performs: output = LayerNorm(input + residual)
+kernel void add_layernorm_kernel(device const float *input [[ buffer(0) ]],
+                                 device const float *residual [[ buffer(1) ]],
+                                 device const float *gamma [[ buffer(2) ]],
+                                 device const float *beta [[ buffer(3) ]],
+                                 device float *output [[ buffer(4) ]],
+                                 constant int &cols [[ buffer(5) ]],
+                                 constant float &eps [[ buffer(6) ]],
+                                 uint row_idx [[ threadgroup_position_in_grid ]],
+                                 uint tid [[ thread_index_in_threadgroup ]],
+                                 uint tg_size [[ threads_per_threadgroup ]]) {
+    
+    threadgroup float shared_sum[256];
+    threadgroup float shared_sq_sum[256];
+    
+    int offset = row_idx * cols;
+    
+    // Phase 1: Sum (of input + residual)
+    float local_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        float val = input[offset + i] + residual[offset + i];
+        local_sum += val;
+        // We write the added value to output temporarily to avoid re-reading/re-adding?
+        // Or we re-compute. Memory bandwidth is the bottleneck, ALU is cheap.
+        // But double reading (input + residual) is expensive.
+        // It's better to store the intermediate sum in output if we can't fit in registers.
+        // But output isn't final yet.
+        // Actually, we can just write to output now, then in-place normalize it?
+        // Yes, let's write x+res to output first.
+        output[offset + i] = val;
+    }
+    shared_sum[tid] = local_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float mean = shared_sum[0] / float(cols);
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // Phase 2: Variance
+    float local_sq_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        // Read from output where we stored the sum
+        float diff = output[offset + i] - mean;
+        local_sq_sum += diff * diff;
+    }
+    shared_sq_sum[tid] = local_sq_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sq_sum[tid] += shared_sq_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float variance = shared_sq_sum[0] / float(cols);
+    float inv_std = 1.0 / sqrt(variance + eps);
+    
+    // Phase 3: Normalize
+    for (int i = tid; i < cols; i += tg_size) {
+        float val = output[offset + i];
+        output[offset + i] = (val - mean) * inv_std * gamma[i] + beta[i];
+    }
+}
+
 // FP16 LayerNorm: half I/O, float accumulation for stability
 kernel void layernorm_kernel_f16(device const half *input [[ buffer(0) ]],
                                  device const half *gamma [[ buffer(1) ]],
@@ -284,6 +386,76 @@ kernel void layernorm_kernel_f16(device const half *input [[ buffer(0) ]],
     // Phase 3: Normalize and store as half
     for (int i = tid; i < cols; i += tg_size) {
         float norm = (float(input[offset + i]) - mean) * inv_std;
+        output[offset + i] = half(norm * float(gamma[i]) + float(beta[i]));
+    }
+}
+
+// Fused Add + LayerNorm (FP16)
+kernel void add_layernorm_kernel_f16(device const half *input [[ buffer(0) ]],
+                                     device const half *residual [[ buffer(1) ]],
+                                     device const half *gamma [[ buffer(2) ]],
+                                     device const half *beta [[ buffer(3) ]],
+                                     device half *output [[ buffer(4) ]],
+                                     constant int &cols [[ buffer(5) ]],
+                                     constant float &eps [[ buffer(6) ]],
+                                     uint row_idx [[ threadgroup_position_in_grid ]],
+                                     uint tid [[ thread_index_in_threadgroup ]],
+                                     uint tg_size [[ threads_per_threadgroup ]]) {
+    
+    threadgroup float shared_sum[256];
+    threadgroup float shared_sq_sum[256];
+    
+    int offset = row_idx * cols;
+    
+    // Phase 1: Sum
+    float local_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        float val = float(input[offset + i] + residual[offset + i]);
+        local_sum += val;
+        // Do NOT store intermediate sum in output as half, to avoid overflow/truncation
+    }
+    shared_sum[tid] = local_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sum[tid] += shared_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float mean = shared_sum[0] / float(cols);
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    // Phase 2: Variance
+    float local_sq_sum = 0.0;
+    for (int i = tid; i < cols; i += tg_size) {
+        // Recompute sum
+        float val = float(input[offset + i] + residual[offset + i]);
+        float diff = val - mean;
+        local_sq_sum += diff * diff;
+    }
+    shared_sq_sum[tid] = local_sq_sum;
+    
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    
+    for (uint stride = tg_size / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            shared_sq_sum[tid] += shared_sq_sum[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    
+    float variance = shared_sq_sum[0] / float(cols);
+    float inv_std = 1.0 / sqrt(variance + eps);
+    
+    // Phase 3: Normalize and store
+    for (int i = tid; i < cols; i += tg_size) {
+        // Recompute sum
+        float val = float(input[offset + i] + residual[offset + i]);
+        float norm = (val - mean) * inv_std;
         output[offset + i] = half(norm * float(gamma[i]) + float(beta[i]));
     }
 }

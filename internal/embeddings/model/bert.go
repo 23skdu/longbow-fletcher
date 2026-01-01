@@ -3,11 +3,12 @@ package model
 import (
 	"math"
 	"math/rand"
-	"sync"
 	"time"
 
 	"github.com/23skdu/longbow-fletcher/internal/device"
 )
+
+
 
 type PositionEmbeddingType int
 
@@ -134,6 +135,9 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
 	// embeddings is released by Encoder.
 	
+	// Ensure Encoder is done before Pooler starts (Safety check for NaNs/Race)
+	m.Backend.Synchronize()
+	
 	start := time.Now()
 	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
 	LayerDuration.WithLabelValues("pooler", m.Backend.Name()).Observe(time.Since(start).Seconds())
@@ -228,6 +232,10 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 	// Dropout is identity for now, returning same tensor.
 	output = e.Dropout.Forward(output)
 	
+	// Normalize
+	// shape: (Batch, Hidden)
+	// Output is already pooled (from Pooler)
+	
 	return output
 }
 
@@ -254,6 +262,14 @@ func NewLayerNorm(size int, backend device.Backend) *LayerNorm {
 // It overwrites input with the normalized result to avoid allocations.
 func (l *LayerNorm) Forward(input device.Tensor) device.Tensor {
 	input.LayerNorm(l.Gamma, l.Beta, l.Eps)
+	return input
+}
+
+// ForwardAdd performs fused Add + LayerNorm.
+// result = LayerNorm(input + sumTensor)
+// input is modified in-place to contain the result.
+func (l *LayerNorm) ForwardAdd(input, sumTensor device.Tensor) device.Tensor {
+	input.AddLayerNorm(sumTensor, l.Gamma, l.Beta, l.Eps)
 	return input
 }
 
@@ -318,17 +334,19 @@ func (l *BertLayer) Forward(hiddenStates device.Tensor) device.Tensor {
 }
 
 func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
-	startAttn := time.Now()
+	startSelf := time.Now() // Self Attention
 	selfAttention := l.Attention.ForwardBatch(hiddenStates, lengths)
-	LayerDuration.WithLabelValues("attention", l.Attention.Self.Backend.Name()).Observe(time.Since(startAttn).Seconds())
+	
+	LayerDuration.WithLabelValues("attention", l.Attention.Self.Backend.Name()).Observe(time.Since(startSelf).Seconds())
 	// hiddenStates is NOT released here because it's released by the caller (Encoder)
 
 	startInter := time.Now()
 	intermediate := l.Intermediate.ForwardBatch(selfAttention)
 	LayerDuration.WithLabelValues("intermediate", l.Intermediate.Backend.Name()).Observe(time.Since(startInter).Seconds())
 	
-	startOut := time.Now()
+	startOut := time.Now() // Intermediate + Output
 	res := l.Output.ForwardBatch(intermediate, selfAttention)
+	
 	LayerDuration.WithLabelValues("output", l.Output.Backend.Name()).Observe(time.Since(startOut).Seconds())
 	
 	// Release intermediates
@@ -527,7 +545,7 @@ func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 }
 
 func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
-	_, c := hiddenStates.Dims()
+	_, _ = hiddenStates.Dims()
 	
 	// 1. Project Q, K, V for the entire batch at once
 	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
@@ -567,80 +585,76 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 		
 		// Result is the output
 		output = contextLayer
+		// Result is the output
+		output = contextLayer
 	} else {
-		// Variable length path or CPU path
-		useParallel := s.Backend.Name() == "CPU"
-		
-		// Initialize output tensor
-		r, _ := hiddenStates.Dims()
-		output = s.Backend.NewTensor(r, c, nil)
-		
-		currentIdx := 0
-		type job struct {
-			start int
-			len   int
-		}
-		jobs := make([]job, len(lengths))
-		for i, l := range lengths {
-			jobs[i] = job{start: currentIdx, len: l}
-			currentIdx += l
-		}
-		
-		computeAttention := func(start, length int) {
-			endIdx := start + length
-			
-			// Compute self attention for this sequence manually with MHA
-			for h := 0; h < s.NumAttentionHeads; h++ {
-				headStart := h * s.AttentionHeadSize
-				headEnd := headStart + s.AttentionHeadSize
-				
-				seqQ := queryLayer.Slice(start, endIdx, headStart, headEnd)
-				seqK := keyLayer.Slice(start, endIdx, headStart, headEnd)
-				seqV := valueLayer.Slice(start, endIdx, headStart, headEnd)
-				
-				attentionScores := s.Backend.GetTensor(length, length)
-				seqKT := seqK.T()
-				attentionScores.Mul(seqQ, seqKT)
-				
-				scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
-				attentionScores.Scale(scale)
-				attentionScores.Softmax()
-				
-				seqContext := s.Backend.GetTensor(length, s.AttentionHeadSize)
-				seqContext.Mul(attentionScores, seqV)
-				
-				// Copy back to output (manual Set loop)
-				// output[start:endIdx, headStart:headEnd] = seqContext
-				for i := 0; i < length; i++ {
-					for j := 0; j < s.AttentionHeadSize; j++ {
-						output.Set(start+i, headStart+j, seqContext.At(i, j))
-					}
-				}
-				
-				s.Backend.PutTensor(seqQ)
-				s.Backend.PutTensor(seqK)
-				s.Backend.PutTensor(seqV)
-				s.Backend.PutTensor(attentionScores)
-				s.Backend.PutTensor(seqContext)
-			}
-		}
-		
-		if useParallel {
-			var wg sync.WaitGroup
-			for _, j := range jobs {
-				wg.Add(1)
-				start, length := j.start, j.len
-				go func() {
-					defer wg.Done()
-					computeAttention(start, length)
-				}()
-			}
-			wg.Wait()
-		} else {
-			for _, j := range jobs {
-				computeAttention(j.start, j.len)
-			}
-		}
+		// Variable length path
+	// Fallback to manual loop calling Attention per sequence to avoid NaNs in FusedVarLen
+	offset := 0
+	// Pre-allocate output tensor with the same shape as queryLayer
+	totalTokens, hiddenSize := queryLayer.Dims()
+	output = s.Backend.NewTensor(totalTokens, hiddenSize, nil)
+
+	for _, l := range lengths {
+	    if l == 0 {
+	        continue
+	    }
+	    
+	    // Slice tensors for this sequence
+	    // Q, K, V: (TotalTokens, Hidden)
+	    // We want Q[offset:offset+l, :]
+	    qSlice := queryLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
+	    kSlice := keyLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
+	    vSlice := valueLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
+	    
+	    // Call Attention for single batch
+	    // Q: (Seq, Hidden) -> flattened (1*Seq, Hidden)
+	    // Output: (1*Seq, Hidden)
+	    scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
+	    
+	    // Use standard Attention
+	    // Note: Attention expects flattened Q, K, V. Slices are flattened views.
+	    // It returns new tensor.
+	    res := qSlice.Attention(qSlice, kSlice, vSlice, 1, l, s.NumAttentionHeads, scale)
+	    
+	    // Copy result to output tensor
+	    // Output is same shape as queryLayer
+	    // We need to copy into the correct slice of output
+	    // output.Slice(offset, offset+l, ...).Copy(res)
+	    // But Slice returns a view? Can we copy into view?
+	    // device.go says Copy(from Tensor).
+	    // If output slice is a view, Copy should work.
+	    
+	    // Since output is not allocated primarily?
+	    // Actually, we need to assemble the output.
+	    // OR: we can't allocate output as one big tensor easily if we iterate?
+	    // Wait, queryLayer is (BatchTotal, Hidden). Output should be same.
+	    // We can pre-allocate output.
+	    
+	    // Copy res to output slice
+	    // Currently device.go doesn't support Copy to Slice directly unless Slice works as R-value/L-value.
+	    // Assuming Slice returns a Tensor that wraps the memory correctly.
+	    outSlice := output.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
+	    
+	    // Ensure types match before copy
+	    if res.DataType() != outSlice.DataType() {
+	        // Cast res to match output (e.g. if one is FP16 and other is FP32 somehow)
+	        // Note: calling Cast allocates new tensor, so we must free it.
+	        resCast := res.Cast(outSlice.DataType())
+	        s.Backend.PutTensor(res) // Free old res
+	        res = resCast
+	    }
+	    
+	    outSlice.Copy(res)
+	    
+	    s.Backend.PutTensor(res)
+	    // Slices (qSlice, kSlice, vSlice) are views, no need to PutTensor for them.
+	    
+	    offset += l
+	}
+
+	// Helper to free slices? Slices usually don't need explicit free if backend manages them as views.
+	// But if they are distinct objects, GC handles them.
 	}
 	
 	// Return projected layers
@@ -650,6 +664,8 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	
 	return output
 }
+	
+
 
 type BertSelfOutput struct {
 	Backend   device.Backend
@@ -672,9 +688,8 @@ func (o *BertSelfOutput) Forward(hiddenStates, inputTensor device.Tensor) device
 	// input hiddenStates is no longer needed after projection
 	o.Backend.PutTensor(hiddenStates)
 
-	// Residual connection in-place
-	projected.Add(inputTensor)
-	return o.LayerNorm.Forward(projected)
+	// Fused Add + LayerNorm
+	return o.LayerNorm.ForwardAdd(projected, inputTensor)
 }
 
 func (o *BertSelfOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) device.Tensor {
@@ -738,9 +753,8 @@ func (o *BertOutput) Forward(hiddenStates, inputTensor device.Tensor) device.Ten
 	// input hiddenStates (intermediate output) is no longer needed
 	o.Backend.PutTensor(hiddenStates)
 
-	// Residual connection in-place
-	projected.Add(inputTensor)
-	return o.LayerNorm.Forward(projected)
+	// Fused Add + LayerNorm
+	return o.LayerNorm.ForwardAdd(projected, inputTensor)
 }
 
 func (o *BertOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) device.Tensor {

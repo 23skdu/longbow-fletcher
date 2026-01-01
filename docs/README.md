@@ -1,34 +1,15 @@
 # Fletcher Documentation
 
-Welcome to the improved documentation for Fletcher, reorganized following the [Diataxis](https://diataxis.fr/) framework.
+Welcome to the documentation for **Fletcher**, the high-performance embedding engine for Longbow.
 
-## 🎓 Tutorials
+## Core Documentation
 
-*Learning-oriented guides for beginners*
+- **[Architecture](architecture.md)**: System design, data flow, model details, and backend internals (Metal/CPU).
+- **[Usage Guide](usage.md)**: Installation, CLI basics, running the server, and enabling GPU acceleration.
+- **[Development](development.md)**: Building from source, running tests, benchmarks, and client scripts.
+- **[Reference](reference.md)**: CLI flags, supported models, and metrics reference.
 
-- [**Getting Started**](tutorials/getting_started.md): Installation and your first embedding.
+## Quick Links
 
-## 💡 How-To Guides
-
-*Problem-oriented steps for specific tasks*
-
-- [**Enable GPU Acceleration**](how-to/gpu_acceleration.md): Use Metal on Apple Silicon.
-- [**Run a Server**](how-to/run_server.md): Deploy Fletcher as an HTTP/Flight server.
-- [**Testing**](how-to/testing.md): How to run the test suite.
-
-## 📖 Reference
-
-*Information-oriented technical descriptions*
-
-- [**CLI Flags**](reference/cli_flags.md): Complete list of command-line arguments.
-- [**Benchmarks**](reference/benchmarks.md): Performance data vs PyTorch.
-- [**Supported Models**](reference/models.md): List of supported architectures.
-- [**Metrics**](reference/metrics.md): Prometheus metric definitions.
-- [**Scripts**](reference/scripts.md): Helper scripts in the repo.
-
-## 🧠 Explanation
-
-*Understanding-oriented background and context*
-
-- [**Architecture**](explanation/architecture.md): System design, backend abstraction, and zero-allocation philosophy.
-- [**Model Details**](explanation/model_details.md): Internal embeddings architecture Deep Dive.
+- [GitHub Repository](https://github.com/23skdu/longbow-fletcher)
+- [Docker Image](https://ghcr.io/23skdu/longbow-fletcher)

@@ -59,6 +59,74 @@ func (b *CPUBackend) NewTensor(r, c int, data []float32) Tensor {
 	return t
 }
 
+func (t *CPUTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int, scale float32) Tensor {
+	// Re-implement the loop logic here
+	qt, _ := q.(*CPUTensor)
+	kt, _ := k.(*CPUTensor)
+	vt, _ := v.(*CPUTensor)
+	
+	r, c := t.Dims()
+	result := t.backend.NewTensor(r, c, nil)
+	
+	headSize := c / numHeads
+	
+	currentIdx := 0
+	type job struct {
+		start int
+		len   int
+	}
+	jobs := make([]job, len(lengths))
+	for i, l := range lengths {
+		jobs[i] = job{start: currentIdx, len: l}
+		currentIdx += l
+	}
+	
+	computeAttention := func(start, length int) {
+		endIdx := start + length
+		
+		for h := 0; h < numHeads; h++ {
+			headStart := h * headSize
+			headEnd := headStart + headSize
+			
+			seqQ := qt.Slice(start, endIdx, headStart, headEnd)
+			seqK := kt.Slice(start, endIdx, headStart, headEnd)
+			seqV := vt.Slice(start, endIdx, headStart, headEnd)
+			
+			scores := t.backend.GetTensor(length, length)
+			seqKT := seqK.T()
+			scores.Mul(seqQ, seqKT)
+			
+			scores.Scale(scale)
+			scores.Softmax()
+			
+			ctx := t.backend.GetTensor(length, headSize)
+			ctx.Mul(scores, seqV)
+			
+			// Copy back to result
+			for i := 0; i < length; i++ {
+				for j := 0; j < headSize; j++ {
+					result.Set(start+i, headStart+j, ctx.At(i, j))
+				}
+			}
+			
+			// Cleanup (optional if manual management not used)
+		}
+	}
+	
+	// Parallel execution
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		wg.Add(1)
+		go func(start, length int) {
+			defer wg.Done()
+			computeAttention(start, length)
+		}(j.start, j.len)
+	}
+	wg.Wait()
+	
+	return result
+}
+
 func (b *CPUBackend) GetTensor(r, c int) Tensor {
 	// Try to get from pool
 	v := b.pool.Get()
@@ -153,6 +221,10 @@ func (t *CPUTensor) Data() []float32 {
 		return nil
 	}
 	return t.data
+}
+
+func (t *CPUTensor) DataType() DataType {
+	return Float32
 }
 
 func (t *CPUTensor) ToHost() []float32 {
@@ -522,6 +594,15 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 			row[j] = (row[j] - mean) * invStd * gammaData[j] + betaData[j]
 		}
 	}
+}
+
+func (t *CPUTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32) {
+	// Naive implementation: Add then LayerNorm
+	// t = t + residual
+	t.Add(residual)
+	
+	// t = LayerNorm(t)
+	t.LayerNorm(gamma, beta, eps)
 }
 
 func (t *CPUTensor) Linear(input, weight, bias Tensor) Tensor {

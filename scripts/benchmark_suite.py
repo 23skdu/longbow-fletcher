@@ -8,6 +8,10 @@ from transformers import AutoTokenizer, AutoModel
 import torch
 from sklearn.metrics.pairwise import cosine_similarity
 import pyarrow.ipc as ipc
+import argparse
+
+# Global config
+USE_GPU = False
 
 # Configuration
 FLETCHER_BIN = "./bin/fletcher"
@@ -21,7 +25,8 @@ def get_sentences():
 
 def run_fletcher(sentences):
     # Input file already exists
-    cmd = [FLETCHER_BIN, "-model", "bert-tiny", "-weights", "bert_tiny.safetensors", "-precision", "fp32", "-input", INPUT_FILE, "-gpu=true"]
+    gpu_flag = "-gpu=true" if USE_GPU else "-gpu=false"
+    cmd = [FLETCHER_BIN, "-model", "bert-tiny", "-weights", "bert_tiny.safetensors", "-precision", "fp16", "-input", INPUT_FILE, gpu_flag]
     
     print(f"Running Fletcher: {' '.join(cmd)}")
     start = time.time()
@@ -100,34 +105,38 @@ def run_transformers_cls(sentences):
     print(f"Loading AutoModel: {MODEL_NAME}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModel.from_pretrained(MODEL_NAME)
-
-    # Print IDs for debugging
-    ids = tokenizer(sentences[0])['input_ids']
-    print(f"First Sentence IDs (HF): {ids}")
     
+    print(f"First Sentence IDs (HF): {tokenizer.encode(sentences[0])}")
     print("Running Transformers (pooler_output)...")
-    start = time.time()
     
-    # Process in batch
     inputs = tokenizer(sentences, padding=True, truncation=True, return_tensors="pt")
     with torch.no_grad():
         outputs = model(**inputs)
     
-    # Return both CLS (raw) and Pooler
-    cls_embs = outputs.last_hidden_state[:, 0, :].numpy()
-    pooler_embs = outputs.pooler_output.numpy()
+    pooler_output = outputs.pooler_output.numpy()
+    last_hidden_state = outputs.last_hidden_state
     
-    end = time.time()
+    # CLS token is at index 0
+    cls_output = last_hidden_state[:, 0, :].numpy()
     
-    return cls_embs, pooler_embs, end - start
+    return cls_output, pooler_output, 0
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="bert-tiny")
+    parser.add_argument("--weights", default="bert_tiny.safetensors")
+    parser.add_argument("--gpu", action="store_true", help="Enable GPU")
+    args = parser.parse_args()
+    
+    global USE_GPU
+    USE_GPU = args.gpu
+    
     print(f"Reading sentences from {INPUT_FILE}...")
     sentences = get_sentences()
     print(f"Loaded {len(sentences)} sentences.")
     
     # 1. Run Fletcher (Warmup + Performance)
-    print("\n--- Benchmarking Fletcher (Metal) ---")
+    print(f"\n--- Benchmarking Fletcher (GPU={USE_GPU}) ---")
     
     # Warmup / Check Correctness first
     fletcher_embs, _, _ = run_fletcher(sentences)
@@ -146,6 +155,9 @@ def main():
     avg_infer_time = total_infer_time / num_runs
     sustained_rate = total_vectors / total_infer_time
     print(f"Fletcher (Sustained): {len(sentences)} vectors/batch, {sustained_rate:.2f} vec/s (Avg Infer: {avg_infer_time*1000:.2f}ms)")
+    
+    # 2. Run Transformers (Reference)
+    cls_embs, pooler_embs, _ = run_transformers_cls(sentences)
 
     if np.mean(fletcher_embs) == 0: # Check for failures
          print("Fletcher output suspicious (zeros).")
