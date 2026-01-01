@@ -65,6 +65,7 @@ type AsyncStream struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+	breaker *CircuitBreaker
 }
 
 // StartStream begins a background thread that streams records to the server.
@@ -77,6 +78,8 @@ func (c *FlightClient) StartStream(ctx context.Context, datasetName string) *Asy
 		dataset: datasetName,
 		ctx:     ctx,
 		cancel:  cancel,
+		// Default config: 3 consecutive failures, 5s timeout
+		breaker: NewCircuitBreaker(3, 5*time.Second),
 	}
 	
 	s.wg.Add(1)
@@ -122,7 +125,19 @@ func (s *AsyncStream) run() {
 	defer reset() // Cleanup on exit
 
 	for {
-		// 1. Establish Stream if needed
+		// 1. Check Circuit Breaker
+		if !s.breaker.Allow() {
+			// Circuit is open, fast fail / backoff
+			// In a loop like this, we should sleep a bit to verify timeout next time
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+				continue
+			}
+		}
+
+		// 2. Establish Stream if needed
 		if writer == nil {
 			desc := &flight.FlightDescriptor{
 				Type: flight.DescriptorPATH,
@@ -133,6 +148,7 @@ func (s *AsyncStream) run() {
 			// independently or it ends when s.ctx ends.
 			stream, err = s.client.client.DoPut(s.ctx)
 			if err != nil {
+				s.breaker.Failure()
 				// Backoff and retry
 				select {
 				case <-s.ctx.Done():
@@ -144,15 +160,20 @@ func (s *AsyncStream) run() {
 			
 			writer = flight.NewRecordWriter(stream)
 			writer.SetFlightDescriptor(desc)
+			
+			// Successfully connected (though we only count Write success usually?)
+			// For stream establishment, let's treat it as a success/progress step, 
+			// OR wait for first write. Let's wait for first write to confirm health.
 		}
 		
-		// 2. Read from channel
+		// 3. Read from channel
 		select {
 		case <-s.ctx.Done():
 			return
 		case rec := <-s.ch:
-			// 3. Write
+			// 4. Write
 			if err := writer.Write(rec); err != nil {
+				s.breaker.Failure()
 				// Write failed. Requeue? 
 				// For now, we drop and reconnect to avoid head-of-line blocking 
 				// or complex buffer management.
@@ -161,6 +182,7 @@ func (s *AsyncStream) run() {
 				reset()
 				// Loop will reconnect
 			} else {
+				s.breaker.Success()
 				rec.Release()
 			}
 		}

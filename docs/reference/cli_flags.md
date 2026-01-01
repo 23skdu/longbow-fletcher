@@ -17,7 +17,7 @@ This reference documents the command-line flags available in the `fletcher` bina
 |------|---------|-------------|
 | `-model` | `bert-tiny` | Model architecture (`bert-tiny`, `nomic-embed-text`). |
 | `-vocab` | `vocab.txt` | Path to WordPiece vocabulary file. |
-| `-weights` | `bert_tiny.bin` | Path to weights binary. |
+| `-weights` | `bert_tiny.bin` | Path to weights file (Supports raw binary `.bin` and SafeTensors `.safetensors`). |
 | `-precision` | `fp32` | Computation precision (`fp32`, `fp16`). |
 
 ## Text Input

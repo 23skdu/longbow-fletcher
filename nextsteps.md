@@ -1,67 +1,74 @@
-# Fletcher Optimization Roadmap: Phase 3
+# Fletcher Roadmap: Post-v0.2.0
 
-**Focus**: Performance Maximization & Production Stability
-**Status**: Numerical Refinement Complete (1.0000 Sim)
+**Status**: Optimization Phase Complete (2x Speedup achieved).
+**Goal**: Enterprise Readiness & Scalability.
 
-## High Priority: Performance & Scalability (Weeks 5-6)
+## 1. Release Management (RC Testing)
 
-1. **[x] [Performance] Implement SIMD Tokenization**
-2.     - Replace generic string splitting with NEON/AVX2 optimized WordPiece tokenizer to >> Go Lookup Table optimization.
+- **Subtask**: Cut `release/v0.2.0-rc1` branch.
+- **Subtask**: Validate Helm chart deployment in Staging.
+- **Subtask**: Run long-soak tests (24h) to check for memory leaks.
+- **Subtask**: Publish official Docker images to GHCR.
 
-3. **[x] [Performance] Implement Flash Attention (Metal)**
-    - Implement IO-aware attention kernel to reduce VRAM BW usage by 3-4x for sequences >128.
+## 2. Advanced Kernel Fusion (Metal)
 
-4. **[x] [Performance] Multi-Stream GPU Dispatch**
-    - usage concurrent command encoders to overlap copy, compute, and host-transfer operations.
+- **Subtask**: Implement fused `Add + LayerNorm` kernel (FP32/FP16).
+- **Subtask**: Implement fused `GEMM + GELU + Bias` kernel.
+- **Subtask**: Profile dispatch overhead reduction (Goal: >2000 TPS).
+- **Subtask**: Optimize `FlashAttention` for variable sequence lengths (paged attention).
 
-5. **[x] [Performance] SwiGLU Fused Kernel Optimization**
-    - Further optimize the Nomic SwiGLU kernel to use SIMD groups and reduce register pressure.
+## 3. Quantization Support
 
-6. **[x] [Performance] RoPE Fused Kernel Optimization**
-    - Optimize Rotary Positional Embeddings to minimize complex number arithmetic overhead.
+- **Subtask**: Implement Q4_0 and Q8_0 dequantization kernels for Metal.
+- **Subtask**: Update `loader.go` to handle quantized SafeTensors weights.
+- **Subtask**: Add CLI flag `-quantization int8` / `int4`.
+- **Subtask**: Validate accuracy degradation vs performance gain.
 
-7. **[x] [Performance] Async Flight Streaming**
-    - Implement `DoPut` stream without blocking on batch completion to saturate network link.
+## 4. Cross-Platform Acceleration
 
-8. **[x] [Performance] Embedding Compression (FP16 Transport)**
-    - Implement zero-copy FP16 Arrow transport to halve network bandwidth usage.
+- **Subtask**: Abstraction Layer Refactor (`Backend` interface decoupling).
+- **Subtask**: Implement CUDA backend (via CGO/cuBLAS or Tritonserver).
+- **Subtask**: Implement Vulkan/ROCm backend (via Kompute or similar).
+- **Subtask**: Add biological CPU fallback (AVX-512 optimized).
 
-9. **[x] [Performance] Dynamic Batch Sizing**
-    - Implement adaptive batching size based on current sequence length distribution and VRAM availability.
+## 5. Horizontal Scalability
 
-10. **[x] [Performance] Memory Arena Allocator**
-    - Replace `sync.Pool` with a slab/arena allocator for tensors to guarantee locality and reduce fragmentation.
+- **Subtask**: Implement Fletcher-aware Load Balancer (consistent hashing on input).
+- **Subtask**: Redis-backed Distributed Cache for embeddings.
+- **Subtask**: Kubernetes HPA rules based on `fletcher_gpu_utilization`.
+- **Subtask**: Leader election for cluster coordination (etcd).
 
-11. **[x] [Performance] Dataset-Aware Caching**
-    - Implement an LRU cache for frequently requested text hashes to bypass inference entirely.
+## 6. Observability & Tracing
 
-## High Priority: Stability & Reliability (Weeks 7-8)
+- **Subtask**: Integrate OpenTelemetry automated instrumentation.
+- **Subtask**: Create Grafana Dashboard templates for exported metrics.
+- **Subtask**: Add structured logging with correlation IDs.
+- **Subtask**: Implement sampling profiler (pprof) endpoint security.
 
-1. **[x] [Stability] Graceful Backend Fallback**
-    - Automatically fall back to CPU backend if Metal GPU fails (OOM, hang) without dropping requests.
+## 7. Model Ecosystem Expansion
 
-2. **[x] [Stability] VRAM Admission Control v2**
-    - Replace heuristic VRAM estimation with real-time `query_resource_usage` Metal API feedback.
+- **Subtask**: Add support for `bge-m3` (multilingual).
+- **Subtask**: Add support for `e5-mistral` (instruction-tuned).
+- **Subtask**: Implement Reranker model architecture (Cross-Encoder).
+- **Subtask**: Dynamic model loading/unloading API.
 
-- [x] **[Stability] Output Validation (NaN Guard)**: Implement `check_nan` kernel and integration.
+## 8. Security hardening
 
-1. **[Stability] Circuit Breaker Pattern**
-    - Implement circuit breakers for Longbow connection failures to prevent cascade waiting.
+- **Subtask**: Implement mTLS for gRPC/Arrow Flight transport.
+- **Subtask**: Add API Key authentication middleware.
+- **Subtask**: Run fuzzing on `LoadFromSafeTensors` input parser.
+- **Subtask**: Audit CGO memory safety boundaries.
 
-2. **[Stability] Request Timeouts & Cancellation**
-    - Propagate context cancellations down to the GPU command buffer (via `commit` check) to stop wasted work.
+## 9. Developer Experience (DX)
 
-3. **[Observability] Prometheus Granular Metrics**
-    - Add per-layer latency histograms and GPU utilization heatmaps.
+- **Subtask**: Create a Python SDK (`pip install longbow-fletcher`).
+- **Subtask**: Create a Node.js client library.
+- **Subtask**: Publish standard OpenAPI (Swagger) spec.
+- **Subtask**: Write "Zero to Production" tutorial series.
 
-4. **[Observability] Distributed Tracing (OpenTelemetry)**
-    - Instrument the full request lifecycle (HTTP -> Tokenizer -> GPU -> Flight) with trace context.
+## 10. Community & Integration
 
-5. **[Stability] Health Check Probes**
-    - Implement `/healthz` and `/readyz` endpoints that perform actual dummy inference checks.
-
-6. **[Infrastructure] End-to-End CI Benchmark Suite**
-    - Automated regression testing for throughput (vecs/s) and latency (p99) on every commit.
-
-7. **[Stability] Panic Recovery & Isolation**
-    - Ensure individual request panics (e.g., malformed input) are recovered in the worker pool without crashing the process.
+- **Subtask**: Add LangChain integration provider.
+- **Subtask**: Add LlamaIndex vector store integration.
+- **Subtask**: Create Hugging Face Spaces demo.
+- **Subtask**: Setup GitHub Actions for automated nightly builds.

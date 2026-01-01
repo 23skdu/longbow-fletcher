@@ -70,4 +70,16 @@ var (
 		Name: "fletcher_output_invalid_total",
 		Help: "Total number of outputs invalidated due to NaNs or other errors",
 	})
+
+	// Batching metrics
+	batchSizeDistribution = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "fletcher_batch_size_distribution",
+		Help:    "Distribution of processed batch sizes (sequences)",
+		Buckets: prometheus.LinearBuckets(0, 32, 16), // 0, 32, 64, ... 512
+	})
+
+	PanicTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fletcher_panics_total",
+		Help: "Total number of recovered panics",
+	})
 )

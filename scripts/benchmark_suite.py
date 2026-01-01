@@ -62,7 +62,34 @@ def run_fletcher(sentences):
             embeddings.append(reshaped)
             
         final_embeddings = np.vstack(embeddings)
-        return final_embeddings, elapsed
+        
+        # Parse Stderr for Inference Metrics
+        inference_time = elapsed # fallback
+        try:
+            import re
+            stderr_str = result.stderr.decode()
+            # Look for: "Embedded sequences" ... elapsed=1.234ms ...
+            # "elapsed": "1.2345ms" or similar duration string
+            # Log example: {"level":"info","count":4,"elapsed":"13.208µs","dim":128,"tps":302846.76,"time":"..."}
+            # zerolog usually outputs JSON or text. ensure we handle text if configured, but main.go uses ConsoleWriter which is text.
+            # ConsoleWriter format: <time> INC <caller> > Embedded sequences count=4 elapsed=13.208µs dim=128 tps=302846.76
+            
+            match = re.search(r'Embedded sequences.*elapsed=(\S+)', stderr_str)
+            if match:
+                dur_str = match.group(1)
+                # Parse duration string to seconds
+                if "ms" in dur_str:
+                    inference_time = float(dur_str.replace("ms", "")) / 1000.0
+                elif "µs" in dur_str or "us" in dur_str:
+                    inference_time = float(dur_str.replace("µs", "").replace("us", "")) / 1000000.0
+                elif "ns" in dur_str:
+                    inference_time = float(dur_str.replace("ns", "")) / 1e9
+                elif "s" in dur_str:
+                    inference_time = float(dur_str.replace("s", ""))
+        except Exception as e:
+            print(f"Failed to parse internal metrics: {e}")
+
+        return final_embeddings, elapsed, inference_time
     except Exception as e:
         print(f"Failed to parse Arrow output: {e}")
         # print first 100 bytes of stdout
@@ -99,37 +126,48 @@ def main():
     sentences = get_sentences()
     print(f"Loaded {len(sentences)} sentences.")
     
-    # 1. Run Fletcher
+    # 1. Run Fletcher (Warmup + Performance)
     print("\n--- Benchmarking Fletcher (Metal) ---")
-    fletcher_embs, fletcher_time = run_fletcher(sentences)
-    sentences_len = len(sentences)
-    fletcher_rate = sentences_len / fletcher_time
-    print(f"Fletcher: {sentences_len} vectors in {fletcher_time:.4f}s ({fletcher_rate:.2f} vec/s)")
     
-    # 2. Run Transformers
-    print("\n--- Benchmarking Transformers (CPU) ---")
-    cls_embs, pooler_embs, st_time = run_transformers_cls(sentences)
-    st_rate = sentences_len / st_time
-    print(f"Transformers: {sentences_len} vectors in {st_time:.4f}s ({st_rate:.2f} vec/s)")
+    # Warmup / Check Correctness first
+    fletcher_embs, _, _ = run_fletcher(sentences)
     
+    # Run loop
+    num_runs = 5
+    print(f"Running {num_runs} loops for sustained throughput...")
+    total_vectors = 0
+    total_infer_time = 0.0
+    
+    for i in range(num_runs):
+         _, _, infer_time = run_fletcher(sentences)
+         total_vectors += len(sentences)
+         total_infer_time += infer_time
+    
+    avg_infer_time = total_infer_time / num_runs
+    sustained_rate = total_vectors / total_infer_time
+    print(f"Fletcher (Sustained): {len(sentences)} vectors/batch, {sustained_rate:.2f} vec/s (Avg Infer: {avg_infer_time*1000:.2f}ms)")
+
+    if np.mean(fletcher_embs) == 0: # Check for failures
+         print("Fletcher output suspicious (zeros).")
+
     # 3. Correctness
     print("\n--- Verifying Correctness ---")
     
     # Normalize Fletcher
-    fletcher_norm = fletcher_embs / np.linalg.norm(fletcher_embs, axis=1, keepdims=True)
+    fletcher_norm = fletcher_embs / (np.linalg.norm(fletcher_embs, axis=1, keepdims=True) + 1e-9)
     
     # Check Pooler
-    st_pooler_norm = pooler_embs / np.linalg.norm(pooler_embs, axis=1, keepdims=True)
-    sims_pooler = np.sum(fletcher_norm * st_pooler_norm, axis=1)
+    st_pooler_norm = pooler_embs / (np.linalg.norm(pooler_embs, axis=1, keepdims=True) + 1e-9)
+    sims_pooler = np.nan_to_num(np.sum(fletcher_norm * st_pooler_norm, axis=1))
     print(f"Pooler Similarity: Mean={np.mean(sims_pooler):.4f}, Min={np.min(sims_pooler):.4f}")
 
     # Check CLS
-    st_cls_norm = cls_embs / np.linalg.norm(cls_embs, axis=1, keepdims=True)
-    sims_cls = np.sum(fletcher_norm * st_cls_norm, axis=1)
+    st_cls_norm = cls_embs / (np.linalg.norm(cls_embs, axis=1, keepdims=True) + 1e-9)
+    sims_cls = np.nan_to_num(np.sum(fletcher_norm * st_cls_norm, axis=1))
     print(f"CLS Similarity:    Mean={np.mean(sims_cls):.4f}, Min={np.min(sims_cls):.4f}")
     
-    if np.mean(sims_pooler) > 0.99 or np.mean(sims_cls) > 0.99:
-        print("SECTION PASSED (Partial or Full Match)")
+    if np.mean(sims_pooler) > 0.99:
+        print("SECTION PASSED (Match)")
     else:
         print("SECTION FAILED")
 

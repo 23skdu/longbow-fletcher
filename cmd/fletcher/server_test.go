@@ -66,13 +66,46 @@ func TestServer_Full(t *testing.T) {
 		mfc.AssertExpectations(t)
 	})
 
-	t.Run("Health Check", func(t *testing.T) {
+	t.Run("Health Check Legacy", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/health", nil)
 		rr := httptest.NewRecorder()
 		
 		srv.handleHealth(rr, req)
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.Equal(t, "OK", rr.Body.String())
+	})
+
+	t.Run("Health Check Z", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/healthz", nil)
+		rr := httptest.NewRecorder()
+		
+		srv.handleHealthz(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "OK", rr.Body.String())
+	})
+
+	t.Run("Ready Check Z", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/readyz", nil)
+		rr := httptest.NewRecorder()
+		
+		srv.handleReadyz(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "Ready", rr.Body.String())
+	})
+
+	t.Run("Panic Recovery Middleware", func(t *testing.T) {
+		panicker := func(w http.ResponseWriter, r *http.Request) {
+			panic("oops")
+		}
+		handler := srv.recoverMiddleware(panicker)
+		
+		req, _ := http.NewRequest("GET", "/panic", nil)
+		rr := httptest.NewRecorder()
+		
+		handler.ServeHTTP(rr, req)
+		
+		assert.Equal(t, http.StatusInternalServerError, rr.Code)
+		assert.Equal(t, "Internal Server Error\n", rr.Body.String())
 	})
 }
 

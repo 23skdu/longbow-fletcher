@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	_ "net/http/pprof"
+	"runtime"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -124,10 +126,12 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	))
 
 	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/encode", srv.handleEncode)
-	http.HandleFunc("/encode/arrow", srv.handleEncodeArrow)
+	http.HandleFunc("/encode", srv.recoverMiddleware(srv.handleEncode))
+	http.HandleFunc("/encode/arrow", srv.recoverMiddleware(srv.handleEncodeArrow))
 	
-	http.HandleFunc("/health", srv.handleHealth)
+	http.HandleFunc("/health", srv.handleHealth) // Legacy
+	http.HandleFunc("/healthz", srv.handleHealthz)
+	http.HandleFunc("/readyz", srv.handleReadyz)
 
 	log.Info().Str("addr", addr).Msg("Starting Fletcher Server")
 	if fc != nil {
@@ -547,7 +551,52 @@ func (s *Server) processBatch(ctx context.Context, texts []string) {
 	}
 }
 
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
+}
+
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	// Check if models are loaded (simple verification)
+	if s.embedder == nil {
+		http.Error(w, "Not Ready", http.StatusServiceUnavailable)
+		return
+	}
+	
+	// Optional: Check VRAM availability or basic inference capability
+	// For now, if we are up and have an embedder, we are ready.
+	
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("Ready"))
+}
+
+func (s *Server) recoverMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				// Metrics
+				embeddings.PanicTotal.Inc() 
+				
+				log.Error().
+					Interface("panic", err).
+					Str("stack", string(debugStack())).
+					Msg("Panic recovered in HTTP handler")
+				
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		next(w, r)
+	}
+}
+
+func debugStack() []byte {
+	// Simple stack trace
+	var buf [4096]byte
+	n := runtime.Stack(buf[:], false)
+	return buf[:n]
+}
+
+// Deprecated: use handleHealthz
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	s.handleHealthz(w, r)
 }
