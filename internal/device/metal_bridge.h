@@ -140,29 +140,6 @@ void Metal_ApplyRoPE_F16(MetalContextRef ctx, MetalBufferRef data, int offData,
 void Metal_SwiGLU_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                       MetalBufferRef output, int offOut, int n, int interSize);
 
-// MPSGraph BERT Layer
-void Metal_BertLayer_Graph(MetalContextRef ctx, 
-                           MetalBufferRef input, int offIn,
-                           MetalBufferRef q, int offQ,
-                           MetalBufferRef k, int offK,
-                           MetalBufferRef v, int offV,
-                           MetalBufferRef out, int offOut,
-                           MetalBufferRef inter, int offInter,
-                           MetalBufferRef outFFN, int offOutFFN,
-                           MetalBufferRef biasQ, int offBiasQ,
-                           MetalBufferRef biasK, int offBiasK,
-                           MetalBufferRef biasV, int offBiasV,
-                           MetalBufferRef biasOut, int offBiasOut,
-                           MetalBufferRef biasInter, int offBiasInter,
-                           MetalBufferRef biasOutFFN, int offBiasOutFFN,
-                           MetalBufferRef gammaAttn, int offGammaAttn,
-                           MetalBufferRef betaAttn, int offBetaAttn,
-                           MetalBufferRef gammaFFN, int offGammaFFN,
-                           MetalBufferRef betaFFN, int offBetaFFN,
-                           MetalBufferRef result, int offRes,
-                           int batchSize, int seqLen, int hiddenSize, int numHeads, int intermediateSize, float eps);
-
-
 void Metal_FlashAttention(MetalContextRef ctx, MetalBufferRef Q, int offQ,
                           MetalBufferRef K, int offK, MetalBufferRef V,
                           int offV, MetalBufferRef O, int offO, int N, int d,
