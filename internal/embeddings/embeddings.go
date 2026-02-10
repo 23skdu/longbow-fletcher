@@ -90,6 +90,12 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 				deviceCount = d.DeviceCount()
 			}
 		}()
+		
+		if deviceCount == 0 {
+			log.Warn().Msg("GPU enabled but no devices found. Falling back to CPU w/ 1 device.")
+			deviceCount = 1
+			useGPU = false
+		}
 	}
 
 	log.Info().
@@ -319,7 +325,7 @@ func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, 
 // EmbedBatch generates embeddings for a batch of texts.
 // It returns a channel that yields StreamResults as they become available.
 func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan StreamResult {
-	out := make(chan StreamResult, len(e.models)*2)
+	out := make(chan StreamResult, len(texts))
 	ctx, span := tracer.Start(ctx, "EmbedBatch")
 	defer span.End()
 
