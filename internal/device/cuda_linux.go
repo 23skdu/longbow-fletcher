@@ -335,6 +335,11 @@ func (t *CudaTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	C.Cuda_ApplyRoPE(t.backend.ctx, t.buf, C.int(batchSize), C.int(seqLen), C.int(numHeads), C.int(headDim))
 }
 
+func (t *CudaTensor) ExtractToFlat(destination []float32, startOffset int) {
+	data := t.ToHost()
+	copy(destination[startOffset:], data)
+}
+
 func (t *CudaTensor) ExtractTo(destination [][]float32, startRow int) {
 	// For CUDA, we'll use a simple host copy for now.
 	// Future optimization: pinned memory and async streaming.
