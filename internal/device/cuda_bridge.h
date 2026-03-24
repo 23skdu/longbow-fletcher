@@ -37,6 +37,10 @@ void Cuda_LayerNorm(CudaContextRef ctx, CudaBufferRef input,
                     CudaBufferRef gamma, CudaBufferRef beta,
                     CudaBufferRef result, int rows, int cols, float eps);
 
+void Cuda_AddLayerNorm(CudaContextRef ctx, CudaBufferRef residual,
+                       CudaBufferRef gamma, CudaBufferRef beta,
+                       CudaBufferRef result, int rows, int cols, float eps);
+
 void Cuda_Softmax(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result,
                   int rows, int cols);
 

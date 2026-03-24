@@ -54,6 +54,23 @@ func (b *CudaBackend) NewTensor(r, c int, data []float32) Tensor {
 	return t
 }
 
+func (b *CudaBackend) NewTensorWithType(r, c int, dtype DataType, data []float32) Tensor {
+	// Handle FP16 vs FP32 based on dtype, not backend's default
+	origFP16 := b.useFP16
+	if dtype == Float16 {
+		b.useFP16 = true
+	} else {
+		b.useFP16 = false
+	}
+	t := b.GetTensor(r, c)
+	b.useFP16 = origFP16 // restore
+
+	if data != nil {
+		t.CopyFromFloat32(data)
+	}
+	return t
+}
+
 func (b *CudaBackend) GetTensor(r, c int) Tensor {
 	size := r * c
 	var sizeBytes int
@@ -101,7 +118,7 @@ func (b *CudaBackend) SetDevice(index int) {
 
 func (b *CudaBackend) GetVRAMUsage() (int64, int64) {
 	var free, total int64
-	C.Cuda_GetMemoryInfo(b.ctx, (*C.longlong)(unsafe.Pointer(&free)), (*C.longlong)(unsafe.Pointer(&total)))
+	C.Cuda_GetMemoryInfo(b.ctx, (*C.int64_t)(unsafe.Pointer(&free)), (*C.int64_t)(unsafe.Pointer(&total)))
 	return free, total
 }
 
@@ -235,6 +252,13 @@ func (t *CudaTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	gg := gamma.(*CudaTensor)
 	bb := beta.(*CudaTensor)
 	C.Cuda_LayerNorm(t.backend.ctx, t.buf, gg.buf, bb.buf, t.buf, C.int(t.rows), C.int(t.cols), C.float(eps))
+}
+
+func (t *CudaTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32) {
+	rt := residual.(*CudaTensor)
+	gg := gamma.(*CudaTensor)
+	bb := beta.(*CudaTensor)
+	C.Cuda_AddLayerNorm(t.backend.ctx, rt.buf, gg.buf, bb.buf, t.buf, C.int(t.rows), C.int(t.cols), C.float(eps))
 }
 
 func (t *CudaTensor) Gather(indices []int) Tensor {
