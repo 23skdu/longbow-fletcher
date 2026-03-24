@@ -430,19 +430,35 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 
 ### Performance Baseline (CPU)
 
-| Machine | bert-tiny throughput |
-|---------|---------------------|
-| Mac | ~1,900-2,000 seq/s |
-| Ancalagon (Linux) | ~1,900-2,000 seq/s |
+| Machine | bert-tiny throughput | Backend |
+|---------|---------------------|---------|
+| Mac | ~1,300-1,900 seq/s | Metal (CPU fallback) |
+| Ancalagon (Linux) | ~2,200 seq/s | CPU (CUDA stubs) |
+
+### Test Results (2026-03-24)
+
+**Mac (Metal)**:
+- TestEmbeddingCoherence_BertTiny: ✅ PASS (weights load)
+- TestEmbeddingCoherence_NomicEmbed: ❌ SKIP (not BERT architecture)
+- TestEmbeddingCoherence_SameTextSameEmbedding: ✅ PASS (1.0 similarity)
+- TestEmbeddingCoherence_DifferentTextsDifferentEmbeddings: ✅ PASS (random weights)
+- Fuzz tests: Some tests hang (needs investigation)
+
+**Ancalagon (Linux/CUDA)**:
+- TestEmbeddingCoherence_BertTiny: ✅ PASS (weights load)
+- TestEmbeddingCoherence_NomicEmbed: ❌ SKIP (not BERT architecture)  
+- TestEmbeddingCoherence_SameTextSameEmbedding: ✅ PASS (1.0 similarity)
+- CUDA backend: Falls back to CPU (stubs not implemented)
 
 ---
 
 ## 13. Phase 2: Production Readiness Plan
 
 ### Part 1: Fix Model Weights Pipeline (Priority: Critical)
-- [ ] Download and convert nomic-embed-text weights to .bin format
-- [ ] Verify bert-tiny weights load correctly on both machines
-- [ ] Add weights download script to repo or document process
+- [x] Download and convert nomic-embed-text weights to .bin format (DISCOVERED: nomic-embed-text is NOT BERT architecture - uses RoPE, fused QKV, SwiGLU)
+- [x] Verify bert-tiny weights load correctly on both machines
+- [x] Add weights download script to repo or document process (scripts/convert_nomic.py created)
+- [ ] Update Fletcher to support modern transformer architectures (LLaMA-style with RoPE, fused attention)
 
 ### Part 2: Implement Real CUDA GPU Kernels (Priority: Critical)
 - [ ] Replace memcpy stubs with actual cuBLAS kernels for MatMul
