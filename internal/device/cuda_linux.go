@@ -381,6 +381,16 @@ func (t *CudaTensor) ExtractBytes() []byte {
 	}
 }
 
+func (t *CudaTensor) HasNaN() (bool, error) {
+	data := t.ToHost()
+	for _, v := range data {
+		if v != v {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (t *CudaTensor) Cast(dtype DataType) Tensor {
 	size := t.rows * t.cols
 	if dtype == Float32 && t.backend.useFP16 {
