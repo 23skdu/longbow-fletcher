@@ -388,21 +388,21 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 
 ## 11. Implementation Checklist
 
-- [ ] SSH to ancalagon and verify access
-- [ ] Pull nomic-embed-text on ancalagon
-- [ ] Pull bert-tiny on ancalagon
-- [ ] Pull nomic-embed-text locally
-- [ ] Pull bert-tiny locally
-- [ ] Fix CUDA GetVRAMUsage()
-- [ ] Fix CUDA Cast()
-- [ ] Implement CUDA Add/AddScalar/Scale/Tanh/Slice
-- [ ] Write CUDA unit tests
-- [ ] Test CUDA inference
-- [ ] Add Paste to Tensor interface
-- [ ] Implement Metal Paste
-- [ ] Update bert.go to use Paste
-- [ ] Write fuzz tests
-- [ ] Write coherence tests
+- [x] SSH to ancalagon and verify access
+- [x] Pull nomic-embed-text on ancalagon
+- [x] Pull bert-tiny on ancalagon
+- [x] Pull nomic-embed-text locally
+- [x] Pull bert-tiny locally
+- [x] Fix CUDA GetVRAMUsage()
+- [x] Fix CUDA Cast()
+- [x] Implement CUDA Add/AddScalar/Scale/Tanh/Slice
+- [x] Write CUDA unit tests
+- [x] Test CUDA inference
+- [x] Add Paste to Tensor interface
+- [x] Implement Metal Paste
+- [x] Update bert.go to use Paste
+- [x] Write fuzz tests
+- [x] Write coherence tests
 - [ ] Run Metal benchmark
 - [ ] Run CUDA benchmark
 - [ ] Compare results and document
