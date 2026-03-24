@@ -134,6 +134,13 @@ func (t *CudaTensor) Dims() (int, int) {
 	return t.rows, t.cols
 }
 
+func (t *CudaTensor) DataType() DataType {
+	if t.backend.useFP16 {
+		return Float16
+	}
+	return Float32
+}
+
 func (t *CudaTensor) At(i, j int) float32 {
 	// Slow path for debugging
 	var val float32
