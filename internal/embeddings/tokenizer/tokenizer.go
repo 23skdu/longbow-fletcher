@@ -19,11 +19,11 @@ type Tokenizer interface {
 
 // WordPieceTokenizer implements the WordPiece tokenization algorithm.
 type WordPieceTokenizer struct {
-	vocab          map[string]int
-	invVocab       map[int]string
-	maxInputChars  int
-	unkToken       string
-	neverSplit     map[string]bool
+	vocab         map[string]int
+	invVocab      map[int]string
+	maxInputChars int
+	unkToken      string
+	neverSplit    map[string]bool
 }
 
 // NewWordPieceTokenizer creates a new WordPieceTokenizer from a vocab file.
@@ -93,11 +93,11 @@ func (t *WordPieceTokenizer) splitOnPunctuation(text string) []string {
 
 	// Fallback to Rune-based iteration for Unicode
 	var tokens []string
-	
+
 	// First convert to runes for safe iteration
 	runes := []rune(text)
 	var currentToken strings.Builder
-	
+
 	i := 0
 	for i < len(runes) {
 		// Check never_split patterns
@@ -121,7 +121,7 @@ func (t *WordPieceTokenizer) splitOnPunctuation(text string) []string {
 		if matched {
 			continue
 		}
-		
+
 		r := runes[i]
 		if isPunctuation(r) {
 			if currentToken.Len() > 0 {
@@ -157,7 +157,7 @@ func (t *WordPieceTokenizer) splitOnPunctuation(text string) []string {
 func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 	var tokens []string
 	start := 0
-	
+
 	for i := 0; i < len(text); {
 		// Check never_split patterns first
 		// Since we are ASCII, slicing is cheap O(1) inside loop (no rune conversion)
@@ -188,7 +188,7 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 			i = len(text)
 			break
 		}
-		
+
 		// Found a separator at i + offset
 		sepIdx := i + offset
 		if sepIdx > start {
@@ -224,7 +224,7 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 			// `FindPunctuation` skips 'f'. We miss it.
 			// Assumption: neverSplit tokens start with punctuation or we take the hit.
 			// Given standard BERT vocab, this holds.
-			
+
 			// Correct logic using FindPunctuation:
 			// 1. Scan for separator (Punct or Space) starting at `i`.
 			// 2. Found at `sepIdx`.
@@ -234,15 +234,15 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 			//    Then `sepIdx` IS the location of potential `neverSplit`.
 			//    So we process text up to `sepIdx` as a word.
 			//    Then process `text[sepIdx]` (separator).
-			
-			// So: 
+
+			// So:
 			// 1. `sepIdx = i + offset`.
 			// 2. Token `text[start:sepIdx]` (if len>0) -> Add.
 			// 3. `i = sepIdx`.
 			// 4. Check `neverSplit` at `i`. (Handled by main loop top).
 			// 5. If not `neverSplit`, process `text[i]` as Punct/Space.
 			//6. `i++`.
-			
+
 			// Wait. The main loop checks `neverSplit` then does logic.
 			// If I reuse main loop structure but advance `i` using `FindPunctuation`?
 			// `i` points to current char.
@@ -269,12 +269,12 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 			//       `i += offset`.
 			//       Now `text[i]` is a Separator (Punct/Space) OR `neverSplit` logic will catch it next iter.
 			//       So we `continue` main loop.
-			
+
 			// This logic is sound assuming `neverSplit` start chars are flagged by `FindPunctuation`.
 			// List: `[` (91). Flagged.
 			// If vocab has others?
 			// We can conservatively assume yes.
-			
+
 			// Logic:
 			// check neverSplit.
 			// offset = FindPunctuation(text[i:]).
@@ -283,7 +283,7 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 			//    continue (This loops back to neverSplit check at new `i`).
 			// if offset == 0: (Current char is separator).
 			//    Handle separator.
-			
+
 			// Wait. `FindPunctuation` finds the *index* of match.
 			// If current char is Match, `offset` is 0.
 			// So we fall through to "Handle separator".
@@ -294,37 +294,37 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 			// `FindPunctuation` returns 0.
 			// Fallthrough. Handle `text[i]` (' ').
 			// Space -> Split. Token = `text[start:i]` ("Hello"). Add. Reset start.
-			
+
 			// This works!
 			// Only issue: `FindPunctuation` must include `[` (91). Yes.
-			
+
 			offset := FindPunctuation([]byte(text[i:]))
 			if offset > 0 {
 				i += offset
 				// Loop back to check neverSplit at new `i`
 				continue
 			}
-			
+
 			// At this point, `text[i]` is a separator (or FindPunctuation failed / -1 handled below).
 			if offset == -1 {
 				// Remainder is word.
 				i = len(text)
 				continue // Loop ends
 			}
-			
+
 			// offset == 0. `text[i]` is Punct/Space.
 			b := text[i]
 			isSpace := (b == 32 || (b >= 9 && b <= 13))
-			
+
 			// If we have pending token
 			if i > start {
 				tokens = append(tokens, text[start:i])
 			}
-			
+
 			if !isSpace {
 				tokens = append(tokens, string(b))
 			}
-			
+
 			i++
 			start = i
 		}
@@ -339,14 +339,16 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 func (t *WordPieceTokenizer) Tokenize(text string) ([]string, []int) {
 	// 1. Split on whitespace & punctuation, preserving special tokens
 	rawTokens := t.splitOnPunctuation(text)
-	
+
 	outputTokens := make([]string, 0, len(rawTokens)*2)
 	outputIDs := make([]int, 0, len(rawTokens)*2)
 
 	for _, token := range rawTokens {
 		// one token could be empty if multiple spaces?
-		if token == "" { continue }
-		
+		if token == "" {
+			continue
+		}
+
 		// Check if special token
 		if t.neverSplit[token] {
 			if id, ok := t.vocab[token]; ok {
@@ -355,12 +357,12 @@ func (t *WordPieceTokenizer) Tokenize(text string) ([]string, []int) {
 				continue
 			}
 		}
-		
+
 		// Normalization for regular tokens
 		normToken := strings.ToLower(token)
 		tform := transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC)
 		normToken, _, _ = transform.String(tform, normToken)
-		
+
 		// WordPiece
 		if len(normToken) > t.maxInputChars {
 			outputTokens = append(outputTokens, t.unkToken)

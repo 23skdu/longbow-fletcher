@@ -5,18 +5,18 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"crypto/sha256"
 	"encoding/hex"
 
+	"github.com/23skdu/longbow-fletcher/internal/cache"
+	"github.com/23skdu/longbow-fletcher/internal/device"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/weights"
-	"github.com/23skdu/longbow-fletcher/internal/device"
-	"github.com/23skdu/longbow-fletcher/internal/cache"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -63,12 +63,12 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", modelType)
 	}
-	
+
 	// Default to FP32
 	if precision == "" {
 		precision = "fp32"
 	}
-	
+
 	deviceCount := 1
 	if useGPU {
 		// Probe for device count using a temporary backend
@@ -80,7 +80,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 					useGPU = false
 				}
 			}()
-			
+
 			switch runtime.GOOS {
 			case "darwin":
 				d := device.NewMetalBackend()
@@ -90,7 +90,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 				deviceCount = d.DeviceCount()
 			}
 		}()
-		
+
 		if deviceCount == 0 {
 			log.Warn().Msg("GPU enabled but no devices found. Falling back to CPU w/ 1 device.")
 			deviceCount = 1
@@ -107,10 +107,10 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 
 	// Pre-load weights into memory ONCE to avoid disk I/O per device
 	// var weightData []byte // TODO: Refactor Loader later
-	
+
 	for i := 0; i < deviceCount; i++ {
 		var backend device.Backend
-		
+
 		if useGPU {
 			// Try to create GPU backend, fallback to CPU on panic
 			func() {
@@ -120,7 +120,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 						backend = device.NewCPUBackend()
 					}
 				}()
-				
+
 				switch runtime.GOOS {
 				case "darwin":
 					if precision == "fp16" {
@@ -140,7 +140,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 				}
 			}()
 		}
-		
+
 		// If GPU init failed (backend still nil) or useGPU was false
 		if backend == nil {
 			backend = device.NewCPUBackend()
@@ -168,7 +168,7 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 				loader := weights.NewLoader(bert)
 				if strings.HasSuffix(weightsPath, ".safetensors") {
 					if err := loader.LoadFromSafeTensors(weightsPath); err != nil {
-						return nil, fmt.Errorf("failed to load SafeTensors for device %d: %w", i, err) 
+						return nil, fmt.Errorf("failed to load SafeTensors for device %d: %w", i, err)
 					}
 				} else {
 					if err := loader.LoadFromRawBinary(weightsPath); err != nil {
@@ -234,8 +234,6 @@ func WithOutputFormat(ctx context.Context, format string) context.Context {
 	return context.WithValue(ctx, ctxKeyOutputFormat{}, format)
 }
 
-
-
 type ctxKeyDatasetID struct{}
 
 // WithDatasetID attaches a dataset ID to the context for caching purposes.
@@ -246,7 +244,7 @@ func WithDatasetID(ctx context.Context, datasetID string) context.Context {
 func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, format string, out chan<- StreamResult, cacheToAdd cache.VectorCache, keysToAdd []string, validationErr error) {
 	// Extract all data from tensor (flat)
 	count := len(indices)
-	
+
 	if validationErr != nil {
 		// If validation failed (e.g. NaN), fail all items in this batch
 		for _, originalIdx := range indices {
@@ -258,33 +256,33 @@ func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, 
 		}
 		return
 	}
-	
+
 	if format == "fp16" {
 		t16 := t.Cast(device.Float16)
 		bytes := t16.ExtractBytes()
-		
+
 		if t16 != t {
 			m.Backend.PutTensor(t16)
 		}
-		
+
 		// FP16 is 2 bytes per element
 		rowBytes := dim * 2
-		
+
 		for k, originalIdx := range indices {
 			start := k * rowBytes
 			end := start + rowBytes
-			
+
 			// Copy for safety/independence
 			row := make([]byte, rowBytes)
 			copy(row, bytes[start:end])
-			
+
 			// Note: We don't cache RawBytes currently in VectorCache (it stores []float32)
 			// Enhancing cache to support raw bytes is future work.
-			// For now, only cache misses if not using raw mode? 
+			// For now, only cache misses if not using raw mode?
 			// Or we decode to float32 to cache? That's expensive.
 			// Let's Skip caching on FP16 path for now OR implement caching later.
 			// Assuming cache stores float32, we can't put raw bytes easily.
-			
+
 			out <- StreamResult{
 				Offset:      originalIdx,
 				Count:       1,
@@ -296,22 +294,22 @@ func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, 
 		// FP32
 		chunk := make([]float32, count*dim)
 		t.ExtractToFlat(chunk, 0)
-		
+
 		for k, originalIdx := range indices {
 			start := k * dim
 			end := start + dim
 			vec := chunk[start:end]
-			
+
 			// Send Result
 			// Note: vec is a slice of chunk. StreamResult usually wants independent ownership?
 			// But for channel sending, if receiver copies, it's fine.
 			// ProxyEmbedBatch copies.
 			// If we cache it, we MUST copy.
-			
+
 			if cacheToAdd != nil && k < len(keysToAdd) {
 				cacheToAdd.Put(keysToAdd[k], vec)
 			}
-			
+
 			out <- StreamResult{
 				Offset:  originalIdx,
 				Count:   1,
@@ -320,7 +318,6 @@ func processOutput(m *model.BertModel, t device.Tensor, dim int, indices []int, 
 		}
 	}
 }
-
 
 // EmbedBatch generates embeddings for a batch of texts.
 // It returns a channel that yields StreamResults as they become available.
@@ -341,7 +338,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	batchStart := time.Now()
 	_, tSpan := tracer.Start(ctx, "Tokenization")
 	results := make([]tokenizedResult, len(texts))
-	
+
 	// Use work queue for better load balancing
 	// This handles imbalanced text lengths better than static chunks
 	workQueue := make(chan int, len(texts))
@@ -349,32 +346,32 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 		workQueue <- i
 	}
 	close(workQueue)
-	
+
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 16 {
 		numWorkers = 16 // Cap at 16 workers for tokenization
 	}
-	
+
 	var wg sync.WaitGroup
 	wg.Add(numWorkers)
-	
+
 	for w := 0; w < numWorkers; w++ {
 		go func() {
 			defer wg.Done()
 			for idx := range workQueue {
 				_, ids := e.tokenizer.Tokenize(texts[idx])
 				results[idx] = tokenizedResult{
-					ids: ids,
-					len: len(ids) + 2, // [CLS] + [SEP]
+					ids:         ids,
+					len:         len(ids) + 2, // [CLS] + [SEP]
 					originalIdx: idx,
 				}
 			}
 		}()
 	}
-	
+
 	wg.Wait()
 	tSpan.End()
-	
+
 	// Export tokenization metrics
 	tokenizationElapsed := time.Since(batchStart)
 	totalTokens := 0
@@ -389,34 +386,34 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	// 2. Multi-GPU Dispatch with Dynamic Load Balancing
 	dim := e.models[0].Config.HiddenSize
 	numDevices := len(e.models)
-	
+
 	// Check Cache (on Main Thread)
 	datasetID, _ := ctx.Value(ctxKeyDatasetID{}).(string)
-	
+
 	var missInputs []tokenizedResult
 	var cacheKeys []string
-	
+
 	if datasetID != "" && e.cache != nil {
 		missInputs = make([]tokenizedResult, 0, len(results))
 		cacheKeys = make([]string, 0, len(results)) // Aligned with missInputs
-		
+
 		for _, res := range results {
 			// Compute hash key: SHA256(DatasetID + Text)
 			// access text via tokenizer? No, we lost original text in results struct.
-			// Using offset is tricky. 
+			// Using offset is tricky.
 			// We MUST check cache BEFORE tokenization to save tokenization?
-			// Or check using text during tokenization? 
+			// Or check using text during tokenization?
 			// Tokenization is fast. Let's do it after tokenization using original text?
 			// The `results` struct doesn't have text. `texts` slice does.
-			
+
 			// Let's use `texts[res.originalIdx]`
 			text := texts[res.originalIdx]
-			
+
 			h := sha256.New()
 			h.Write([]byte(datasetID))
 			h.Write([]byte(text))
 			key := hex.EncodeToString(h.Sum(nil))
-			
+
 			if vec, found := e.cache.Get(key); found {
 				cacheHits.Inc()
 				out <- StreamResult{
@@ -433,16 +430,16 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 	} else {
 		missInputs = results
 	}
-	
+
 	totalTokens = 0
 	for _, res := range missInputs {
 		totalTokens += res.len
 	}
-	
+
 	// Calculate device weights based on historical performance
 	deviceWeights := make([]float64, numDevices)
 	totalWeight := 0.0
-	
+
 	e.metricsMu.RLock()
 	for i := 0; i < numDevices; i++ {
 		// Use average throughput as weight (sequences/second)
@@ -450,7 +447,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 		totalWeight += deviceWeights[i]
 	}
 	e.metricsMu.RUnlock()
-	
+
 	// Calculate target tokens per device based on weights
 	targetTokensPerDevice := make([]int, numDevices)
 	for i := 0; i < numDevices; i++ {
@@ -463,7 +460,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 		if targetTokensPerDevice[i] == 0 {
 			targetTokensPerDevice[i] = 1
 		}
-		
+
 		// Export weight to Prometheus
 		deviceLabel := fmt.Sprintf("%d", i)
 		gpuWeight.WithLabelValues(deviceLabel).Set(deviceWeights[i])
@@ -475,17 +472,17 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 		defer iSpan.End()
 
 		var deviceWg sync.WaitGroup
-		
+
 		startIndex := 0
 		for d := 0; d < numDevices; d++ {
 			if startIndex >= len(results) {
 				break
 			}
-			
+
 			endIndex := startIndex
 			currentTokens := 0
 			targetTokens := targetTokensPerDevice[d]
-			
+
 			// Greedily accumulate items until we reach target load
 			// But ensure at least one item if available
 			for endIndex < len(results) {
@@ -495,33 +492,32 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 					endIndex++
 					continue
 				}
-				
+
 				// Check if adding next item exceeds target significantly?
 				// Simple approach: stop if we are above target, unless we are the last device
 				if d < numDevices-1 && currentTokens >= targetTokens {
 					break
 				}
-				
+
 				currentTokens += results[endIndex].len
 				endIndex++
 			}
-			
+
 			// If last device, take everything remaining
 			if d == numDevices-1 {
 				endIndex = len(results)
 			}
-			
+
 			if endIndex > len(missInputs) {
 				endIndex = len(missInputs)
 			}
-			
+
 			batchInputs := missInputs[startIndex:endIndex]
 			batchKeys := []string(nil)
 			if len(cacheKeys) > 0 {
 				batchKeys = cacheKeys[startIndex:endIndex]
 			}
-			
-			
+
 			format, _ := ctx.Value(ctxKeyOutputFormat{}).(string)
 
 			deviceWg.Add(1)
@@ -534,8 +530,8 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 							Interface("panic", err).
 							Int("device", devId).
 							Msg("Panic recovered in EmbedBatch worker")
-						// We can't easily return error for specific batch here because output channel is shared 
-						// and we might lose sync if we just drop it. 
+						// We can't easily return error for specific batch here because output channel is shared
+						// and we might lose sync if we just drop it.
 						// Ideal fix: Send error result for all items in this batch so client didn't hang.
 						// For now, at least we don't crash.
 					}
@@ -548,12 +544,12 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 					Float64("throughput", e.gpuMetrics[devId].AvgThroughput).
 					Msg("Dispatching batch")
 				m := e.models[devId]
-				
+
 				// runInference expects explicit indicesMap now? No, we refactor runInference to accept originalIdx in Result.
 				// But we need to pass cache keys to populate cache.
 				runInferenceOnDevice(ctx, m, e.internalBatchSize, e.maxBatchTokens, batchInputs, dim, format, out, &e.gpuMetrics[devId], e.cache, batchKeys)
 			}(d, startIndex, endIndex)
-			
+
 			startIndex = endIndex
 		}
 		deviceWg.Wait()
@@ -561,6 +557,7 @@ func (e *Embedder) EmbedBatch(ctx context.Context, texts []string) <-chan Stream
 
 	return out
 }
+
 // ProxyEmbedBatch is a helper for legacy code that wants the full slice.
 func (e *Embedder) ProxyEmbedBatch(ctx context.Context, texts []string) []float32 {
 	dim := e.models[0].Config.HiddenSize
@@ -568,7 +565,7 @@ func (e *Embedder) ProxyEmbedBatch(ctx context.Context, texts []string) []float3
 	ch := e.EmbedBatch(ctx, texts)
 	for chunk := range ch {
 		if chunk.Err != nil {
-			continue 
+			continue
 		}
 		copy(res[chunk.Offset*dim:], chunk.Vectors)
 	}
@@ -617,23 +614,23 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 	if effectiveBatchSize > doubleBufferedCap {
 		effectiveBatchSize = doubleBufferedCap
 	}
-	
+
 	// 3. Calculate Memory Usage per Sequence (Heuristic)
 	// Based on BERT architecture:
 	// Activation Memory ~= Layers * (Attention + MLP)
 	// Attention: O(L^2) scores + O(L*D) projections
 	// MLP: O(L*D*4)
-	
-	hiddenSize := e.models[0].Config.HiddenSize // e.g., 128
+
+	hiddenSize := e.models[0].Config.HiddenSize  // e.g., 128
 	layers := e.models[0].Config.NumHiddenLayers // e.g., 2
-	
+
 	// 3. Calculate Memory Usage per Sequence (Heuristic)
 	// Check Backend Precision
 	bytesPerElement := 4
 	if strings.Contains(e.models[0].Backend.Name(), "FP16") {
 		bytesPerElement = 2
 	}
-	
+
 	// Dynamic Batching Cap: We never process more than maxBatchTokens at once per device
 	if avgTokens*effectiveBatchSize > e.maxBatchTokens {
 		// Effective concurrent tokens is capped
@@ -647,15 +644,15 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 
 	hiddenSize = e.models[0].Config.HiddenSize
 	layers = e.models[0].Config.NumHiddenLayers
-	
+
 	// Heuristic Factors (Tunable):
 	// Fixed overhead per batch
 	const fixedOverhead = 10 * 1024 * 1024 // 10MB base overhead
-	
+
 	// Linear cost per token (Activations)
 	// Estimate: Bytes * Layers * (10 * Hidden)
 	linearFactor := int64(layers * 10 * hiddenSize * bytesPerElement)
-	
+
 	// Quadratic cost (Attention Matrix): Layers * Heads * SeqLen
 	// (Only significant for long sequences)
 	quadraticFactor := int64(layers * e.models[0].Config.NumAttentionHeads * bytesPerElement)
@@ -663,21 +660,19 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 	// Per Sequence Cost
 	seqLen := int64(avgTokens)
 	costPerSeq := (seqLen * linearFactor) + (seqLen * seqLen * quadraticFactor)
-	
+
 	totalEst := fixedOverhead + (int64(effectiveBatchSize) * costPerSeq)
-	
+
 	// Add Safety Margin (20%)
 	totalEst = int64(float64(totalEst) * 1.2)
-	
+
 	return totalEst
 }
-	
-
 
 // tokenizedResult is a helper struct for passing data
 type tokenizedResult struct {
-	ids []int
-	len int
+	ids         []int
+	len         int
 	originalIdx int
 }
 
@@ -686,7 +681,7 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 	batchStart := time.Now()
 	totalSequences := len(inputs)
 	totalTokensProcessed := 0
-	
+
 	// Double-buffered GPU Processing (per device)
 	var prevOutput device.Tensor
 	var prevIndices []int
@@ -706,14 +701,14 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 			return
 		default:
 		}
-		
+
 		// Dynamic Batching: Fill batch until maxBatchSize OR maxTokens reached
 		currentBatchTokens := 0
 		currentBatchSize := 0
-		
+
 		for j := i; j < count; j++ {
 			seqLen := inputs[j].len
-			
+
 			// Check limits
 			if currentBatchSize >= maxBatchSize {
 				break
@@ -721,21 +716,21 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 			if currentBatchTokens+seqLen > maxTokens && currentBatchSize > 0 {
 				break
 			}
-			
+
 			currentBatchTokens += seqLen
 			currentBatchSize++
 		}
-		
+
 		batchSizeDistribution.Observe(float64(currentBatchSize))
-		
+
 		if currentBatchSize == 0 {
 			// Should not happen unless maxTokens < single sequence length
 			currentBatchSize = 1
 			currentBatchTokens = inputs[i].len
 		}
-		
+
 		batchEndIdx := i + currentBatchSize
-		
+
 		// Prepare inputs
 		flatInputs := make([]int, 0, currentBatchTokens)
 		lengths := make([]int, currentBatchSize)
@@ -753,12 +748,12 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 			lengths[k] = res.len
 			batchIndices[k] = res.originalIdx
 		}
-		
+
 		totalTokensProcessed += currentBatchTokens
 
-// Start GPU for current batch
+		// Start GPU for current batch
 		currentOutput := m.ForwardBatch(flatInputs, lengths)
-		
+
 		// Validate output
 		var validationErr error
 		if hasNaN, err := currentOutput.HasNaN(); err == nil && hasNaN {
@@ -779,7 +774,7 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 		prevIndices = batchIndices
 		prevKeys = batchKeysSubset
 		prevValidationErr = validationErr
-		
+
 		// Advance
 		i = batchEndIdx
 	}
@@ -789,16 +784,16 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 		processOutput(m, prevOutput, dim, prevIndices, format, out, reportCache, prevKeys, prevValidationErr)
 		m.Backend.PutTensor(prevOutput)
 	}
-	
+
 	// Update metrics after batch completion
 	elapsed := time.Since(batchStart)
-	
+
 	metrics.mu.Lock()
 	metrics.LastBatchTime = elapsed
 	metrics.BatchCount++
 	metrics.TotalSequences += int64(totalSequences)
 	metrics.TotalTokens += int64(totalTokensProcessed)
-	
+
 	// Exponential moving average for throughput (alpha = 0.3 for responsiveness)
 	currentThroughput := float64(totalSequences) / elapsed.Seconds()
 	if metrics.AvgThroughput == 1.0 {
@@ -808,7 +803,7 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 		alpha := 0.3
 		metrics.AvgThroughput = alpha*currentThroughput + (1-alpha)*metrics.AvgThroughput
 	}
-	
+
 	// Export to Prometheus
 	deviceLabel := fmt.Sprintf("%d", metrics.DeviceID)
 	gpuThroughput.WithLabelValues(deviceLabel).Set(metrics.AvgThroughput)
@@ -816,6 +811,6 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 	gpuBatchCount.WithLabelValues(deviceLabel).Inc()
 	gpuSequencesProcessed.WithLabelValues(deviceLabel).Add(float64(totalSequences))
 	gpuTokensProcessed.WithLabelValues(deviceLabel).Add(float64(totalTokensProcessed))
-	
+
 	metrics.mu.Unlock()
 }

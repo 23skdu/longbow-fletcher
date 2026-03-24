@@ -54,18 +54,18 @@ var (
 		Name: "fletcher_tokenization_throughput",
 		Help: "Tokenization throughput in tokens/second",
 	})
-	
+
 	// Cache metrics
 	cacheHits = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fletcher_cache_hits_total",
 		Help: "Total number of embedding cache hits",
 	})
-	
+
 	cacheMisses = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fletcher_cache_misses_total",
 		Help: "Total number of embedding cache misses",
 	})
-	
+
 	invalidOutputs = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fletcher_output_invalid_total",
 		Help: "Total number of outputs invalidated due to NaNs or other errors",

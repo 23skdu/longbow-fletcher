@@ -301,11 +301,10 @@ func (t *CudaTensor) LinearActivation(input, weight, bias Tensor, activation Act
 	return t
 }
 
-func (t *CudaTensor) Attention(q, k, v Tensor, batchSize, seqLen int, scale float32) Tensor {
+func (t *CudaTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, scale float32) Tensor {
 	qt := q.(*CudaTensor)
 	kt := k.(*CudaTensor)
 	vt := v.(*CudaTensor)
-	// Hidden size is cols of q
 	_, hiddenSize := qt.Dims()
 	C.Cuda_Attention_Fused(
 		t.backend.ctx,

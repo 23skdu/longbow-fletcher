@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/device"
+	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 )
 
 // Loader handles loading model weights from binary files.
@@ -23,7 +23,7 @@ func NewLoader(m *model.BertModel) *Loader {
 	return &Loader{Model: m}
 }
 
-// LoadFromRawBinary loads weights from a raw binary file where Each matrix/bias 
+// LoadFromRawBinary loads weights from a raw binary file where Each matrix/bias
 // is stored as a sequence of float32 values (LittleEndian).
 // This is a simplified implementation for the pure Go CLI.
 func (l *Loader) LoadFromRawBinary(path string) error {
@@ -35,7 +35,7 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 
 	// In a real implementation, we would have a header or a manifest.
 	// For this CLI, we'll assume a specific order based on the model structure.
-	
+
 	// Load Embeddings
 	if err := l.loadDense(file, l.Model.Embeddings.WordEmbeddings); err != nil {
 		return fmt.Errorf("failed to load word embeddings: %w", err)
@@ -93,7 +93,7 @@ func (l *Loader) loadDense(r io.Reader, d device.Tensor) error {
 	rows, cols := d.Dims()
 	size := rows * cols
 	data := make([]float32, size)
-	
+
 	// Read everything into a slice first (bulk read)
 	// We assume model files are float32/LittleEndian
 	if err := binary.Read(r, binary.LittleEndian, data); err != nil {
@@ -146,9 +146,9 @@ func (l *Loader) loadSelfOutput(r io.Reader, so *model.BertSelfOutput) error {
 
 // SafeTensorsInfo holds metadata for a single tensor in the SafeTensors header
 type SafeTensorsInfo struct {
-	DType       string   `json:"dtype"`
-	Shape       []int    `json:"shape"`
-	DataOffsets []int64  `json:"data_offsets"`
+	DType       string  `json:"dtype"`
+	Shape       []int   `json:"shape"`
+	DataOffsets []int64 `json:"data_offsets"`
 }
 
 // LoadFromSafeTensors loads weights from a SafeTensors file.
@@ -179,7 +179,7 @@ func (l *Loader) LoadFromSafeTensors(path string) error {
 		return fmt.Errorf("failed to parse header JSON: %w", err)
 	}
 
-    dataStart := int64(8) + int64(headerSize)
+	dataStart := int64(8) + int64(headerSize)
 
 	// Helper to load by name
 	load := func(name string, dest device.Tensor) error {
@@ -190,27 +190,27 @@ func (l *Loader) LoadFromSafeTensors(path string) error {
 
 		r, c := dest.Dims()
 		expectedSize := int64(r * c)
-		
+
 		// Map logic: Check total size equality (allowing for transpose)
 		var headerSize int64 = 1
 		for _, dim := range info.Shape {
 			headerSize *= int64(dim)
 		}
-		
+
 		if headerSize != expectedSize {
-             return fmt.Errorf("tensor %q size mismatch: expected %d, got %d (shape %v)", name, expectedSize, headerSize, info.Shape)
+			return fmt.Errorf("tensor %q size mismatch: expected %d, got %d (shape %v)", name, expectedSize, headerSize, info.Shape)
 		}
 
 		// Offset is relative to the START of the file? No, relative to end of header.
 		// Spec: "The offsets are relative to the beginning of the body of the file, not the beginning of the file."
 		// Body starts after 8 bytes (size) + headerSize.
-        // dataStart is calculated outside.
+		// dataStart is calculated outside.
 		offsetStart := dataStart + info.DataOffsets[0]
 		length := info.DataOffsets[1] - info.DataOffsets[0]
-		if length != expectedSize * 4 { // Float32 = 4 bytes
-             if info.DType == "F16" && length == expectedSize * 2 {
-                 return fmt.Errorf("tensor %q is F16, only F32 supported currently", name)
-             }
+		if length != expectedSize*4 { // Float32 = 4 bytes
+			if info.DType == "F16" && length == expectedSize*2 {
+				return fmt.Errorf("tensor %q is F16, only F32 supported currently", name)
+			}
 			return fmt.Errorf("tensor %q byte size mismatch: expected %d, got %d", name, expectedSize*4, length)
 		}
 
@@ -221,76 +221,121 @@ func (l *Loader) LoadFromSafeTensors(path string) error {
 
 		// Cast to []float32
 		floats := make([]float32, expectedSize)
-        // Manual conversion LittleEndian
-        for i := range floats {
-            floats[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4 : (i+1)*4]))
-        }
-        
-        // Handle Transpose!
-        // Heuristic: If name ends in ".weight" and it's 2D and not an Embedding or Norm.
-        isLinearWeight := strings.HasSuffix(name, ".weight") && 
-                          len(info.Shape) == 2 && 
-                          !strings.Contains(name, "embeddings") && 
-                          !strings.Contains(name, "LayerNorm")
-                          
-        if isLinearWeight {
-            outRows := info.Shape[0]
-            inCols := info.Shape[1]
-            if outRows != c || inCols != r {
-                 return fmt.Errorf("tensor %q shape mismatch for transpose: header=%v, expected (%d, %d)", name, info.Shape, r, c)
-            }
-            
-            transposed := make([]float32, expectedSize)
-            for i := 0; i < outRows; i++ {
-                for j := 0; j < inCols; j++ {
-                    // Original (i, j) -> New (j, i)
-                    transposed[j*outRows + i] = floats[i*inCols + j]
-                }
-            }
-            floats = transposed
-        }
+		// Manual conversion LittleEndian
+		for i := range floats {
+			floats[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4 : (i+1)*4]))
+		}
 
+		// Handle Transpose!
+		// Heuristic: If name ends in ".weight" and it's 2D and not an Embedding or Norm.
+		isLinearWeight := strings.HasSuffix(name, ".weight") &&
+			len(info.Shape) == 2 &&
+			!strings.Contains(name, "embeddings") &&
+			!strings.Contains(name, "LayerNorm")
+
+		if isLinearWeight {
+			outRows := info.Shape[0]
+			inCols := info.Shape[1]
+			if outRows != c || inCols != r {
+				return fmt.Errorf("tensor %q shape mismatch for transpose: header=%v, expected (%d, %d)", name, info.Shape, r, c)
+			}
+
+			transposed := make([]float32, expectedSize)
+			for i := 0; i < outRows; i++ {
+				for j := 0; j < inCols; j++ {
+					// Original (i, j) -> New (j, i)
+					transposed[j*outRows+i] = floats[i*inCols+j]
+				}
+			}
+			floats = transposed
+		}
 
 		dest.CopyFromFloat32(floats)
 		return nil
 	}
 
 	// Load Embeddings
-	if err := load("embeddings.word_embeddings.weight", l.Model.Embeddings.WordEmbeddings); err != nil { return err }
-	if err := load("embeddings.position_embeddings.weight", l.Model.Embeddings.PositionEmbeddings); err != nil { return err }
-	if err := load("embeddings.token_type_embeddings.weight", l.Model.Embeddings.TokenTypeEmbeddings); err != nil { return err }
-	if err := load("embeddings.LayerNorm.weight", l.Model.Embeddings.LayerNorm.Gamma); err != nil { return err }
-	if err := load("embeddings.LayerNorm.bias", l.Model.Embeddings.LayerNorm.Beta); err != nil { return err }
+	if err := load("embeddings.word_embeddings.weight", l.Model.Embeddings.WordEmbeddings); err != nil {
+		return err
+	}
+	if err := load("embeddings.position_embeddings.weight", l.Model.Embeddings.PositionEmbeddings); err != nil {
+		return err
+	}
+	if err := load("embeddings.token_type_embeddings.weight", l.Model.Embeddings.TokenTypeEmbeddings); err != nil {
+		return err
+	}
+	if err := load("embeddings.LayerNorm.weight", l.Model.Embeddings.LayerNorm.Gamma); err != nil {
+		return err
+	}
+	if err := load("embeddings.LayerNorm.bias", l.Model.Embeddings.LayerNorm.Beta); err != nil {
+		return err
+	}
 
 	// Load Encoder Layers
 	for i, layer := range l.Model.Encoder.Layers {
 		prefix := fmt.Sprintf("encoder.layer.%d", i)
 		// Attention
-		if err := load(prefix+".attention.self.query.weight", layer.Attention.Self.Query); err != nil { return err }
-		if err := load(prefix+".attention.self.query.bias", layer.Attention.Self.QueryBias); err != nil { return err }
-		if err := load(prefix+".attention.self.key.weight", layer.Attention.Self.Key); err != nil { return err }
-		if err := load(prefix+".attention.self.key.bias", layer.Attention.Self.KeyBias); err != nil { return err }
-		if err := load(prefix+".attention.self.value.weight", layer.Attention.Self.Value); err != nil { return err }
-		if err := load(prefix+".attention.self.value.bias", layer.Attention.Self.ValueBias); err != nil { return err }
-		if err := load(prefix+".attention.output.dense.weight", layer.Attention.Output.Dense); err != nil { return err }
-		if err := load(prefix+".attention.output.dense.bias", layer.Attention.Output.Bias); err != nil { return err }
-		if err := load(prefix+".attention.output.LayerNorm.weight", layer.Attention.Output.LayerNorm.Gamma); err != nil { return err }
-		if err := load(prefix+".attention.output.LayerNorm.bias", layer.Attention.Output.LayerNorm.Beta); err != nil { return err }
-		
+		if err := load(prefix+".attention.self.query.weight", layer.Attention.Self.Query); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.self.query.bias", layer.Attention.Self.QueryBias); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.self.key.weight", layer.Attention.Self.Key); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.self.key.bias", layer.Attention.Self.KeyBias); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.self.value.weight", layer.Attention.Self.Value); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.self.value.bias", layer.Attention.Self.ValueBias); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.output.dense.weight", layer.Attention.Output.Dense); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.output.dense.bias", layer.Attention.Output.Bias); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.output.LayerNorm.weight", layer.Attention.Output.LayerNorm.Gamma); err != nil {
+			return err
+		}
+		if err := load(prefix+".attention.output.LayerNorm.bias", layer.Attention.Output.LayerNorm.Beta); err != nil {
+			return err
+		}
+
 		// Intermediate
-		if err := load(prefix+".intermediate.dense.weight", layer.Intermediate.Dense); err != nil { return err }
-		if err := load(prefix+".intermediate.dense.bias", layer.Intermediate.Bias); err != nil { return err }
-		
+		if err := load(prefix+".intermediate.dense.weight", layer.Intermediate.Dense); err != nil {
+			return err
+		}
+		if err := load(prefix+".intermediate.dense.bias", layer.Intermediate.Bias); err != nil {
+			return err
+		}
+
 		// Output
-		if err := load(prefix+".output.dense.weight", layer.Output.Dense); err != nil { return err }
-		if err := load(prefix+".output.dense.bias", layer.Output.Bias); err != nil { return err }
-		if err := load(prefix+".output.LayerNorm.weight", layer.Output.LayerNorm.Gamma); err != nil { return err }
-		if err := load(prefix+".output.LayerNorm.bias", layer.Output.LayerNorm.Beta); err != nil { return err }
+		if err := load(prefix+".output.dense.weight", layer.Output.Dense); err != nil {
+			return err
+		}
+		if err := load(prefix+".output.dense.bias", layer.Output.Bias); err != nil {
+			return err
+		}
+		if err := load(prefix+".output.LayerNorm.weight", layer.Output.LayerNorm.Gamma); err != nil {
+			return err
+		}
+		if err := load(prefix+".output.LayerNorm.bias", layer.Output.LayerNorm.Beta); err != nil {
+			return err
+		}
 	}
 
 	// Load Pooler
-	if err := load("pooler.dense.weight", l.Model.Pooler.Dense); err != nil { return err }
-	if err := load("pooler.dense.bias", l.Model.Pooler.Bias); err != nil { return err }
+	if err := load("pooler.dense.weight", l.Model.Pooler.Dense); err != nil {
+		return err
+	}
+	if err := load("pooler.dense.bias", l.Model.Pooler.Bias); err != nil {
+		return err
+	}
 
 	return nil
 }

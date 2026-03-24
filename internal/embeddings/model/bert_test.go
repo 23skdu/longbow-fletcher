@@ -8,16 +8,16 @@ import (
 
 func TestBertModelForward(t *testing.T) {
 	config := BertConfig{
-		VocabSize:            100,
-		HiddenSize:           16,
-		NumHiddenLayers:      1,
-		NumAttentionHeads:    2,
-		IntermediateSize:     32,
+		VocabSize:             100,
+		HiddenSize:            16,
+		NumHiddenLayers:       1,
+		NumAttentionHeads:     2,
+		IntermediateSize:      32,
 		MaxPositionEmbeddings: 10,
 	}
-	
+
 	model := NewBertModel(config)
-	
+
 	// Initialize with some non-zero values for testing
 	// Simple random-like initialization
 	for i := 0; i < config.VocabSize; i++ {
@@ -34,11 +34,11 @@ func TestBertModelForward(t *testing.T) {
 
 	inputIDs := []int{1, 2, 3}
 	output := model.Forward(inputIDs)
-	
+
 	r, c := output.Dims()
 	require.Equal(t, 1, r, "Pooler should return 1xH output")
 	require.Equal(t, config.HiddenSize, c)
-	
+
 	// Check if output is not all zeros
 	data := output.ToHost()
 	hasNonZero := false

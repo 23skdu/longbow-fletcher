@@ -3,8 +3,8 @@
 package model
 
 import (
-	"testing"
 	"github.com/23skdu/longbow-fletcher/internal/device"
+	"testing"
 )
 
 func TestBertModel_Forward_Metal(t *testing.T) {
@@ -15,11 +15,11 @@ func TestBertModel_Forward_Metal(t *testing.T) {
 	}
 
 	config := BertConfig{
-		VocabSize:     100,
-		HiddenSize:    32, // Small size for speed
-		NumHiddenLayers: 2,
-		NumAttentionHeads: 4,
-		IntermediateSize: 64,
+		VocabSize:             100,
+		HiddenSize:            32, // Small size for speed
+		NumHiddenLayers:       2,
+		NumAttentionHeads:     4,
+		IntermediateSize:      64,
 		MaxPositionEmbeddings: 128,
 	}
 
@@ -32,7 +32,7 @@ func TestBertModel_Forward_Metal(t *testing.T) {
 	// Run Forward
 	// This will use Metal for Embeddings, Encoder (Attention, FFN), Pooler
 	output := model.ForwardBatch(inputIDs, lengths)
-	
+
 	// Check output dimensions
 	r, c := output.Dims()
 	if r != 1 {
@@ -41,7 +41,7 @@ func TestBertModel_Forward_Metal(t *testing.T) {
 	if c != config.HiddenSize {
 		t.Errorf("Expected cols %d, got %d", config.HiddenSize, c)
 	}
-	
+
 	// Check content (just no NaNs/Inf)
 	data := output.ToHost()
 	for i, v := range data {
@@ -49,6 +49,6 @@ func TestBertModel_Forward_Metal(t *testing.T) {
 			t.Errorf("NaN at index %d", i)
 		}
 	}
-	
+
 	t.Logf("Metal Forward Pass Successful. Output: %v", data[:5])
 }

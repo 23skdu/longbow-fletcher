@@ -7,16 +7,16 @@ import (
 
 func TestFindPunctuation(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
+		name      string
+		input     string
 		wantIndex int
 	}{
 		{"Empty", "", -1},
 		// "Hello world..." -> Space at 5.
 		{"NoPunctuation", "Hello world this is a test", 5},
 		{"StartPunctuation", "!Hello", 0},
-		{"EndPunctuation", "Hello!", 5}, // ! is 5
-		{"MiddlePunctuation", "Hello, world", 5}, // , is 5
+		{"EndPunctuation", "Hello!", 5},             // ! is 5
+		{"MiddlePunctuation", "Hello, world", 5},    // , is 5
 		{"MultiplePunctuation", "Hello, world!", 5}, // , is 5
 		{"Brackets", "[CLS]", 0},
 		// "The quick..." -> Space at 3.

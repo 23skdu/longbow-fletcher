@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
+	"github.com/23skdu/longbow-fletcher/internal/device"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings/tokenizer"
-	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
 func createTempVocab(t *testing.T) string {
@@ -31,7 +31,7 @@ func createTempVocab(t *testing.T) string {
 func TestEmbedder_EmbedBatch(t *testing.T) {
 	vocabPath := createTempVocab(t)
 	defer func() { _ = os.Remove(vocabPath) }()
-	
+
 	// Manually construct tokenizer
 	tok, err := tokenizer.NewWordPieceTokenizer(vocabPath)
 	if err != nil {
@@ -41,7 +41,7 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 	// Manually construct model (avoid weight loading)
 	config := model.DefaultBertTinyConfig()
 	backend := device.NewCPUBackend()
-	bert := model.NewBertModelWithBackend(config, backend) 
+	bert := model.NewBertModelWithBackend(config, backend)
 	// initWeights is called in NewBertModelWithBackend, so it has random weights.
 
 	e := &Embedder{
@@ -50,18 +50,18 @@ func TestEmbedder_EmbedBatch(t *testing.T) {
 		internalBatchSize: 32,
 		gpuMetrics:        make([]GPUMetrics, 1),
 	}
-	
+
 	tests := []string{
-		"hello world", 
+		"hello world",
 		"test sentence",
 	}
-	
+
 	vectors := e.ProxyEmbedBatch(context.Background(), tests)
-	
+
 	if len(vectors) != len(tests)*config.HiddenSize {
 		t.Errorf("Expected %d elements, got %d", len(tests)*config.HiddenSize, len(vectors))
 	}
-	
+
 	for i := 0; i < len(tests); i++ {
 		vec := vectors[i*config.HiddenSize : (i+1)*config.HiddenSize]
 		// Check for non-zero
