@@ -5,59 +5,66 @@ package device
 type Tensor interface {
 	// Dims returns the dimensions (rows, cols) of the tensor.
 	Dims() (int, int)
-	
+
 	// At returns the value at (i, j).
 	// This is often slow and should be used for debugging or infrequent access.
 	At(i, j int) float32
-	
+
 	// Set sets the value at (i, j).
 	Set(i, j int, v float32)
-	
+
 	// Data returns the underlying slice if available on CPU (nil if on GPU).
 	Data() []float32
-	
+
 	// DataType returns the data type of the tensor.
 	DataType() DataType
-	
+
 	// ToHost copies the data to a Go slice (float32).
 	ToHost() []float32
-	
+
 	// CopyFromFloat32 copies data from a Go slice (float32) to the tensor.
 	CopyFromFloat32(data []float32)
-	
+
 	// Operations
-	
+
 	// Copy copies content from another tensor.
 	Copy(from Tensor)
-	
+
 	// Slice creates a view of the tensor.
 	Slice(i, k, j, l int) Tensor
-	
+
+	// Paste copies data from a source tensor into this tensor at the specified position.
+	// dstRow, dstCol: starting position in this tensor to paste into
+	// src: source tensor to copy from
+	// srcRow, srcCol: starting position in source tensor
+	// rows, cols: number of rows and columns to copy
+	Paste(dstRow, dstCol int, src Tensor, srcRow, srcCol, rows, cols int)
+
 	// T returns the transpose view.
 	T() Tensor
-	
+
 	// Mul performs matrix multiplication: result = this * other
 	// In-place update of this tensor? No, usually Mul(a, b) -> writes to this.
 	// Convention: t.Mul(a, b) means t = a * b
 	Mul(a, b Tensor)
-	
+
 	// Add performs element-wise addition: t = t + other
 	Add(other Tensor)
-			
+
 	// AddScalar performs: t = t + val
 	AddScalar(val float32)
-	
+
 	// Scale performs: t = t * val
 	Scale(val float32)
-	
+
 	// AddBias adds a bias vector (broadcasted) to each row/col.
 	AddBias(bias Tensor)
-	
+
 	// Activation functions (In-Place)
 	Softmax()
 	Gelu()
 	Tanh()
-	
+
 	// LayerNorm performs layer normalization (In-Place).
 	LayerNorm(gamma, beta Tensor, eps float32)
 
@@ -69,7 +76,7 @@ type Tensor interface {
 	// If done in-place on x: x += residual; x = LayerNorm(x).
 	// So this method modifies receiver 't'.
 	AddLayerNorm(residual, gamma, beta Tensor, eps float32)
-	
+
 	// Gather collects rows based on indices. Returns new Tensor.
 	Gather(indices []int) Tensor
 
@@ -93,11 +100,11 @@ type Tensor interface {
 	// 'lengths' specifies the actual sequence length for each batch item.
 	// Returns flattend (Batch*Seq, Hidden)
 	AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int, scale float32) Tensor
-	
+
 	// RoPE applies Rotary Positional Embeddings to this tensor (In-Place).
 	// Assumes tensor is (Batch*Seq, Hidden)
 	ApplyRoPE(batchSize, seqLen, numHeads, headDim int)
-	
+
 	// ExtractTo parallelizes the transfer and row-splitting of the tensor into a pre-allocated slice of slices.
 	ExtractTo(destination [][]float32, startRow int)
 
@@ -138,20 +145,20 @@ type Backend interface {
 	Name() string
 	NewTensor(r, c int, data []float32) Tensor
 	NewTensorWithType(r, c int, dtype DataType, data []float32) Tensor
-	
+
 	// GetTensor gets a tensor from the pool or creates a new one.
 	GetTensor(r, c int) Tensor
-	
+
 	// PutTensor returns a tensor to the pool.
 	PutTensor(t Tensor)
-	
+
 	// Synchronize waits for all pending operations to complete.
 	Synchronize()
 
 	// DeviceCount returns the number of available devices.
 	// 1 for CPU, >=1 for GPU.
 	DeviceCount() int
-	
+
 	// SetDevice sets the current active device for this backend instance.
 	// index must be < DeviceCount().
 	SetDevice(index int)

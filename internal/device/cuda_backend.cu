@@ -314,4 +314,15 @@ void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output,
   (r_view = slice).run(c->stream);
 }
 
+void Cuda_Paste(CudaContextRef ctx, CudaBufferRef dst, CudaBufferRef src,
+                int dstRow, int dstCol, int srcRow, int srcCol,
+                int rows, int cols, int dstCols, int srcCols) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto dst_view = make_tensor<float>((float *)dst, {dstCols / cols, dstCols});
+  auto src_view = make_tensor<float>((float *)src, {srcCols / cols, srcCols});
+  auto dst_slice = dst_view.Slice({dstRow, dstCol}, {dstRow + rows, dstCol + cols});
+  auto src_slice = src_view.Slice({srcRow, srcCol}, {srcRow + rows, srcCol + cols});
+  (dst_slice = src_slice).run(c->stream);
+}
+
 } // extern "C"

@@ -2,12 +2,12 @@ package device
 
 import (
 	"math"
-	"sync"
 	"runtime"
+	"sync"
 	"unsafe"
 
-	"github.com/rs/zerolog/log"
 	"github.com/23skdu/longbow-fletcher/internal/simd"
+	"github.com/rs/zerolog/log"
 	"gonum.org/v1/gonum/blas"
 	"gonum.org/v1/gonum/blas/blas32"
 )
@@ -19,7 +19,7 @@ var _ Tensor = (*CPUTensor)(nil)
 // numWorkers defines the default parallelism for CPU operations
 var numWorkers = runtime.NumCPU()
 
-type CPUBackend struct{
+type CPUBackend struct {
 	pool sync.Pool
 }
 
@@ -49,7 +49,7 @@ func (b *CPUBackend) NewTensorWithType(r, c int, dtype DataType, data []float32)
 		rows:    r,
 		cols:    c,
 	}
-	
+
 	if data == nil {
 		t.data = make([]float32, size)
 	} else {
@@ -59,7 +59,7 @@ func (b *CPUBackend) NewTensorWithType(r, c int, dtype DataType, data []float32)
 		t.data = make([]float32, size)
 		copy(t.data, data)
 	}
-	
+
 	return t
 }
 
@@ -68,12 +68,12 @@ func (t *CPUTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int,
 	qt, _ := q.(*CPUTensor)
 	kt, _ := k.(*CPUTensor)
 	vt, _ := v.(*CPUTensor)
-	
+
 	r, c := t.Dims()
 	result := t.backend.NewTensor(r, c, nil)
-	
+
 	headSize := c / numHeads
-	
+
 	currentIdx := 0
 	type job struct {
 		start int
@@ -84,39 +84,39 @@ func (t *CPUTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int,
 		jobs[i] = job{start: currentIdx, len: l}
 		currentIdx += l
 	}
-	
+
 	computeAttention := func(start, length int) {
 		endIdx := start + length
-		
+
 		for h := 0; h < numHeads; h++ {
 			headStart := h * headSize
 			headEnd := headStart + headSize
-			
+
 			seqQ := qt.Slice(start, endIdx, headStart, headEnd)
 			seqK := kt.Slice(start, endIdx, headStart, headEnd)
 			seqV := vt.Slice(start, endIdx, headStart, headEnd)
-			
+
 			scores := t.backend.GetTensor(length, length)
 			seqKT := seqK.T()
 			scores.Mul(seqQ, seqKT)
-			
+
 			scores.Scale(scale)
 			scores.Softmax()
-			
+
 			ctx := t.backend.GetTensor(length, headSize)
 			ctx.Mul(scores, seqV)
-			
+
 			// Copy back to result
 			for i := 0; i < length; i++ {
 				for j := 0; j < headSize; j++ {
 					result.Set(start+i, headStart+j, ctx.At(i, j))
 				}
 			}
-			
+
 			// Cleanup (optional if manual management not used)
 		}
 	}
-	
+
 	// Parallel execution
 	var wg sync.WaitGroup
 	for _, j := range jobs {
@@ -127,7 +127,7 @@ func (t *CPUTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int,
 		}(j.start, j.len)
 	}
 	wg.Wait()
-	
+
 	return result
 }
 
@@ -162,7 +162,7 @@ func (b *CPUBackend) PutTensor(t Tensor) {
 	if !ok {
 		return // Don't pool foreign tensors
 	}
-	
+
 	ct.trans = false
 	// Data is zeroed when retrieved by GetTensor
 	b.pool.Put(ct)
@@ -243,7 +243,7 @@ func (t *CPUTensor) ToHost() []float32 {
 		}
 		return out
 	}
-	
+
 	out := make([]float32, len(t.data))
 	copy(out, t.data)
 	return out
@@ -261,7 +261,7 @@ func (t *CPUTensor) Copy(from Tensor) {
 	if !ok {
 		log.Panic().Msg("Copying between different backends not yet supported directly")
 	}
-	
+
 	tr, tc := t.Dims()
 	fr, fc := ft.Dims()
 
@@ -303,6 +303,20 @@ func (t *CPUTensor) Slice(i, k, j, l int) Tensor {
 	return out
 }
 
+func (t *CPUTensor) Paste(dstRow, dstCol int, src Tensor, srcRow, srcCol, rows, cols int) {
+	st, ok := src.(*CPUTensor)
+	if !ok {
+		panic("Mixed backend Paste")
+	}
+
+	for rowIdx := 0; rowIdx < rows; rowIdx++ {
+		for colIdx := 0; colIdx < cols; colIdx++ {
+			val := st.At(srcRow+rowIdx, srcCol+colIdx)
+			t.Set(dstRow+rowIdx, dstCol+colIdx, val)
+		}
+	}
+}
+
 func (t *CPUTensor) T() Tensor {
 	return &CPUTensor{
 		backend: t.backend,
@@ -317,7 +331,7 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 	// a and b must be CPUTensors
 	ma, ok1 := a.(*CPUTensor)
 	mb, ok2 := b.(*CPUTensor)
-	
+
 	if !ok1 || !ok2 {
 		log.Panic().Msg("Mixed backend Mul not supported")
 	}
@@ -338,7 +352,7 @@ func (t *CPUTensor) Mul(a, b Tensor) {
 	// Keep SIMD path for potential use on systems without optimized BLAS
 	const blasThreshold = 0 // 0 = always use BLAS
 	resultSize := tr * tc
-	
+
 	if resultSize < blasThreshold {
 		t.mulSIMD(ma, mb, ar, ac, bc)
 	} else {
@@ -411,7 +425,6 @@ func (t *CPUTensor) mulSIMD(ma, mb *CPUTensor, ar, common, bc int) {
 	}
 }
 
-
 func (t *CPUTensor) Add(other Tensor) {
 	ot, ok := other.(*CPUTensor)
 	if !ok {
@@ -433,7 +446,7 @@ func (t *CPUTensor) Add(other Tensor) {
 	} else {
 		for i := 0; i < tr; i++ {
 			for j := 0; j < tc; j++ {
-				t.Set(i, j, t.At(i, j) + ot.At(i, j))
+				t.Set(i, j, t.At(i, j)+ot.At(i, j))
 			}
 		}
 	}
@@ -447,15 +460,17 @@ func (t *CPUTensor) AddScalar(val float32) {
 
 func (t *CPUTensor) AddBias(bias Tensor) {
 	bt, ok := bias.(*CPUTensor)
-	if !ok { panic("Mixed backend AddBias") }
-	
+	if !ok {
+		panic("Mixed backend AddBias")
+	}
+
 	r, c := t.Dims()
 	br, bc := bias.Dims()
-	
+
 	if br != 1 && bc != 1 {
 		panic("AddBias: bias must be a vector (1xN or Nx1)")
 	}
-	
+
 	var biasData []float32
 	if bt.trans {
 		biasData = make([]float32, c)
@@ -471,7 +486,7 @@ func (t *CPUTensor) AddBias(bias Tensor) {
 	} else {
 		biasData = bt.data
 	}
-	
+
 	if len(biasData) != c {
 		panic("AddBias: bias length mismatch with tensor columns")
 	}
@@ -496,7 +511,7 @@ func (t *CPUTensor) Scale(val float32) {
 func (t *CPUTensor) Gather(indices []int) Tensor {
 	r, c := t.Dims()
 	outData := make([]float32, len(indices)*c)
-	
+
 	for i, idx := range indices {
 		if idx < 0 || idx >= r {
 			panic("Gather index out of bounds")
@@ -505,7 +520,7 @@ func (t *CPUTensor) Gather(indices []int) Tensor {
 			outData[i*c+j] = t.At(idx, j)
 		}
 	}
-	
+
 	return t.backend.NewTensor(len(indices), c, outData)
 }
 
@@ -541,8 +556,10 @@ func (t *CPUTensor) Tanh() {
 func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	gt, ok1 := gamma.(*CPUTensor)
 	bt, ok2 := beta.(*CPUTensor)
-	if !ok1 || !ok2 { panic("Mixed backend LN") }
-	
+	if !ok1 || !ok2 {
+		panic("Mixed backend LN")
+	}
+
 	if t.trans {
 		log.Panic().Msg("LayerNorm not supported on transposed tensor views directly")
 	}
@@ -569,33 +586,33 @@ func (t *CPUTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	} else {
 		betaData = bt.data
 	}
-	
+
 	r, c := t.Dims()
-	
+
 	if len(gammaData) < c || len(betaData) < c {
 		log.Panic().Msg("LayerNorm params dim mismatch")
 	}
-	
+
 	for i := 0; i < r; i++ {
 		rowStart := i * c
 		row := data[rowStart : rowStart+c]
-		
+
 		var sum float32
 		for _, v := range row {
 			sum += v
 		}
 		mean := sum / float32(c)
-		
+
 		var varSum float32
 		for _, v := range row {
 			diff := v - mean
 			varSum += diff * diff
 		}
 		variance := varSum / float32(c)
-		invStd := 1.0 / float32(math.Sqrt(float64(variance + eps)))
-		
+		invStd := 1.0 / float32(math.Sqrt(float64(variance+eps)))
+
 		for j := 0; j < c; j++ {
-			row[j] = (row[j] - mean) * invStd * gammaData[j] + betaData[j]
+			row[j] = (row[j]-mean)*invStd*gammaData[j] + betaData[j]
 		}
 	}
 }
@@ -604,7 +621,7 @@ func (t *CPUTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32) {
 	// Naive implementation: Add then LayerNorm
 	// t = t + residual
 	t.Add(residual)
-	
+
 	// t = LayerNorm(t)
 	t.LayerNorm(gamma, beta, eps)
 }
@@ -612,20 +629,20 @@ func (t *CPUTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32) {
 func (t *CPUTensor) Linear(input, weight, bias Tensor) Tensor {
 	r, _ := input.Dims()
 	_, wc := weight.Dims()
-	
+
 	result := t.backend.GetTensor(r, wc)
 	result.Mul(input, weight)
-	
+
 	if bias != nil {
 		result.AddBias(bias)
 	}
-	
+
 	return result
 }
 
 func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation ActivationType) Tensor {
 	result := t.Linear(input, weight, bias)
-	
+
 	switch activation {
 	case ActivationGELU:
 		result.Gelu()
@@ -640,14 +657,14 @@ func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation Acti
 		output := t.backend.GetTensor(r, interSize)
 		ot := output.(*CPUTensor)
 		rt := result.(*CPUTensor)
-		
+
 		for n := 0; n < r; n++ {
 			for i := 0; i < interSize; i++ {
-				x := rt.data[n*c + i]
-				y := rt.data[n*c + i + interSize]
+				x := rt.data[n*c+i]
+				y := rt.data[n*c+i+interSize]
 				// Swish(x) = x * sigmoid(x)
 				swishX := x / (1.0 + float32(math.Exp(float64(-x))))
-				ot.data[n*interSize + i] = swishX * y
+				ot.data[n*interSize+i] = swishX * y
 			}
 		}
 		t.backend.PutTensor(result)
@@ -655,7 +672,7 @@ func (t *CPUTensor) LinearActivation(input, weight, bias Tensor, activation Acti
 	case ActivationIdentity:
 		// No-op
 	}
-	
+
 	return result
 }
 
@@ -663,17 +680,17 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, s
 	qt := q.(*CPUTensor)
 	kt := k.(*CPUTensor)
 	vt := v.(*CPUTensor)
-	
+
 	r, c := qt.Dims()
 	if r != batchSize*seqLen {
 		panic("Attention: dims mismatch")
 	}
-	
+
 	headSize := c / numHeads
-	
+
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*CPUTensor)
-	
+
 	// Process each batch in parallel using BLAS for QK^T and Scores@V
 	// Testing showed numWorkers is optimal - fewer workers actually slower
 	var wg sync.WaitGroup
@@ -681,47 +698,47 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, s
 	if batchSize < workers {
 		workers = batchSize
 	}
-	
+
 	itemsPerWorker := (batchSize + workers - 1) / workers
-	
+
 	for w := 0; w < workers; w++ {
 		startBatch := w * itemsPerWorker
 		endBatch := startBatch + itemsPerWorker
 		if endBatch > batchSize {
 			endBatch = batchSize
 		}
-		
+
 		wg.Add(1)
 		go func(start, end int) {
 			defer wg.Done()
-			
+
 			// Pre-allocate per-worker buffers
 			scores := make([]float32, seqLen*seqLen)
-			
+
 			for i := start; i < end; i++ {
 				offset := i * seqLen
 				qStart := offset * c
-				
+
 				// Loop over heads
 				for h := 0; h < numHeads; h++ {
 					headOffset := h * headSize
-					
+
 					// qData for this head
 					// Strided BLAS allows picking columns
 					// But our implementation of mulBLAS or helper below needs careful stride setup
 					// qData starts at qt.data[qStart + headOffset]
 					// Stride is c (full hidden size)
-					
+
 					qPtr := qt.data[qStart+headOffset:]
 					kPtr := kt.data[qStart+headOffset:]
 					vPtr := vt.data[qStart+headOffset:]
 					outPtr := rst.data[qStart+headOffset:]
-					
+
 					// scores = Q_h @ K_h^T
 					// Q: (Seq, HeadSize), Stride=Hidden
 					// K: (Seq, HeadSize), Stride=Hidden (Transposed logically)
 					// Result: (Seq, Seq), Stride=Seq (Contiguous)
-					
+
 					blas32.Gemm(blas.NoTrans, blas.Trans,
 						scale,
 						blas32.General{Rows: seqLen, Cols: headSize, Stride: c, Data: qPtr},
@@ -729,18 +746,18 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, s
 						0.0,
 						blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
 					)
-					
+
 					// Apply softmax to each row of scores
 					for row := 0; row < seqLen; row++ {
 						rowIdx := row * seqLen
 						simd.SoftmaxFast(scores[rowIdx : rowIdx+seqLen])
 					}
-					
+
 					// context = scores @ V_h
 					// Scores: (Seq, Seq)
 					// V: (Seq, HeadSize), Stride=Hidden
 					// Out: (Seq, HeadSize), Stride=Hidden
-					
+
 					blas32.Gemm(blas.NoTrans, blas.NoTrans,
 						1.0,
 						blas32.General{Rows: seqLen, Cols: seqLen, Stride: seqLen, Data: scores},
@@ -753,7 +770,7 @@ func (t *CPUTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, s
 		}(startBatch, endBatch)
 	}
 	wg.Wait()
-	
+
 	return result
 }
 
@@ -761,11 +778,11 @@ func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	if t.trans {
 		panic("ApplyRoPE on transposed")
 	}
-	
+
 	totalRows := batchSize * seqLen
 	var wg sync.WaitGroup
 	rowsPerWorker := (totalRows + numWorkers - 1) / numWorkers
-	
+
 	for w := 0; w < numWorkers; w++ {
 		startRow := w * rowsPerWorker
 		endRow := startRow + rowsPerWorker
@@ -775,27 +792,27 @@ func (t *CPUTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 		if endRow > totalRows {
 			endRow = totalRows
 		}
-		
+
 		wg.Add(1)
 		go func(sRow, eRow int) {
 			defer wg.Done()
 			for r := sRow; r < eRow; r++ {
 				seqIdx := r % seqLen
 				rowOffset := r * (numHeads * headDim)
-				
+
 				for h := 0; h < numHeads; h++ {
-					headOffset := rowOffset + h * headDim
-					
+					headOffset := rowOffset + h*headDim
+
 					for i := 0; i < headDim/2; i++ {
 						theta := float64(seqIdx) * math.Pow(10000.0, -2.0*float64(i)/float64(headDim))
 						cosTheta := float32(math.Cos(theta))
 						sinTheta := float32(math.Sin(theta))
-						
-						x1 := t.data[headOffset + i]
-						x2 := t.data[headOffset + headDim/2 + i]
-						
-						t.data[headOffset + i] = x1*cosTheta - x2*sinTheta
-						t.data[headOffset + headDim/2 + i] = x1*sinTheta + x2*cosTheta
+
+						x1 := t.data[headOffset+i]
+						x2 := t.data[headOffset+headDim/2+i]
+
+						t.data[headOffset+i] = x1*cosTheta - x2*sinTheta
+						t.data[headOffset+headDim/2+i] = x1*sinTheta + x2*cosTheta
 					}
 				}
 			}
@@ -825,7 +842,7 @@ func (t *CPUTensor) ExtractBytes() []byte {
 	if len(tData) == 0 {
 		return nil
 	}
-	
+
 	// Create byte slice view using unsafe.Slice (Go 1.17+)
 	ptr := (*byte)(unsafe.Pointer(&tData[0]))
 	return unsafe.Slice(ptr, len(tData)*4)
@@ -837,14 +854,14 @@ func (t *CPUTensor) Cast(dtype DataType) Tensor {
 		newT := t.backend.NewTensor(t.rows, t.cols, t.ToHost())
 		return newT
 	}
-	
+
 	// CPU backend currently only supports Float32 storage
 	panic("Cast: CPU backend does not support non-Float32 tensors")
 }
 
 func (t *CPUTensor) HasNaN() (bool, error) {
 	if t.trans {
-		// Just iterate host copy? Or optimize. 
+		// Just iterate host copy? Or optimize.
 		// Iterate underlying data is safe unless row usage is sparse (not supported here).
 		for _, v := range t.data {
 			if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
@@ -853,7 +870,7 @@ func (t *CPUTensor) HasNaN() (bool, error) {
 		}
 		return false, nil
 	}
-	
+
 	for _, v := range t.data {
 		if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
 			return true, nil
@@ -861,4 +878,3 @@ func (t *CPUTensor) HasNaN() (bool, error) {
 	}
 	return false, nil
 }
-

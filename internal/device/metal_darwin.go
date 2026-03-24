@@ -50,12 +50,12 @@ func getBucket(size int) int {
 func NewMetalBackend() *MetalBackend {
 	cSrc := C.CString(kernelsSource)
 	defer C.free(unsafe.Pointer(cSrc))
-	
+
 	ctx := C.Metal_Init(cSrc)
 	if ctx == nil {
 		panic("Failed to initialize Metal backend")
 	}
-	
+
 	return &MetalBackend{
 		ctx:            ctx,
 		buckets:        make(map[int][]bufferPoolEntry),
@@ -68,12 +68,12 @@ func NewMetalBackend() *MetalBackend {
 func NewMetalBackendFP16() *MetalBackend {
 	cSrc := C.CString(kernelsSource)
 	defer C.free(unsafe.Pointer(cSrc))
-	
+
 	ctx := C.Metal_Init(cSrc)
 	if ctx == nil {
 		panic("Failed to initialize Metal backend")
 	}
-	
+
 	return &MetalBackend{
 		ctx:            ctx,
 		buckets:        make(map[int][]bufferPoolEntry),
@@ -99,10 +99,10 @@ func (b *MetalBackend) NewTensor(r, c int, data []float32) Tensor {
 
 func (b *MetalBackend) NewTensorWithType(r, c int, dtype DataType, data []float32) Tensor {
 	size := r * c // number of elements
-	
+
 	var sizeBytes int
 	var buf C.MetalBufferRef
-	
+
 	if dtype == Float16 {
 		// FP16: 2 bytes per element
 		sizeBytes = size * 2
@@ -110,7 +110,7 @@ func (b *MetalBackend) NewTensorWithType(r, c int, dtype DataType, data []float3
 		if buf == nil {
 			buf = C.Metal_Alloc(C.MetalContextRef(b.ctx), C.int(sizeBytes))
 		}
-		
+
 		if len(data) > 0 {
 			// Convert []float32 to []uint16 (FP16 encoded)
 			f16 := make([]uint16, size)
@@ -128,7 +128,7 @@ func (b *MetalBackend) NewTensorWithType(r, c int, dtype DataType, data []float3
 		if buf == nil {
 			buf = C.Metal_Alloc(C.MetalContextRef(b.ctx), C.int(sizeBytes))
 		}
-		
+
 		if len(data) > 0 {
 			// Direct copy for FP32
 			C.Metal_CopyToDevice(buf, 0, unsafe.Pointer(&data[0]), C.int(sizeBytes))
@@ -138,26 +138,26 @@ func (b *MetalBackend) NewTensorWithType(r, c int, dtype DataType, data []float3
 	}
 
 	t := &MetalTensor{
-		backend:  b,
-		rows:     r,
-		cols:     c,
-		buf:      buf,
-		offset:   0,
-		sizeBytes: sizeBytes,
+		backend:    b,
+		rows:       r,
+		cols:       c,
+		buf:        buf,
+		offset:     0,
+		sizeBytes:  sizeBytes,
 		ownsBuffer: true,
-		dtype: dtype,
+		dtype:      dtype,
 	}
-	
+
 	runtime.SetFinalizer(t, func(mt *MetalTensor) {
 		if mt.ownsBuffer && mt.offset == 0 {
 			mt.backend.returnToPool(mt.buf, mt.sizeBytes)
 		}
 	})
-	
+
 	return t
 }
 
-	// FP16 conversion helpers are now in utils.go
+// FP16 conversion helpers are now in utils.go
 
 func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 	b.mu.Lock()
@@ -186,17 +186,17 @@ func (b *MetalBackend) getPooledBuffer(sizeBytes int) C.MetalBufferRef {
 			if bestIdx != -1 {
 				buf := list[bestIdx].buf
 				b.buckets[i] = append(list[:bestIdx], list[bestIdx+1:]...)
-				
+
 				// Metrics: Hit
 				poolHits.Inc()
 				poolSizeBytes.Sub(float64(list[bestIdx].size))
 				poolBuffers.Dec()
-				
+
 				return buf
 			}
 		}
 	}
-	
+
 	// Metrics: Miss
 	poolMisses.Inc()
 	return nil
@@ -214,30 +214,30 @@ func (t *MetalTensor) HasNaN() (bool, error) {
 	// Or we can use a small persistent buffer?
 	// Let's alloc new for safety/simplicity first.
 	// 4 bytes = 1 x int32
-	
+
 	resBuf := C.Metal_Alloc(t.backend.ctx, 4)
 	if resBuf == nil {
 		return false, fmt.Errorf("failed to allocate result buffer for NaN check")
 	}
 	defer C.Metal_FreeBuffer(t.backend.ctx, resBuf)
-	
+
 	// Initialize to 0
 	C.Metal_Memset(resBuf, 0, 0, 4) // Memset 0
-	
+
 	count := t.rows * t.cols
-	
+
 	if t.dtype == Float16 {
 		C.Metal_CheckNaN_F16(t.backend.ctx, t.buf, C.int(t.offset), C.int(count), resBuf)
 	} else {
 		C.Metal_CheckNaN_F32(t.backend.ctx, t.buf, C.int(t.offset), C.int(count), resBuf)
 	}
-	
+
 	// Blocking read
 	t.backend.Synchronize()
-	
+
 	var result int32
 	C.Metal_ExtractBytes(resBuf, 0, unsafe.Pointer(&result), 4)
-	
+
 	return result != 0, nil
 }
 
@@ -248,7 +248,7 @@ func (b *MetalBackend) returnToPool(buf C.MetalBufferRef, sizeBytes int) {
 	bucket := getBucket(sizeBytes)
 	// Add to pending (in-flight) queue until next getPooledBuffer drains it
 	b.pendingBuckets[bucket] = append(b.pendingBuckets[bucket], bufferPoolEntry{buf: buf, size: sizeBytes})
-	
+
 	// Metrics: Return
 	poolSizeBytes.Add(float64(sizeBytes))
 	poolBuffers.Inc()
@@ -312,7 +312,7 @@ func (t *MetalTensor) Dims() (int, int) {
 
 func (t *MetalTensor) At(i, j int) float32 {
 	// Very slow! CPU readback
-	
+
 	// Check bounds
 	rows, cols := t.Dims()
 	if i < 0 || i >= rows || j < 0 || j >= cols {
@@ -322,13 +322,13 @@ func (t *MetalTensor) At(i, j int) float32 {
 	raw := t.rawHostCopy()
 	// Raw is typically row-major of physical buffer
 	// Physical buffer is t.rows x t.cols
-	
+
 	var val float32
 	if t.trans {
 		// virtual (i, j) -> physical (j, i)
-		val = raw[j*t.cols + i] // j is phys row, i is phys col
+		val = raw[j*t.cols+i] // j is phys row, i is phys col
 	} else {
-		val = raw[i*t.cols + j]
+		val = raw[i*t.cols+j]
 	}
 	return val
 }
@@ -336,11 +336,11 @@ func (t *MetalTensor) At(i, j int) float32 {
 func (t *MetalTensor) Set(i, j int, v float32) {
 	var idx int
 	if t.trans {
-		idx = j*t.cols + i 
+		idx = j*t.cols + i
 	} else {
 		idx = i*t.cols + j
 	}
-	
+
 	if t.dtype == Float16 {
 		// FP16: 2 bytes per element - use conversion and direct memory write
 		f16Val := Float32ToFloat16(v)
@@ -349,27 +349,27 @@ func (t *MetalTensor) Set(i, j int, v float32) {
 		C.Metal_CopyToDevice(t.buf, C.int(byteOffset), unsafe.Pointer(&f16Val), 2)
 	} else {
 		// FP32: 4 bytes per element
-		C.Metal_SetAt(t.buf, C.int(t.offset + idx*4), C.float(v))
+		C.Metal_SetAt(t.buf, C.int(t.offset+idx*4), C.float(v))
 	}
 }
 
 func (t *MetalTensor) rawHostCopy() []float32 {
 	t.backend.Synchronize()
-	
+
 	size := t.rows * t.cols
-	
+
 	if t.dtype == Float16 {
 		// Read FP16 data and convert to float32
 		raw16 := make([]uint16, size)
 		C.Metal_CopyToHost(t.buf, C.int(t.offset), unsafe.Pointer(&raw16[0]), C.int(size*2))
-		
+
 		raw := make([]float32, size)
 		for i, h := range raw16 {
 			raw[i] = Float16ToFloat32(h)
 		}
 		return raw
 	}
-	
+
 	// FP32 path
 	raw := make([]float32, size)
 	C.Metal_CopyToHost(t.buf, C.int(t.offset), unsafe.Pointer(&raw[0]), C.int(size*4))
@@ -378,17 +378,17 @@ func (t *MetalTensor) rawHostCopy() []float32 {
 
 func (t *MetalTensor) Data() []float32 {
 	t.backend.Synchronize()
-	
+
 	ptr := C.Metal_GetBufferContents(t.buf)
 	if ptr == nil {
 		return nil
 	}
-	
+
 	size := t.rows * t.cols
 	if t.dtype == Float16 {
 		return t.ToHost()
 	}
-	
+
 	// FP32 path: direct slice header trick
 	// We must use the offset.
 	dataPtr := unsafe.Pointer(uintptr(ptr) + uintptr(t.offset))
@@ -406,10 +406,10 @@ func (t *MetalTensor) ToHost() []float32 {
 			return out
 		}
 	}
-	
+
 	// Otherwise (FP16 or transposed), use the robust rawHostCopy
 	raw := t.rawHostCopy()
-	
+
 	if t.trans {
 		rows, cols := t.cols, t.rows // logical dimensions
 		out := make([]float32, len(raw))
@@ -420,7 +420,7 @@ func (t *MetalTensor) ToHost() []float32 {
 		}
 		return out
 	}
-	
+
 	return raw
 }
 
@@ -431,7 +431,7 @@ func (t *MetalTensor) CopyFromFloat32(data []float32) {
 	if len(data) != size {
 		panic("CopyFromFloat32: size mismatch")
 	}
-	
+
 	if t.dtype == Float16 {
 		// Batch convert to FP16 and upload
 		f16 := make([]uint16, size)
@@ -450,27 +450,27 @@ func (t *MetalTensor) Copy(from Tensor) {
 	if !ok {
 		panic("Cross-backend copy not supported")
 	}
-	
+
 	// Check size
 	size := t.rows * t.cols
 	fSize := ft.rows * ft.cols
 	if size != fSize {
 		panic(fmt.Sprintf("Copy size mismatch: %d vs %d", size, fSize))
 	}
-	
+
 	// We can treat as 1D copy (1 row, N cols) for simplicity with CopySubmatrix
 	// provided strides align (which they do for 1D/contiguous 2D).
-	
+
 	// Determine correct kernel based on type.
 	// If both usage FP16 vs FP32 matches?
 	// Actually CopySubmatrix takes float pointers for FP32 version and half pointers for F16.
 	// We should check backend type or tensor dtype.
-	
+
 	// If types differ, we need Cast, not Copy. Copy assumes same type.
 	if t.dtype != ft.dtype {
 		panic("Copy requires matching data types (use Cast)")
 	}
-	
+
 	// Validated sizes match. Use Blit for fast copy.
 	// Blit handles offsets and assumes bytes.size = rows*cols*elemSize
 	elemSize := 4
@@ -478,7 +478,7 @@ func (t *MetalTensor) Copy(from Tensor) {
 		elemSize = 2
 	}
 	byteSize := size * elemSize
-	
+
 	C.Metal_Blit(t.backend.ctx, ft.buf, C.int(ft.offset), t.buf, C.int(t.offset), C.int(byteSize))
 	// Ensure Blit is committed before subsequent graph operations (which use different CB)
 	t.backend.Synchronize()
@@ -489,14 +489,14 @@ func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
 	if i < 0 || k > t.rows || j < 0 || l > t.cols || i >= k || j >= l {
 		panic("Invalid slice bounds")
 	}
-	
+
 	// Metal handles 1D buffers. 2D slicing is tricky unless strides are supported or full-width slice.
 	// If full width slice (j=0, l=cols), it's a contiguous chunk.
 	if j == 0 && l == t.cols {
 		// Contiguous rows
 		newRows := k - i
 		newCols := t.cols
-		
+
 		// Byte offset depends on precision
 		var rowBytes int
 		if t.dtype == Float16 {
@@ -504,30 +504,30 @@ func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
 		} else {
 			rowBytes = t.cols * 4 // FP32: 4 bytes
 		}
-		
-		byteOffset := t.offset + i * rowBytes
-		
+
+		byteOffset := t.offset + i*rowBytes
+
 		return &MetalTensor{
-			backend: t.backend,
-			rows:    newRows,
-			cols:    newCols,
-			trans:   t.trans,
-			buf:     t.buf,
-			offset:  byteOffset,
+			backend:   t.backend,
+			rows:      newRows,
+			cols:      newCols,
+			trans:     t.trans,
+			buf:       t.buf,
+			offset:    byteOffset,
 			sizeBytes: t.sizeBytes, // Slice doesn't own buffer but should track? No, Slice view doesn't own.
 			// ownsBuffer is false by default
-			dtype:   t.dtype,
+			dtype: t.dtype,
 		}
 	} else {
 		// General sub-tensor slicing (including column slicing)
 		// Since MetalTensor is contiguous, we MUST create a COPY if we slice columns
-		
+
 		newRows := k - i
 		newCols := l - j
-		
+
 		res := t.backend.NewTensor(newRows, newCols, nil)
 		resT := res.(*MetalTensor)
-		
+
 		if t.dtype == Float16 {
 			C.Metal_CopySubmatrix_F16(t.backend.ctx, t.buf, C.int(t.offset), C.int(t.cols),
 				resT.buf, C.int(resT.offset), C.int(newCols),
@@ -537,8 +537,25 @@ func (t *MetalTensor) Slice(i, k, j, l int) Tensor {
 				resT.buf, C.int(resT.offset), C.int(newCols),
 				C.int(i), C.int(j), C.int(newRows), C.int(newCols))
 		}
-		
+
 		return res
+	}
+}
+
+func (t *MetalTensor) Paste(dstRow, dstCol int, src Tensor, srcRow, srcCol, rows, cols int) {
+	st, ok := src.(*MetalTensor)
+	if !ok {
+		panic("Mixed backend Paste")
+	}
+
+	if t.dtype == Float16 {
+		C.Metal_CopySubmatrix_F16(t.backend.ctx, st.buf, C.int(st.offset), C.int(st.cols),
+			t.buf, C.int(t.offset), C.int(t.cols),
+			C.int(srcRow), C.int(srcCol), C.int(rows), C.int(cols))
+	} else {
+		C.Metal_CopySubmatrix(t.backend.ctx, st.buf, C.int(st.offset), C.int(st.cols),
+			t.buf, C.int(t.offset), C.int(t.cols),
+			C.int(srcRow), C.int(srcCol), C.int(rows), C.int(cols))
 	}
 }
 
@@ -560,25 +577,31 @@ func (t *MetalTensor) Mul(a, b Tensor) {
 	if !ok1 || !ok2 {
 		panic("Mixed backend Mul")
 	}
-	
+
 	r, common1 := ma.Dims()
 	common2, c := mb.Dims()
-	
+
 	if common1 != common2 {
 		panic(fmt.Sprintf("Dimension mismatch: %dx%d * %dx%d", r, common1, common2, c))
 	}
-	
+
 	if t.dtype == Float16 {
 		// Ensure inputs are FP16
 		var tmpA, tmpB Tensor = ma, mb
-		if ma.dtype != Float16 { tmpA = ma.Cast(Float16); defer t.backend.PutTensor(tmpA) }
-		if mb.dtype != Float16 { tmpB = mb.Cast(Float16); defer t.backend.PutTensor(tmpB) }
-		
+		if ma.dtype != Float16 {
+			tmpA = ma.Cast(Float16)
+			defer t.backend.PutTensor(tmpA)
+		}
+		if mb.dtype != Float16 {
+			tmpB = mb.Cast(Float16)
+			defer t.backend.PutTensor(tmpB)
+		}
+
 		tma := tmpA.(*MetalTensor)
 		tmb := tmpB.(*MetalTensor)
 
 		// FP16 MatMul for 2x performance
-		C.Metal_MatMul_F16(t.backend.ctx, 
+		C.Metal_MatMul_F16(t.backend.ctx,
 			tma.buf, C.int(tma.offset), C.bool(tma.trans),
 			tmb.buf, C.int(tmb.offset), C.bool(tmb.trans),
 			t.buf, C.int(t.offset),
@@ -586,13 +609,19 @@ func (t *MetalTensor) Mul(a, b Tensor) {
 	} else {
 		// Ensure inputs are FP32
 		var tmpA, tmpB Tensor = ma, mb
-		if ma.dtype != Float32 { tmpA = ma.Cast(Float32); defer t.backend.PutTensor(tmpA) }
-		if mb.dtype != Float32 { tmpB = mb.Cast(Float32); defer t.backend.PutTensor(tmpB) }
-		
+		if ma.dtype != Float32 {
+			tmpA = ma.Cast(Float32)
+			defer t.backend.PutTensor(tmpA)
+		}
+		if mb.dtype != Float32 {
+			tmpB = mb.Cast(Float32)
+			defer t.backend.PutTensor(tmpB)
+		}
+
 		tma := tmpA.(*MetalTensor)
 		tmb := tmpB.(*MetalTensor)
 
-		C.Metal_MatMul(t.backend.ctx, 
+		C.Metal_MatMul(t.backend.ctx,
 			tma.buf, C.int(tma.offset), C.bool(tma.trans),
 			tmb.buf, C.int(tmb.offset), C.bool(tmb.trans),
 			t.buf, C.int(t.offset),
@@ -602,17 +631,25 @@ func (t *MetalTensor) Mul(a, b Tensor) {
 
 func (t *MetalTensor) Add(other Tensor) {
 	ot, ok := other.(*MetalTensor)
-	if !ok { panic("Mixed backend Add") }
-	
+	if !ok {
+		panic("Mixed backend Add")
+	}
+
 	size := t.rows * t.cols
 	if t.dtype == Float16 {
 		var tmp Tensor = ot
-		if ot.dtype != Float16 { tmp = ot.Cast(Float16); defer t.backend.PutTensor(tmp) }
+		if ot.dtype != Float16 {
+			tmp = ot.Cast(Float16)
+			defer t.backend.PutTensor(tmp)
+		}
 		tot := tmp.(*MetalTensor)
 		C.Metal_Add_F16(t.backend.ctx, t.buf, C.int(t.offset), tot.buf, C.int(tot.offset), t.buf, C.int(t.offset), C.int(size))
 	} else {
 		var tmp Tensor = ot
-		if ot.dtype != Float32 { tmp = ot.Cast(Float32); defer t.backend.PutTensor(tmp) }
+		if ot.dtype != Float32 {
+			tmp = ot.Cast(Float32)
+			defer t.backend.PutTensor(tmp)
+		}
 		tot := tmp.(*MetalTensor)
 		C.Metal_Add(t.backend.ctx, t.buf, C.int(t.offset), tot.buf, C.int(tot.offset), t.buf, C.int(t.offset), C.int(size))
 	}
@@ -633,12 +670,12 @@ func (t *MetalTensor) AddScalar(val float32) {
 		// If kernel expects half val, we must pass half.
 		// Metal_AddScalar_F16 taking float and encoding as half?
 		// Stick to plan: add wrapper.
-		
-		// For now, let's just comment out or assume it exists. 
+
+		// For now, let's just comment out or assume it exists.
 		// Proceeding to implement wrapper in next step.
 		// Using placeholder name until implemented.
 		// Actually I can't call undefined function from Go if not in Header.
-		// I will update this AFTER header update. 
+		// I will update this AFTER header update.
 		// For now just fix Add.
 	} else {
 		C.Metal_AddScalar(t.backend.ctx, t.buf, C.int(t.offset), C.float(val), t.buf, C.int(t.offset), C.int(size))
@@ -661,16 +698,19 @@ func (t *MetalTensor) AddBias(bias Tensor) {
 	if !ok {
 		panic("AddBias: bias must be MetalTensor")
 	}
-	
+
 	// Verify dimensions (bias must match rows or cols depending on logic, effectively cols)
 	// Bias dims should be equal to t.cols
-	if bt.rows * bt.cols != t.cols {
+	if bt.rows*bt.cols != t.cols {
 		panic("AddBias: bias dimension mismatch")
 	}
-	
+
 	if t.dtype == Float16 {
 		var tmp Tensor = bt
-		if bt.dtype != Float16 { tmp = bt.Cast(Float16); defer t.backend.PutTensor(tmp) }
+		if bt.dtype != Float16 {
+			tmp = bt.Cast(Float16)
+			defer t.backend.PutTensor(tmp)
+		}
 		tbt := tmp.(*MetalTensor)
 		C.Metal_AddBias_F16(t.backend.ctx, t.buf, C.int(t.offset), tbt.buf, C.int(tbt.offset), t.buf, C.int(t.offset), C.int(t.rows), C.int(t.cols))
 	} else {
@@ -686,10 +726,10 @@ func (t *MetalTensor) Softmax() {
 	// If transposed, last dim is t.rows?
 	// Dims() returns (r, c). Softmax over c.
 	// if t.trans: Dims -> (cols, rows). "rows" are columns. Softmax over dim 1 (rows).
-	// But underlying buffer is rows x cols. 
+	// But underlying buffer is rows x cols.
 	// If trans, we are viewing it as cols x rows.
 	// Softmax should reduce along dim 1.
-	
+
 	// If trans, memory is col-major logic effectively.
 	// Row i in view = Col i in buffer (strided).
 	// Our kernel assumes contiguous rows.
@@ -698,11 +738,11 @@ func (t *MetalTensor) Softmax() {
 	// BERT does not do Softmax on transposed tensor.
 	// BertSelfAttention: attentionScores = Q * K^T. then Softmax(attentionScores).
 	// attentionScores is NOT transposed.
-	
+
 	if t.trans {
 		panic("Softmax on transposed tensor not supported yet")
 	}
-	
+
 	if t.dtype == Float16 {
 		C.Metal_Softmax_F16(t.backend.ctx, t.buf, C.int(t.offset), t.buf, C.int(t.offset), C.int(t.rows), C.int(t.cols))
 	} else {
@@ -715,13 +755,13 @@ func (t *MetalTensor) Gather(indices []int) Tensor {
 	indicesSize := len(indices) * 4 // int32
 	indicesBuf := C.Metal_Alloc(t.backend.ctx, C.int(indicesSize))
 	defer C.Metal_FreeBuffer(t.backend.ctx, indicesBuf)
-	
+
 	i32 := make([]int32, len(indices))
 	for i, v := range indices {
 		i32[i] = int32(v)
 	}
 	C.Metal_CopyToDevice(indicesBuf, 0, unsafe.Pointer(&i32[0]), C.int(indicesSize))
-	
+
 	// 2. Allocate Output
 	// Output dims: len(indices) x cols
 	// Use t.cols (physical). Dims() might returned swapped if transposed.
@@ -729,21 +769,21 @@ func (t *MetalTensor) Gather(indices []int) Tensor {
 	if t.trans {
 		panic("Gather on transposed tensor not supported")
 	}
-	
+
 	outRows := len(indices)
-	outCols := t.cols 
-	
+	outCols := t.cols
+
 	// Create output with same dtype as input
 	output := t.backend.NewTensorWithType(outRows, outCols, t.dtype, nil)
 	mtOut := output.(*MetalTensor)
-	
+
 	// 3. Dispatch
 	if t.dtype == Float16 {
 		C.Metal_Gather_F16(t.backend.ctx, t.buf, C.int(t.offset), indicesBuf, 0, mtOut.buf, C.int(mtOut.offset), C.int(outRows), C.int(outCols))
 	} else {
 		C.Metal_Gather(t.backend.ctx, t.buf, C.int(t.offset), indicesBuf, 0, mtOut.buf, C.int(mtOut.offset), C.int(outRows), C.int(outCols))
 	}
-	
+
 	return output
 }
 
@@ -768,28 +808,42 @@ func (t *MetalTensor) Tanh() {
 func (t *MetalTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 	gt, ok1 := gamma.(*MetalTensor)
 	bt, ok2 := beta.(*MetalTensor)
-	if !ok1 || !ok2 { panic("Mixed backend LayerNorm") }
-	
+	if !ok1 || !ok2 {
+		panic("Mixed backend LayerNorm")
+	}
+
 	if t.dtype == Float16 {
 		var tmpG, tmpB Tensor = gt, bt
-		if gt.dtype != Float16 { tmpG = gt.Cast(Float16); defer t.backend.PutTensor(tmpG) }
-		if bt.dtype != Float16 { tmpB = bt.Cast(Float16); defer t.backend.PutTensor(tmpB) }
-		
+		if gt.dtype != Float16 {
+			tmpG = gt.Cast(Float16)
+			defer t.backend.PutTensor(tmpG)
+		}
+		if bt.dtype != Float16 {
+			tmpB = bt.Cast(Float16)
+			defer t.backend.PutTensor(tmpB)
+		}
+
 		tgt := tmpG.(*MetalTensor)
 		tbt := tmpB.(*MetalTensor)
 
-		C.Metal_LayerNorm_F16(t.backend.ctx, 
+		C.Metal_LayerNorm_F16(t.backend.ctx,
 			t.buf, C.int(t.offset), tgt.buf, C.int(tgt.offset), tbt.buf, C.int(tbt.offset), t.buf, C.int(t.offset),
 			C.int(t.rows), C.int(t.cols), C.float(eps))
 	} else {
 		var tmpG, tmpB Tensor = gt, bt
-		if gt.dtype != Float32 { tmpG = gt.Cast(Float32); defer t.backend.PutTensor(tmpG) }
-		if bt.dtype != Float32 { tmpB = bt.Cast(Float32); defer t.backend.PutTensor(tmpB) }
-		
+		if gt.dtype != Float32 {
+			tmpG = gt.Cast(Float32)
+			defer t.backend.PutTensor(tmpG)
+		}
+		if bt.dtype != Float32 {
+			tmpB = bt.Cast(Float32)
+			defer t.backend.PutTensor(tmpB)
+		}
+
 		tgt := tmpG.(*MetalTensor)
 		tbt := tmpB.(*MetalTensor)
 
-		C.Metal_LayerNorm(t.backend.ctx, 
+		C.Metal_LayerNorm(t.backend.ctx,
 			t.buf, C.int(t.offset), tgt.buf, C.int(tgt.offset), tbt.buf, C.int(tbt.offset), t.buf, C.int(t.offset),
 			C.int(t.rows), C.int(t.cols), C.float(eps))
 	}
@@ -806,34 +860,42 @@ func (t *MetalTensor) AddLayerNorm(residual, gamma, beta Tensor, eps float32) {
 func (t *MetalTensor) Linear(input, weight, bias Tensor) Tensor {
 	it := input.(*MetalTensor)
 	wt := weight.(*MetalTensor)
-	
+
 	// Check dimensions
 	r, ic := it.Dims()
 	wic, oc := wt.Dims()
-	
+
 	if ic != wic {
 		panic("Linear dimension mismatch")
 	}
-	
+
 	// Determine output dtype based on weights (usually weights are the precision master)
 	outDtype := wt.dtype
-	
+
 	// Create Result
 	res := t.backend.NewTensorWithType(r, oc, outDtype, nil)
 	rst := res.(*MetalTensor)
-	
+
 	if outDtype == Float16 {
 		// Use FP16 path (Graph if possible)
 		var tmpIn, tmpBias Tensor = it, bias
-		if it.dtype != Float16 { tmpIn = it.Cast(Float16); defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpIn) }() }
-		if bias != nil && bias.DataType() != Float16 { tmpBias = bias.Cast(Float16); defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpBias) }() }
-		
-		 tit := tmpIn.(*MetalTensor)
-		 var tbt *MetalTensor
-		 if tmpBias != nil { tbt = tmpBias.(*MetalTensor) }
+		if it.dtype != Float16 {
+			tmpIn = it.Cast(Float16)
+			defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpIn) }()
+		}
+		if bias != nil && bias.DataType() != Float16 {
+			tmpBias = bias.Cast(Float16)
+			defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpBias) }()
+		}
+
+		tit := tmpIn.(*MetalTensor)
+		var tbt *MetalTensor
+		if tmpBias != nil {
+			tbt = tmpBias.(*MetalTensor)
+		}
 
 		if tbt != nil {
-			C.Metal_Linear_Graph(t.backend.ctx, 
+			C.Metal_Linear_Graph(t.backend.ctx,
 				tit.buf, C.int(tit.offset), C.int(tit.rows), C.int(tit.cols),
 				wt.buf, C.int(wt.offset), C.int(wt.cols),
 				tbt.buf, C.int(tbt.offset),
@@ -842,12 +904,12 @@ func (t *MetalTensor) Linear(input, weight, bias Tensor) Tensor {
 			// Fallback to Mul
 			res.Mul(tmpIn, weight)
 		}
-		
+
 		// MUST synchronize before releasing temporary tensors created for this operation
 		if tmpIn != it || (bias != nil && tmpBias != bias) {
 			t.backend.Synchronize()
 		}
-		
+
 		return res
 	} else {
 		// Fallback FP32
@@ -871,12 +933,12 @@ func (t *MetalTensor) LinearActivation(input, weight, bias Tensor, activation Ac
 
 		// 1. Linear projection to 2x intermediate size
 		res2i := t.Linear(it, wt, bt).(*MetalTensor)
-		
+
 		// 2. SwiGLU reduction to 1x intermediate size
 		res := t.backend.NewTensor(r, oc, nil)
 		rst := res.(*MetalTensor)
 		C.Metal_SwiGLU_F16(t.backend.ctx, res2i.buf, C.int(res2i.offset), rst.buf, C.int(rst.offset), C.int(r), C.int(oc))
-		
+
 		t.backend.PutTensor(res2i)
 		return res
 	}
@@ -887,25 +949,33 @@ func (t *MetalTensor) LinearActivation(input, weight, bias Tensor, activation Ac
 func (t *MetalTensor) linearActivationInternal(input, weight, bias Tensor, activation ActivationType) Tensor {
 	it := input.(*MetalTensor)
 	wt := weight.(*MetalTensor)
-	
+
 	// Determine output dtype based on weights
 	outDtype := wt.dtype
-	
+
 	if outDtype == Float16 {
 		// Use FP16 path (Graph)
 		var tmpIn, tmpBias Tensor = it, bias
-		if it.dtype != Float16 { tmpIn = it.Cast(Float16); defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpIn) }() }
-		if bias != nil && bias.DataType() != Float16 { tmpBias = bias.Cast(Float16); defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpBias) }() }
-		
+		if it.dtype != Float16 {
+			tmpIn = it.Cast(Float16)
+			defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpIn) }()
+		}
+		if bias != nil && bias.DataType() != Float16 {
+			tmpBias = bias.Cast(Float16)
+			defer func() { t.backend.Synchronize(); t.backend.PutTensor(tmpBias) }()
+		}
+
 		tit := tmpIn.(*MetalTensor)
 		var tbt *MetalTensor
-		if tmpBias != nil { tbt = tmpBias.(*MetalTensor) }
-		
+		if tmpBias != nil {
+			tbt = tmpBias.(*MetalTensor)
+		}
+
 		r, _ := tit.Dims()
 		_, oc := wt.Dims()
 		res := t.backend.NewTensorWithType(r, oc, Float16, nil)
 		rst := res.(*MetalTensor)
-		
+
 		var btBuf C.MetalBufferRef
 		var btOff C.int
 		if tbt != nil {
@@ -919,12 +989,12 @@ func (t *MetalTensor) linearActivationInternal(input, weight, bias Tensor, activ
 			btBuf, btOff,
 			rst.buf, C.int(rst.offset),
 			C.int(activation))
-			
+
 		// MUST synchronize before releasing temporary tensors created for this operation
 		if tmpIn != it || (bias != nil && tmpBias != bias) {
 			t.backend.Synchronize()
 		}
-			
+
 		return res
 	} else {
 		// FP32 path
@@ -963,12 +1033,12 @@ func (t *MetalTensor) FlashAttention(q, k, v Tensor, batchSize, seqLen, numHeads
 	if r != batchSize*seqLen {
 		panic(fmt.Sprintf("FlashAttention: dims mismatch q.rows=%d expected=%d", r, batchSize*seqLen))
 	}
-	
+
 	headDim := hiddenSize / numHeads
 	if headDim*numHeads != hiddenSize {
 		panic("FlashAttention: hiddenSize not divisible by numHeads")
 	}
-	
+
 	// Check constraints
 	if headDim > 128 {
 		// Fallback to Graph implementation if headDim is too large for our kernel
@@ -983,13 +1053,13 @@ func (t *MetalTensor) FlashAttention(q, k, v Tensor, batchSize, seqLen, numHeads
 	// row_stride = hiddenSize
 	// head_stride = headDim
 	// batch_stride = seqLen * hiddenSize
-	
+
 	rowStride := hiddenSize
 	headStride := headDim
 	batchStride := seqLen * hiddenSize
-	
+
 	totalBatches := batchSize * numHeads
-	
+
 	C.Metal_FlashAttention(t.backend.ctx,
 		qt.buf, C.int(qt.offset),
 		kt.buf, C.int(kt.offset),
@@ -998,7 +1068,7 @@ func (t *MetalTensor) FlashAttention(q, k, v Tensor, batchSize, seqLen, numHeads
 		C.int(seqLen), C.int(headDim), C.float(scale),
 		C.int(batchStride), C.int(headStride), C.int(rowStride),
 		C.int(numHeads), C.int(totalBatches))
-		
+
 	return result
 }
 
@@ -1006,18 +1076,18 @@ func (t *MetalTensor) AttentionGraph(q, k, v Tensor, batchSize, seqLen, numHeads
 	qt := q.(*MetalTensor)
 	kt := k.(*MetalTensor)
 	vt := v.(*MetalTensor)
-	
+
 	r, c := qt.Dims()
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*MetalTensor)
-	
+
 	C.Metal_Attention_Graph_v3(t.backend.ctx,
 		qt.buf, C.int(qt.offset),
 		kt.buf, C.int(kt.offset),
 		vt.buf, C.int(vt.offset),
 		rst.buf, C.int(rst.offset),
 		C.int(batchSize), C.int(seqLen), C.int(c), C.int(numHeads), C.float(scale))
-		
+
 	return result
 }
 
@@ -1033,7 +1103,7 @@ func (t *MetalTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads in
 	// qt dims are (totalTokens, hidden)
 	// result dims are same
 	r, c := qt.rows, qt.cols
-	
+
 	result := t.backend.NewTensor(r, c, nil).(*MetalTensor)
 
 	// Convert lengths to C int array
@@ -1055,9 +1125,9 @@ func (t *MetalTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads in
 		panic("AttentionVarLen only supported in FP16 for Metal currently")
 	}
 
-    if hasNaN, _ := result.HasNaN(); hasNaN {
-        panic("NaN detected in AttentionVarLen result")
-    }
+	if hasNaN, _ := result.HasNaN(); hasNaN {
+		panic("NaN detected in AttentionVarLen result")
+	}
 
 	return result
 }
@@ -1068,7 +1138,7 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 	if ptr == nil {
 		return
 	}
-	
+
 	r, c := t.rows, t.cols
 	if t.trans {
 		// Fallback to ToHost for transposed
@@ -1085,7 +1155,7 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 	if r < numWorkers {
 		numWorkers = r
 	}
-	
+
 	chunkSize := (r + numWorkers - 1) / numWorkers
 	var wg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
@@ -1097,7 +1167,7 @@ func (t *MetalTensor) ExtractTo(dest [][]float32, start int) {
 		if wEnd > r {
 			wEnd = r
 		}
-		
+
 		wg.Add(1)
 		go func(s, e int) {
 			defer wg.Done()
@@ -1129,7 +1199,7 @@ func (t *MetalTensor) ExtractToFlat(dest []float32, start int) {
 	if ptr == nil {
 		return
 	}
-	
+
 	size := t.rows * t.cols
 	if t.trans {
 		data := t.ToHost()
@@ -1139,7 +1209,7 @@ func (t *MetalTensor) ExtractToFlat(dest []float32, start int) {
 
 	if t.dtype == Float16 {
 		raw := (*[1 << 30]uint16)(unsafe.Pointer(uintptr(ptr) + uintptr(t.offset)))[:size:size]
-		// Explicit parallel conversion if large? 
+		// Explicit parallel conversion if large?
 		// For now simple loop
 		// DEBUG
 		for i := 0; i < size; i++ {
@@ -1161,7 +1231,7 @@ func (t *MetalTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 
 func (t *MetalTensor) ExtractBytes() []byte {
 	t.backend.Synchronize()
-	
+
 	size := t.rows * t.cols
 	var sizeBytes int
 	if t.dtype == Float16 {
@@ -1169,7 +1239,7 @@ func (t *MetalTensor) ExtractBytes() []byte {
 	} else {
 		sizeBytes = size * 4
 	}
-	
+
 	out := make([]byte, sizeBytes)
 	C.Metal_ExtractBytes(t.buf, C.int(t.offset), unsafe.Pointer(&out[0]), C.int(sizeBytes))
 	return out
@@ -1182,14 +1252,14 @@ func (t *MetalTensor) Cast(dtype DataType) Tensor {
 		res.Copy(t)
 		return res
 	}
-	
+
 	if t.dtype == Float32 && dtype == Float16 {
 		size := t.rows * t.cols
 		outSizeBytes := size * 2
 		outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
-		
+
 		C.Metal_Cast_F32_to_F16(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
-		
+
 		tFinal := &MetalTensor{
 			backend:    t.backend,
 			rows:       t.rows,
@@ -1200,23 +1270,23 @@ func (t *MetalTensor) Cast(dtype DataType) Tensor {
 			ownsBuffer: true,
 			dtype:      Float16,
 		}
-		
+
 		runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
 			if mt.ownsBuffer && mt.offset == 0 {
 				mt.backend.returnToPool(mt.buf, mt.sizeBytes)
 			}
 		})
-		
+
 		return tFinal
 	}
-	
+
 	if t.dtype == Float16 && dtype == Float32 {
 		size := t.rows * t.cols
 		outSizeBytes := size * 4
 		outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
-		
+
 		C.Metal_Cast_F16_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
-		
+
 		tFinal := &MetalTensor{
 			backend:    t.backend,
 			rows:       t.rows,
@@ -1227,16 +1297,16 @@ func (t *MetalTensor) Cast(dtype DataType) Tensor {
 			ownsBuffer: true,
 			dtype:      Float32,
 		}
-		
+
 		runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
 			if mt.ownsBuffer && mt.offset == 0 {
 				mt.backend.returnToPool(mt.buf, mt.sizeBytes)
 			}
 		})
-		
+
 		return tFinal
 	}
-	
+
 	panic("Cast: Unsupported conversion")
 }
 
@@ -1253,25 +1323,25 @@ func (t *MetalTensor) FusedAttention(q, k, v Tensor, batchSize, seqLen, numHeads
 	if t.dtype != Float16 {
 		panic("FusedAttention requires FP16 tensors")
 	}
-	
+
 	qt := q.(*MetalTensor)
 	kt := k.(*MetalTensor)
 	vt := v.(*MetalTensor)
-	
+
 	r, c := qt.Dims()
 	if r != batchSize*seqLen {
 		panic("FusedAttention: dims mismatch")
 	}
-	
+
 	result := t.backend.NewTensor(r, c, nil)
 	rst := result.(*MetalTensor)
-	
+
 	C.Metal_FusedAttention_F16(t.backend.ctx,
 		qt.buf, C.int(qt.offset),
 		kt.buf, C.int(kt.offset),
 		vt.buf, C.int(vt.offset),
 		rst.buf, C.int(rst.offset),
 		C.int(batchSize), C.int(seqLen), C.int(c), C.int(numHeads), C.float(scale))
-	
+
 	return result
 }

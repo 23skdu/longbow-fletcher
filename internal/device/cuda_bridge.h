@@ -69,6 +69,11 @@ void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef
 void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output, 
                 int srcRow, int srcCol, int rows, int cols, int srcCols);
 
+// Paste operation (copy sub-matrix into destination)
+void Cuda_Paste(CudaContextRef ctx, CudaBufferRef dst, CudaBufferRef src,
+                int dstRow, int dstCol, int srcRow, int srcCol, 
+                int rows, int cols, int dstCols, int srcCols);
+
 #ifdef __cplusplus
 }
 #endif

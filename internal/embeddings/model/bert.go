@@ -4,10 +4,9 @@ import (
 	"math"
 	"math/rand"
 	"time"
-	
+
 	"github.com/23skdu/longbow-fletcher/internal/device"
 )
-
 
 type PositionEmbeddingType int
 
@@ -25,7 +24,7 @@ type BertConfig struct {
 	IntermediateSize      int
 	MaxPositionEmbeddings int
 	Activation            device.ActivationType
-	PositionEmbedding      PositionEmbeddingType
+	PositionEmbedding     PositionEmbeddingType
 	LayerNormEps          float32
 }
 
@@ -39,7 +38,7 @@ func DefaultBertTinyConfig() BertConfig {
 		IntermediateSize:      512,
 		MaxPositionEmbeddings: 512,
 		Activation:            device.ActivationGELU,
-		PositionEmbedding:      PositionalAbsolute,
+		PositionEmbedding:     PositionalAbsolute,
 		LayerNormEps:          1e-7,
 	}
 }
@@ -54,7 +53,7 @@ func DefaultNomicConfig() BertConfig {
 		IntermediateSize:      3072,
 		MaxPositionEmbeddings: 8192,
 		Activation:            device.ActivationSwiGLU,
-		PositionEmbedding:      PositionalRoPE,
+		PositionEmbedding:     PositionalRoPE,
 		LayerNormEps:          1e-5,
 	}
 }
@@ -69,7 +68,7 @@ func DefaultMiniLMConfig() BertConfig {
 		IntermediateSize:      1536,
 		MaxPositionEmbeddings: 512,
 		Activation:            device.ActivationGELU,
-		PositionEmbedding:      PositionalAbsolute,
+		PositionEmbedding:     PositionalAbsolute,
 		LayerNormEps:          1e-12,
 	}
 }
@@ -108,7 +107,7 @@ func (m *BertModel) initWeights() {
 	// Embeddings
 	xavierInit(m.Embeddings.WordEmbeddings)
 	xavierInit(m.Embeddings.PositionEmbeddings)
-	
+
 	// Encoder layers
 	for _, layer := range m.Encoder.Layers {
 		// Self-Attention
@@ -122,7 +121,7 @@ func (m *BertModel) initWeights() {
 		// Output
 		xavierInit(layer.Output.Dense)
 	}
-	
+
 	// Pooler
 	xavierInit(m.Pooler.Dense)
 }
@@ -133,13 +132,13 @@ func xavierInit(m device.Tensor) {
 	r, c := m.Dims()
 	size := r * c
 	limit := math.Sqrt(6.0 / float64(r+c))
-	
+
 	// Generate all random values in a single slice
 	data := make([]float32, size)
 	for i := range data {
 		data[i] = float32((rand.Float64()*2 - 1) * limit)
 	}
-	
+
 	// Bulk upload to GPU (single FP16 conversion pass)
 	m.CopyFromFloat32(data)
 }
@@ -151,20 +150,19 @@ func (m *BertModel) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 
 	hiddenStates := m.Encoder.ForwardBatch(embeddings, lengths)
 	// embeddings is released by Encoder.
-	
+
 	// Ensure Encoder is done before Pooler starts (Safety check for NaNs/Race)
 	m.Backend.Synchronize()
-    
-    start := time.Now() // Pooler
-    res := m.Pooler.ForwardBatch(hiddenStates, lengths)
-    
-    LayerDuration.WithLabelValues("pooler", m.Backend.Name()).Observe(time.Since(start).Seconds())
-    m.Backend.PutTensor(hiddenStates)
-    
+
+	start := time.Now() // Pooler
+	res := m.Pooler.ForwardBatch(hiddenStates, lengths)
+
+	LayerDuration.WithLabelValues("pooler", m.Backend.Name()).Observe(time.Since(start).Seconds())
+	m.Backend.PutTensor(hiddenStates)
+
 	// Ensure all GPU operations are finished and memory is coherent before return
 	// Start sync is handled by data consumers (e.g. ToHost, ExtractTo)
 
-	
 	return res
 }
 
@@ -175,24 +173,24 @@ func (m *BertModel) Forward(inputIDs []int) device.Tensor {
 
 // BertEmbeddings handles word, position, and token type embeddings.
 type BertEmbeddings struct {
-	Config             BertConfig
-	Backend            device.Backend
-	WordEmbeddings     device.Tensor
-	PositionEmbeddings device.Tensor
+	Config              BertConfig
+	Backend             device.Backend
+	WordEmbeddings      device.Tensor
+	PositionEmbeddings  device.Tensor
 	TokenTypeEmbeddings device.Tensor
-	LayerNorm          *LayerNorm
-	Dropout            *Dropout
+	LayerNorm           *LayerNorm
+	Dropout             *Dropout
 }
 
 func NewBertEmbeddings(config BertConfig, backend device.Backend) *BertEmbeddings {
 	return &BertEmbeddings{
-		Config:             config,
-		Backend:            backend,
-		WordEmbeddings:     backend.NewTensor(config.VocabSize, config.HiddenSize, nil),
-		PositionEmbeddings: backend.NewTensor(config.MaxPositionEmbeddings, config.HiddenSize, nil),
+		Config:              config,
+		Backend:             backend,
+		WordEmbeddings:      backend.NewTensor(config.VocabSize, config.HiddenSize, nil),
+		PositionEmbeddings:  backend.NewTensor(config.MaxPositionEmbeddings, config.HiddenSize, nil),
 		TokenTypeEmbeddings: backend.NewTensor(2, config.HiddenSize, nil), // 2 types: A and B
-		LayerNorm:          NewLayerNorm(config.HiddenSize, backend),
-		Dropout:            NewDropout(0.1), // Default 0.1
+		LayerNorm:           NewLayerNorm(config.HiddenSize, backend),
+		Dropout:             NewDropout(0.1), // Default 0.1
 	}
 }
 
@@ -200,6 +198,7 @@ func NewBertEmbeddings(config BertConfig, backend device.Backend) *BertEmbedding
 type Dropout struct {
 	Rate float64
 }
+
 func NewDropout(rate float64) *Dropout {
 	return &Dropout{Rate: rate}
 }
@@ -214,10 +213,10 @@ func (e *BertEmbeddings) Forward(inputIDs []int) device.Tensor {
 
 func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tensor {
 	totalTokens := len(inputIDs)
-	
+
 	// 1. Gather Word Embeddings
 	embeddings := e.WordEmbeddings.Gather(inputIDs)
-	
+
 	// 2. Gather Position Embeddings (Absolute)
 	if e.Config.PositionEmbedding == PositionalAbsolute {
 		posIndices := make([]int, totalTokens)
@@ -232,31 +231,31 @@ func (e *BertEmbeddings) ForwardBatch(inputIDs []int, lengths []int) device.Tens
 				idx++
 			}
 		}
-		
+
 		posEmbeds := e.PositionEmbeddings.Gather(posIndices)
 		embeddings.Add(posEmbeds)
 		e.Backend.PutTensor(posEmbeds)
 	}
-	
+
 	// 3. Token Type Embeddings (Assume 0)
 	typeIndices := make([]int, totalTokens)
 	typeEmbeds := e.TokenTypeEmbeddings.Gather(typeIndices)
 	embeddings.Add(typeEmbeds)
 	e.Backend.PutTensor(typeEmbeds)
-	
+
 	// 4. Layer Norm
 	output := e.LayerNorm.Forward(embeddings)
-	
+
 	// Dropout is identity for now, returning same tensor.
 	output = e.Dropout.Forward(output)
-	
+
 	// Ensure the final embeddings are Float32 (the master stream)
 	if output.DataType() != device.Float32 {
 		tmp := output.Cast(device.Float32)
 		e.Backend.PutTensor(output)
 		output = tmp
 	}
-	
+
 	return output
 }
 
@@ -271,14 +270,16 @@ type LayerNorm struct {
 func NewLayerNorm(size int, backend device.Backend) *LayerNorm {
 	// Create Gamma with 1s
 	ones := make([]float32, size)
-	for i := range ones { ones[i] = 1.0 }
-	
+	for i := range ones {
+		ones[i] = 1.0
+	}
+
 	return &LayerNorm{
 		Backend: backend,
 		// Force FP32 for LayerNorm weights to maintain precision during normalization
 		Gamma: backend.NewTensorWithType(1, size, device.Float32, ones),
 		Beta:  backend.NewTensorWithType(1, size, device.Float32, nil), // Zeros
-		Eps:   1e-7, // 1e-12 is too small for FP16 stability, 1e-7 is reasonable compromise
+		Eps:   1e-7,                                                    // 1e-12 is too small for FP16 stability, 1e-7 is reasonable compromise
 	}
 }
 
@@ -364,22 +365,22 @@ func (l *BertLayer) Forward(hiddenStates device.Tensor) device.Tensor {
 func (l *BertLayer) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	startSelf := time.Now() // Self Attention
 	selfAttention := l.Attention.ForwardBatch(hiddenStates, lengths)
-	
+
 	LayerDuration.WithLabelValues("attention", l.Attention.Self.Backend.Name()).Observe(time.Since(startSelf).Seconds())
 	// hiddenStates is NOT released here because it's released by the caller (Encoder)
 
 	startInter := time.Now()
 	intermediate := l.Intermediate.ForwardBatch(selfAttention)
 	LayerDuration.WithLabelValues("intermediate", l.Intermediate.Backend.Name()).Observe(time.Since(startInter).Seconds())
-	
+
 	startOut := time.Now() // Intermediate + Output
 	res := l.Output.ForwardBatch(intermediate, selfAttention)
-	
+
 	LayerDuration.WithLabelValues("output", l.Output.Backend.Name()).Observe(time.Since(startOut).Seconds())
-	
+
 	// intermediate is consumed and released by Output layer
 	// selfAttention (the reservoir) is NOT released, it is returned as res
-	
+
 	return res
 }
 
@@ -424,24 +425,23 @@ func (p *BertPooler) Forward(hiddenStates device.Tensor) device.Tensor {
 
 		return output
 	}
-	
+
 	// output = clsToken * Dense + Bias + Tanh
 	output := p.Dense.LinearActivation(clsToken, p.Dense, p.Bias, device.ActivationTanh)
-	
+
 	// Slice created a new view/tensor depending on backend, but LinearActivation returns new tensor.
 	// We should clean up clsToken if it's not needed. Tensor interface semantics for Slice vary.
 	// Assuming Slice result is owned by caller.
 	// Backends usually handle views or copies. Metal backend usually returns Copy or View.
 	// Proper cleanup:
 	p.Backend.PutTensor(clsToken)
-	
+
 	return output
 }
 
 func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Tensor {
 	batchSize := len(lengths)
 
-	
 	// Construct indices for CLS tokens (index 0 of each sequence).
 	// Sequences are stacked in `output`.
 	// cls index for sequence i is sum(lengths[:i]).
@@ -451,12 +451,12 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 		indices[i] = offset
 		offset += l
 	}
-	
-    // Use Gather to extract CLS tokens efficiently on backend
-    // Gather is part of Tensor interface
-    clsStack := output.Gather(indices)
-    
-    // FP16 Tanh in Pooler can cause NaN due to overflow in Linear step before Tanh.
+
+	// Use Gather to extract CLS tokens efficiently on backend
+	// Gather is part of Tensor interface
+	clsStack := output.Gather(indices)
+
+	// FP16 Tanh in Pooler can cause NaN due to overflow in Linear step before Tanh.
 	// We force the Pooler to run in FP32 if the weights are FP16.
 	if p.Dense.DataType() == device.Float16 {
 		// Cast inputs and weights to FP32
@@ -475,25 +475,23 @@ func (p *BertPooler) ForwardBatch(output device.Tensor, lengths []int) device.Te
 
 		return result
 	}
-	
+
 	// Compute Result = CLS * Dense + Bias + Tanh
 	// Result dims: (BatchSize, Hidden)
 	// Dense dims: (Hidden, Hidden)
 	// clsStack dims: (BatchSize, Hidden)
-	
+
 	result := p.Dense.LinearActivation(clsStack, p.Dense, p.Bias, device.ActivationTanh)
 	p.Backend.PutTensor(clsStack)
-	
+
 	return result
 }
 
-
-
 // BertAttention handles multi-head self-attention.
 type BertAttention struct {
-	Config     BertConfig
-	Self       *BertSelfAttention
-	Output     *BertSelfOutput
+	Config BertConfig
+	Self   *BertSelfAttention
+	Output *BertSelfOutput
 }
 
 func NewBertAttention(config BertConfig, backend device.Backend) *BertAttention {
@@ -550,7 +548,7 @@ func NewBertSelfAttention(config BertConfig, backend device.Backend) *BertSelfAt
 
 func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 	r, _ := hiddenStates.Dims()
-	
+
 	// Q, K, V Projections - use backend buffers
 	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
 	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
@@ -565,56 +563,50 @@ func (s *BertSelfAttention) Forward(hiddenStates device.Tensor) device.Tensor {
 	for h := 0; h < s.NumAttentionHeads; h++ {
 		start := h * s.AttentionHeadSize
 		end := start + s.AttentionHeadSize
-		
+
 		// Slice returns a COPY in current backend implementation
 		qHead := queryLayer.Slice(0, r, start, end)
 		kHead := keyLayer.Slice(0, r, start, end)
 		vHead := valueLayer.Slice(0, r, start, end)
-		
+
 		// scores = Q * K^T
 		scores := s.Backend.GetTensor(r, r)
 		kHeadT := kHead.T()
 		scores.Mul(qHead, kHeadT)
 		scores.Scale(scale)
 		scores.Softmax()
-		
+
 		// ctx = scores * V
 		ctxHead := s.Backend.GetTensor(r, s.AttentionHeadSize)
 		ctxHead.Mul(scores, vHead)
-		
-		// Copy ctxHead into contextLayer manually
-		// TODO: Add Paste/SetSlice to Tensor interface for performance
-		for i := 0; i < r; i++ {
-			for j := 0; j < s.AttentionHeadSize; j++ {
-				val := ctxHead.At(i, j)
-				contextLayer.Set(i, start+j, val)
-			}
-		}
-		
+
+		// Use Paste for efficient copy instead of element-by-element
+		contextLayer.Paste(0, start, ctxHead, 0, 0, r, s.AttentionHeadSize)
+
 		// Cleanup intermediate tensors
 		s.Backend.PutTensor(qHead) // slice created new tensor
 		s.Backend.PutTensor(kHead)
 		s.Backend.PutTensor(vHead)
 		s.Backend.PutTensor(scores) // pooled
-		s.Backend.PutTensor(ctxHead) 
+		s.Backend.PutTensor(ctxHead)
 	}
-	
+
 	// Return Q, K, V to pool
 	s.Backend.PutTensor(queryLayer)
 	s.Backend.PutTensor(keyLayer)
 	s.Backend.PutTensor(valueLayer)
-	
+
 	return contextLayer
 }
 
 func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []int) device.Tensor {
 	_, _ = hiddenStates.Dims()
-	
+
 	// 1. Project Q, K, V for the entire batch at once
 	queryLayer := s.Query.Linear(hiddenStates, s.Query, s.QueryBias)
 	keyLayer := s.Key.Linear(hiddenStates, s.Key, s.KeyBias)
 	valueLayer := s.Value.Linear(hiddenStates, s.Value, s.ValueBias)
-	
+
 	// Apply RoPE if configured
 	if s.Config.PositionEmbedding == PositionalRoPE {
 		batchSize := len(lengths)
@@ -624,7 +616,7 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 	}
 
 	var output device.Tensor
-	
+
 	// Fast path: uniform sequence lengths (common case in batched inference)
 	// This allows computing attention for all sequences without per-seq loop
 	allSameLength := true
@@ -635,99 +627,97 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 			break
 		}
 	}
-	
+
 	batchSize := len(lengths)
-	
+
 	if allSameLength {
 		// Optimized GPU/Graph path for uniform sequence lengths
 		scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
-		
+
 		// Use Fused Attention Graph (Batch MatMul + Softmax + Context)
 		// Returns (Batch*Seq, Hidden)
 		contextLayer := queryLayer.Attention(queryLayer, keyLayer, valueLayer, batchSize, seqLen, s.NumAttentionHeads, scale)
-		
+
 		// Result is the output
 		output = contextLayer
 		// Result is the output
 		output = contextLayer
 	} else {
 		// Variable length path
-	// Fallback to manual loop calling Attention per sequence to avoid NaNs in FusedVarLen
-	offset := 0
-	// Pre-allocate output tensor with the same shape as queryLayer
-	totalTokens, hiddenSize := queryLayer.Dims()
-	output = s.Backend.NewTensor(totalTokens, hiddenSize, nil)
+		// Fallback to manual loop calling Attention per sequence to avoid NaNs in FusedVarLen
+		offset := 0
+		// Pre-allocate output tensor with the same shape as queryLayer
+		totalTokens, hiddenSize := queryLayer.Dims()
+		output = s.Backend.NewTensor(totalTokens, hiddenSize, nil)
 
-	for _, l := range lengths {
-	    if l == 0 {
-	        continue
-	    }
-	    
-	    // Slice tensors for this sequence
-	    // Q, K, V: (TotalTokens, Hidden)
-	    // We want Q[offset:offset+l, :]
-	    qSlice := queryLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
-	    kSlice := keyLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
-	    vSlice := valueLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
-	    
-	    // Call Attention for single batch
-	    // Q: (Seq, Hidden) -> flattened (1*Seq, Hidden)
-	    // Output: (1*Seq, Hidden)
-	    scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
+		for _, l := range lengths {
+			if l == 0 {
+				continue
+			}
 
-		// Pre-scale Q and K to prevent FP16 overflow in MatMul
-		sqrtScale := float32(math.Sqrt(float64(scale)))
-		qSlice.Scale(sqrtScale)
-		kSlice.Scale(sqrtScale)
-	    
-	    // Manual Attention components for debugging
-		// 1. Scores = Q * K^T
-		// Allocate scores tensor (Seq, Seq)
-		scores := s.Backend.NewTensor(l, l, nil)
-		scores.Mul(qSlice, kSlice.T())
-		
-		// 2. Softmax
-		scores.Softmax()
+			// Slice tensors for this sequence
+			// Q, K, V: (TotalTokens, Hidden)
+			// We want Q[offset:offset+l, :]
+			qSlice := queryLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize*s.NumAttentionHeads)
+			kSlice := keyLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize*s.NumAttentionHeads)
+			vSlice := valueLayer.Slice(offset, offset+l, 0, s.AttentionHeadSize*s.NumAttentionHeads)
 
-		// 3. Context = Probs * V
-		// Allocate context tensor (Seq, Hidden)
-		// V is (Seq, Hidden)
-		res := s.Backend.NewTensor(l, s.AttentionHeadSize * s.NumAttentionHeads, nil)
-		res.Mul(scores, vSlice)
-	    
-	    // Copy result to output tensor
-	    outSlice := output.Slice(offset, offset+l, 0, s.AttentionHeadSize * s.NumAttentionHeads)
-	    
-	    // Ensure types match before copy
-	    if res.DataType() != outSlice.DataType() {
-	        resCast := res.Cast(outSlice.DataType())
-	        s.Backend.PutTensor(res)
-	        res = resCast
-	    }
-	    
-	    outSlice.Copy(res)
-	    
-	    // Free intermediates
-	    s.Backend.PutTensor(scores)
-	    s.Backend.PutTensor(res)
-	    // Slices (qSlice, kSlice, vSlice) are views, no need to PutTensor for them.
-	    
-	    offset += l
+			// Call Attention for single batch
+			// Q: (Seq, Hidden) -> flattened (1*Seq, Hidden)
+			// Output: (1*Seq, Hidden)
+			scale := 1.0 / float32(math.Sqrt(float64(s.AttentionHeadSize)))
+
+			// Pre-scale Q and K to prevent FP16 overflow in MatMul
+			sqrtScale := float32(math.Sqrt(float64(scale)))
+			qSlice.Scale(sqrtScale)
+			kSlice.Scale(sqrtScale)
+
+			// Manual Attention components for debugging
+			// 1. Scores = Q * K^T
+			// Allocate scores tensor (Seq, Seq)
+			scores := s.Backend.NewTensor(l, l, nil)
+			scores.Mul(qSlice, kSlice.T())
+
+			// 2. Softmax
+			scores.Softmax()
+
+			// 3. Context = Probs * V
+			// Allocate context tensor (Seq, Hidden)
+			// V is (Seq, Hidden)
+			res := s.Backend.NewTensor(l, s.AttentionHeadSize*s.NumAttentionHeads, nil)
+			res.Mul(scores, vSlice)
+
+			// Copy result to output tensor
+			outSlice := output.Slice(offset, offset+l, 0, s.AttentionHeadSize*s.NumAttentionHeads)
+
+			// Ensure types match before copy
+			if res.DataType() != outSlice.DataType() {
+				resCast := res.Cast(outSlice.DataType())
+				s.Backend.PutTensor(res)
+				res = resCast
+			}
+
+			outSlice.Copy(res)
+
+			// Free intermediates
+			s.Backend.PutTensor(scores)
+			s.Backend.PutTensor(res)
+			// Slices (qSlice, kSlice, vSlice) are views, no need to PutTensor for them.
+
+			offset += l
+		}
+
+		// Helper to free slices? Slices usually don't need explicit free if backend manages them as views.
+		// But if they are distinct objects, GC handles them.
 	}
 
-	// Helper to free slices? Slices usually don't need explicit free if backend manages them as views.
-	// But if they are distinct objects, GC handles them.
-	}
-	
 	// Return projected layers
 	s.Backend.PutTensor(queryLayer)
 	s.Backend.PutTensor(keyLayer)
 	s.Backend.PutTensor(valueLayer)
-	
+
 	return output
 }
-	
-
 
 type BertSelfOutput struct {
 	Backend   device.Backend
@@ -800,7 +790,7 @@ type BertOutput struct {
 
 func NewBertOutput(config BertConfig, backend device.Backend) *BertOutput {
 	interSize := config.IntermediateSize
-	// BertOutput always takes the REDUCED intermediate size as input, 
+	// BertOutput always takes the REDUCED intermediate size as input,
 	// even if SwiGLU used 2x internally.
 	return &BertOutput{
 		Backend:   backend,
@@ -825,10 +815,7 @@ func (o *BertOutput) ForwardBatch(hiddenStates, inputTensor device.Tensor) devic
 
 // Helpers
 
-
-
 // projectPooledInter uses the same pool strategy as standard project
-
 
 // Optimized helpers are now part of device.Tensor interface (Softmax, Gelu, etc.)
 // Removed legacy helper functions: softmax, gelu, softmaxInPlace, addInPlace, geluInPlace.

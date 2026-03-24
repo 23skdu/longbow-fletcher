@@ -183,6 +183,13 @@ func (t *CudaTensor) Slice(i, k, j, l int) Tensor {
 	return out
 }
 
+func (t *CudaTensor) Paste(dstRow, dstCol int, src Tensor, srcRow, srcCol, rows, cols int) {
+	st := src.(*CudaTensor)
+	C.Cuda_Paste(t.backend.ctx, t.buf, st.buf,
+		C.int(dstRow), C.int(dstCol), C.int(srcRow), C.int(srcCol),
+		C.int(rows), C.int(cols), C.int(t.cols), C.int(st.cols))
+}
+
 func (t *CudaTensor) T() Tensor {
 	panic("Transpose view not implemented for CUDA (handled in MatMul)")
 }

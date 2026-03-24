@@ -4,6 +4,11 @@ package device
 
 type CudaBackend struct{}
 
+type CudaTensor struct{}
+
+func (t *CudaTensor) Paste(dstRow, dstCol int, src Tensor, srcRow, srcCol, rows, cols int) {
+}
+
 func NewCudaBackend() Backend {
 	panic("CUDA backend is not supported on this platform. Build with -tags cuda on Linux.")
 }
@@ -20,10 +25,9 @@ func NewCudaBackendFP16() Backend {
 	panic("CUDA backend is not supported on this platform. Build with -tags cuda on Linux.")
 }
 
-func (b *CudaBackend) Name() string { return "CUDA-Stub" }
+func (b *CudaBackend) Name() string                           { return "CUDA-Stub" }
 func (b *CudaBackend) NewTensor(r, c int, d []float32) Tensor { return nil }
-func (b *CudaBackend) GetTensor(r, c int) Tensor { return nil }
-func (b *CudaBackend) PutTensor(t Tensor) {}
-func (b *CudaBackend) Synchronize() {}
-func (b *CudaBackend) DeviceCount() int { return 0 }
-
+func (b *CudaBackend) GetTensor(r, c int) Tensor              { return nil }
+func (b *CudaBackend) PutTensor(t Tensor)                     {}
+func (b *CudaBackend) Synchronize()                           {}
+func (b *CudaBackend) DeviceCount() int                       { return 0 }
