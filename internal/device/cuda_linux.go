@@ -9,7 +9,6 @@ package device
 */
 import "C"
 import (
-	"fmt"
 	"runtime"
 	"unsafe"
 )
@@ -195,7 +194,7 @@ func (t *CudaTensor) CopyFromFloat32(data []float32) {
 
 func (t *CudaTensor) Copy(from Tensor) {
 	ft := from.(*CudaTensor)
-	C.Cuda_CopyToDevice(t.buf, 0, ft.buf, C.int(t.sizeBytes))
+	C.Cuda_CopyDeviceToDevice(t.buf, ft.buf, C.int(t.sizeBytes))
 }
 
 func (t *CudaTensor) Slice(i, k, j, l int) Tensor {

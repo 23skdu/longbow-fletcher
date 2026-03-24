@@ -25,6 +25,7 @@ void Cuda_FreeBuffer(CudaContextRef ctx, CudaBufferRef buf);
 void Cuda_CopyToDevice(CudaBufferRef buf, int offset, const void *data,
                        int size);
 void Cuda_CopyToHost(CudaBufferRef buf, int offset, void *data, int size);
+void Cuda_CopyDeviceToDevice(CudaBufferRef dst, CudaBufferRef src, int size);
 void *Cuda_GetBufferContents(CudaBufferRef buf);
 
 // Ops - MatX Fused
