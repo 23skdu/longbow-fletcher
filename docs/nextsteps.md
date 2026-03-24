@@ -403,6 +403,6 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 - [x] Update bert.go to use Paste
 - [x] Write fuzz tests
 - [x] Write coherence tests
-- [ ] Run Metal benchmark
-- [ ] Run CUDA benchmark
-- [ ] Compare results and document
+- [x] Run Metal benchmark
+- [x] Run CUDA benchmark
+- [x] Compare results and document
