@@ -29,7 +29,7 @@ func cosineSimilarity(a, b []float32) float64 {
 
 func TestEmbeddingCoherence_BertTiny(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -68,7 +68,7 @@ func TestEmbeddingCoherence_BertTiny(t *testing.T) {
 
 func TestEmbeddingCoherence_NomicEmbed(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"nomic-embed-text",
@@ -102,7 +102,7 @@ func TestEmbeddingCoherence_NomicEmbed(t *testing.T) {
 
 func TestEmbeddingCoherence_SameTextSameEmbedding(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -128,7 +128,7 @@ func TestEmbeddingCoherence_SameTextSameEmbedding(t *testing.T) {
 
 func TestEmbeddingCoherence_DifferentTextsDifferentEmbeddings(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -172,7 +172,7 @@ func TestEmbeddingCoherence_DifferentTextsDifferentEmbeddings(t *testing.T) {
 
 func TestEmbeddingCoherence_BatchConsistency(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",

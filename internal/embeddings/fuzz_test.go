@@ -13,7 +13,7 @@ func isNaNOrInf(f float32) bool {
 
 func TestEmbedBatch_Fuzz_RandomASCII(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -44,7 +44,7 @@ func TestEmbedBatch_Fuzz_RandomASCII(t *testing.T) {
 
 func TestEmbedBatch_Fuzz_RandomUTF8(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -70,7 +70,7 @@ func TestEmbedBatch_Fuzz_RandomUTF8(t *testing.T) {
 
 func TestEmbedBatch_Fuzz_EmptyAndEdge(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -108,7 +108,7 @@ func TestEmbedBatch_Fuzz_EmptyAndEdge(t *testing.T) {
 
 func TestEmbedBatch_Fuzz_LongSequence(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -151,7 +151,7 @@ func generateRandomUTF8(length int) string {
 
 func TestEmbeddings_BatchVariedLengths(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"bert-tiny",
@@ -186,7 +186,7 @@ func TestEmbeddings_BatchVariedLengths(t *testing.T) {
 
 func TestEmbeddings_NomicModel(t *testing.T) {
 	embedder, err := NewEmbedder(
-		"tokenizer.json",
+		"vocab.txt",
 		"bert_tiny.safetensors",
 		false,
 		"nomic-embed-text",
