@@ -35,6 +35,47 @@ Generate and ingest random "Lorem Ipsum" traffic to test cluster capacity:
 - Buffer pooling prevents allocation churn.
 - No thermal throttling drops commonly seen in Python/PyTorch loops.
 
+## Testing
+
+### Running Tests
+
+**Mac (Metal):**
+```bash
+go test -tags metal ./...
+```
+
+**Linux (CUDA):**
+```bash
+# Set CUDA library path
+export LD_LIBRARY_PATH=$PWD/internal/device:$LD_LIBRARY_PATH
+CGO_ENABLED=1 go test -tags cuda ./...
+```
+
+### Remote Testing (ancalagon)
+
+Test CUDA backend on remote Linux machine:
+
+```bash
+# SSH to ancalagon
+ssh ancalagon
+
+# Compile CUDA backend
+cd ~/REPOS/longbow-fletcher/internal/device
+nvcc -c cuda_backend.cu -o cuda_backend.o -arch=sm_86
+nvcc -shared -o libcuda_fletcher.so cuda_backend.o -L/usr/local/cuda/lib64 -lcublas -lcudart -lcuda
+
+# Run tests
+cd ~/REPOS/longbow-fletcher
+LD_LIBRARY_PATH=~/REPOS/longbow-fletcher/internal/device:$LD_LIBRARY_PATH \
+  CGO_ENABLED=1 go test -tags cuda -run TestEmbedding ./...
+```
+
+### Known Issues
+
+- **Metal MPS Crash**: Small sequence lengths (<16) cause "LORADOWN GEMV Kernel" assertion failure. Fixed by skipping MPS for small dimensions.
+- **CUDA Fallback**: CUDA backend currently falls back to CPU for model execution; tensor operations run on GPU.
+- **Model Compatibility**: Only BERT-style models supported. Nomic-embed-text uses non-BERT architecture (RoPE, fused QKV, SwiGLU).
+
 ## Client Scripts
 
 Python scripts are provided in `scripts/` for interacting with the Fletcher server.

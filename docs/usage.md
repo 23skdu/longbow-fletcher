@@ -30,6 +30,22 @@ go build -o bin/fletcher ./cmd/fletcher
 - **Linux**: `libopenblas-dev`.
 - **Go**: Version 1.21+.
 
+### Option 3: Model Weights
+
+Fletcher requires model weights in binary format. Use the conversion script:
+
+```bash
+# Create Python environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install transformers safetensors torch
+
+# Convert BERT-style models (e.g., prajjwal1/bert-tiny)
+python scripts/convert_nomic.py  # See script for model-specific conversion
+```
+
+Alternatively, download pre-converted weights or use HuggingFace safetensors directly.
+
 ## Basic Usage (CLI)
 
 Generate embeddings for a single text input:
@@ -96,7 +112,36 @@ Add the `--gpu` flag:
 **Performance:**
 Expect ~2.4x speedup over CPU on M3 Pro chips (e.g., ~24k vs ~10k vectors/sec).
 
+### CUDA Acceleration (NVIDIA GPUs)
+
+Fletcher supports CUDA on Linux with NVIDIA GPUs.
+
+**Prerequisites:**
+- NVIDIA GPU with CUDA toolkit installed
+- `nvcc` for compiling CUDA kernels
+- cuBLAS library
+
+**Build with CUDA:**
+```bash
+cd internal/device
+nvcc -c cuda_backend.cu -o cuda_backend.o -arch=sm_XX  # XX = your GPU arch (e.g., 86 for RTX 30xx)
+nvcc -shared -o libcuda_fletcher.so cuda_backend.o -L/usr/local/cuda/lib64 -lcublas -lcudart -lcuda
+cd ../..
+CGO_ENABLED=1 go build -tags cuda -o bin/fletcher ./cmd/fletcher
+```
+
+**Run with CUDA:**
+```bash
+# Set library path
+export LD_LIBRARY_PATH=/path/to/fletcher/internal/device:$LD_LIBRARY_PATH
+
+# Run with GPU
+./bin/fletcher --vocab vocab.txt --weights bert_tiny.bin --text "CUDA inference"
+```
+
 **Troubleshooting:**
 
-- **Crash on Start**: Ensure macOS is updated and avoiding Rosetta.
+- **Crash on Start (Mac)**: Ensure macOS is updated and avoiding Rosetta.
 - **Zero Output**: Verify compatible model config (bert-tiny/nomic).
+- **CUDA Errors**: Ensure `libcuda_fletcher.so` is in `LD_LIBRARY_PATH`.
+- **Metal Crash**: Small batch sizes (<16) may trigger MPS bugs; use larger batches for production.

@@ -7,7 +7,7 @@ Fletcher is a standalone, high-performance embedding engine designed to serve as
 1. **Backend Abstraction**: Logic is decoupled from hardware. The `Backend` interface (CPU, Metal, CUDA) handles tensor allocations and operations.
     - **CPU**: Uses OpenBLAS/Accelerate via CGO for universal compatibility.
     - **Metal**: Uses custom MSL kernels and MPS Graph on Apple Silicon for high-throughput inference.
-    - **CUDA**: (Planned) Uses NVIDIA MatX/CuBLAS.
+    - **CUDA**: Uses cuBLAS for matrix operations and custom CUDA kernels for element-wise operations.
 
 2. **Zero-Allocation Models**:
     - **Buffer Pooling**: Tensors are recycled in `sync.Pool`-like structures to minimize GC pressure.
@@ -74,3 +74,20 @@ On Apple Silicon, Fletcher leverages the GPU for massive speedups.
 
 - **SIMD**: Uses `gonum` and custom Go assembly loops for vector operations.
 - **Parallelism**: Optimizes execution across available cores for batch processing.
+
+### CUDA (NVIDIA GPUs)
+
+On Linux with NVIDIA GPUs, Fletcher uses CUDA for GPU acceleration.
+
+- **cuBLAS**: Matrix multiplication uses `cublasSgemm` for FP32 operations.
+- **Custom Kernels**: Element-wise operations (Add, Scale, Tanh, Softmax, LayerNorm) use custom CUDA kernels with thrust-style parallelism.
+- **FP16 Support**: Cast kernels convert between FP32 and FP16 using `__float2half`/`__half2float`.
+- **Memory Management**: Uses `cudaMalloc`/`cudaFree` with explicit stream management for async operations.
+
+**Supported Operations:**
+- Matrix Multiplication (cuBLAS)
+- LayerNorm (custom kernel)
+- Softmax (custom kernel)
+- Tanh, Add, Scale (custom kernels)
+- FP32/FP16 cast (custom kernels)
+- Fused Add+LayerNorm (custom kernel)

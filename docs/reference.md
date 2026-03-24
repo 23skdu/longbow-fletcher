@@ -16,7 +16,7 @@
 | :--- | :--- | :--- |
 | `-model` | `bert-tiny` | Model type (`bert-tiny`, `nomic-embed-text`). |
 | `-vocab` | `vocab.txt` | Path to WordPiece vocabulary. |
-| `-weights` | `bert_tiny.safetensors` | Path to weights file (.bin or .safetensors). |
+| `-weights` | `bert_tiny.bin` | Path to weights file (.bin or .safetensors). |
 
 ### Server
 
@@ -25,6 +25,17 @@
 | `-listen` | `""` | HTTP server address (e.g., `:8080`). |
 | `-flight` | `""` | Arrow Flight server address (e.g., `:9090`). |
 | `-server` | `""` | Remote Longbow Flight address for forwarding. |
+| `-max-concurrent` | `16384` | Maximum concurrent embeddings in flight. |
+| `-max-vram` | `4GB` | VRAM admission control limit. |
+| `-transport-fmt` | `fp32` | Transport format (`fp32`, `fp16`). |
+
+### Performance
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-duration` | `""` | Run soak test for specified duration (e.g., `10s`, `20m`). |
+| `-lorem` | `0` | Generate N lines of lorem ipsum for testing. |
+| `-input` | `""` | Path to input file (JSON array of strings). |
 
 ---
 
@@ -39,6 +50,17 @@
 
 - **RoPE**: Rotary Positional Embeddings allow for long contexts (8k+).
 - **SwiGLU**: Activation function used in Nomic, accelerated by custom Metal kernels.
+
+### Weight Formats
+
+Fletcher supports two weight formats:
+
+| Format | Extension | Description |
+| :--- | :--- | :--- |
+| **Binary** | `.bin` | Raw float32 weights in Fletcher's internal order (see `weights/loader.go`). |
+| **SafeTensors** | `.safetensors` | HuggingFace format with automatic transpose handling. |
+
+**Note**: Nomic-embed-text is NOT a BERT architecture and requires model architecture updates to support.
 
 ---
 
