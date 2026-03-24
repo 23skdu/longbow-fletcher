@@ -255,4 +255,63 @@ void Cuda_Synchronize(CudaContextRef ctx) {
   cudaStreamSynchronize(c->stream);
 }
 
+void Cuda_GetMemoryInfo(CudaContextRef ctx, int64_t *free, int64_t *total) {
+  size_t free_mem, total_mem;
+  cudaMemGetInfo(&free_mem, &total_mem);
+  *free = (int64_t)free_mem;
+  *total = (int64_t)total_mem;
+}
+
+void Cuda_Add(CudaContextRef ctx, CudaBufferRef a, CudaBufferRef b, CudaBufferRef result, int size) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto a_view = make_tensor<float>((float *)a, {size});
+  auto b_view = make_tensor<float>((float *)b, {size});
+  auto r_view = make_tensor<float>((float *)result, {size});
+  (r_view = a_view + b_view).run(c->stream);
+}
+
+void Cuda_AddScalar(CudaContextRef ctx, CudaBufferRef a, float val, CudaBufferRef result, int size) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto a_view = make_tensor<float>((float *)a, {size});
+  auto r_view = make_tensor<float>((float *)result, {size});
+  (r_view = a_view + val).run(c->stream);
+}
+
+void Cuda_Scale(CudaContextRef ctx, CudaBufferRef a, float val, CudaBufferRef result, int size) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto a_view = make_tensor<float>((float *)a, {size});
+  auto r_view = make_tensor<float>((float *)result, {size});
+  (r_view = a_view * val).run(c->stream);
+}
+
+void Cuda_Tanh(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto in_view = make_tensor<float>((float *)input, {size});
+  auto r_view = make_tensor<float>((float *)result, {size});
+  (r_view = tanh(in_view)).run(c->stream);
+}
+
+void Cuda_Cast_F32_to_F16(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto in_view = make_tensor<float>((float *)input, {size});
+  auto r_view = make_tensor<__half>((__half *)result, {size});
+  (r_view = as_half(in_view)).run(c->stream);
+}
+
+void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto in_view = make_tensor<__half>((__half *)input, {size});
+  auto r_view = make_tensor<float>((float *)result, {size});
+  (r_view = as_float(in_view)).run(c->stream);
+}
+
+void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output,
+                int srcRow, int srcCol, int rows, int cols, int srcCols) {
+  CudaContext *c = (CudaContext *)ctx;
+  auto in_view = make_tensor<float>((float *)input, {srcCols / cols, srcCols});
+  auto r_view = make_tensor<float>((float *)output, {rows, cols});
+  auto slice = in_view.Slice({srcRow, srcCol}, {srcRow + rows, srcCol + cols});
+  (r_view = slice).run(c->stream);
+}
+
 } // extern "C"

@@ -52,6 +52,23 @@ void Cuda_ApplyRoPE(CudaContextRef ctx, CudaBufferRef data, int batchSize,
 
 void Cuda_Synchronize(CudaContextRef ctx);
 
+// Memory Info
+void Cuda_GetMemoryInfo(CudaContextRef ctx, int64_t *free, int64_t *total);
+
+// Tensor Operations
+void Cuda_Add(CudaContextRef ctx, CudaBufferRef a, CudaBufferRef b, CudaBufferRef result, int size);
+void Cuda_AddScalar(CudaContextRef ctx, CudaBufferRef a, float val, CudaBufferRef result, int size);
+void Cuda_Scale(CudaContextRef ctx, CudaBufferRef a, float val, CudaBufferRef result, int size);
+void Cuda_Tanh(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+
+// Cast operations
+void Cuda_Cast_F32_to_F16(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+
+// Slice operation (extract sub-matrix)
+void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output, 
+                int srcRow, int srcCol, int rows, int cols, int srcCols);
+
 #ifdef __cplusplus
 }
 #endif

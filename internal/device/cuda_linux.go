@@ -100,8 +100,9 @@ func (b *CudaBackend) SetDevice(index int) {
 }
 
 func (b *CudaBackend) GetVRAMUsage() (int64, int64) {
-	// TODO: Implement cudaMemGetInfo
-	return 0, 0
+	var free, total int64
+	C.Cuda_GetMemoryInfo(b.ctx, (*C.longlong)(unsafe.Pointer(&free)), (*C.longlong)(unsafe.Pointer(&total)))
+	return free, total
 }
 
 type CudaTensor struct {
@@ -138,18 +139,18 @@ func (t *CudaTensor) Data() []float32 {
 
 func (t *CudaTensor) ToHost() []float32 {
 	size := t.rows * t.cols
-	
+
 	if t.backend.useFP16 {
 		raw16 := make([]uint16, size)
 		C.Cuda_CopyToHost(t.buf, 0, unsafe.Pointer(&raw16[0]), C.int(t.sizeBytes))
-		
+
 		data := make([]float32, size)
 		for i, h := range raw16 {
 			data[i] = Float16ToFloat32(h)
 		}
 		return data
 	}
-	
+
 	data := make([]float32, size)
 	C.Cuda_CopyToHost(t.buf, 0, unsafe.Pointer(&data[0]), C.int(t.sizeBytes))
 	return data
@@ -174,7 +175,12 @@ func (t *CudaTensor) Copy(from Tensor) {
 }
 
 func (t *CudaTensor) Slice(i, k, j, l int) Tensor {
-	panic("Slice not implemented for CUDA")
+	r := k - i
+	c := l - j
+	out := t.backend.GetTensor(r, c)
+	C.Cuda_Slice(t.backend.ctx, t.buf, out.(*CudaTensor).buf,
+		C.int(i), C.int(j), C.int(r), C.int(c), C.int(t.cols))
+	return out
 }
 
 func (t *CudaTensor) T() Tensor {
@@ -186,15 +192,19 @@ func (t *CudaTensor) Mul(a, b Tensor) {
 }
 
 func (t *CudaTensor) Add(other Tensor) {
-	panic("Add not implemented")
+	ot := other.(*CudaTensor)
+	size := t.rows * t.cols
+	C.Cuda_Add(t.backend.ctx, t.buf, ot.buf, t.buf, C.int(size))
 }
 
 func (t *CudaTensor) AddScalar(val float32) {
-	panic("AddScalar not implemented")
+	size := t.rows * t.cols
+	C.Cuda_AddScalar(t.backend.ctx, t.buf, C.float(val), t.buf, C.int(size))
 }
 
 func (t *CudaTensor) Scale(val float32) {
-	panic("Scale not implemented")
+	size := t.rows * t.cols
+	C.Cuda_Scale(t.backend.ctx, t.buf, C.float(val), t.buf, C.int(size))
 }
 
 func (t *CudaTensor) AddBias(bias Tensor) {
@@ -210,7 +220,8 @@ func (t *CudaTensor) Gelu() {
 }
 
 func (t *CudaTensor) Tanh() {
-	panic("Tanh not implemented")
+	size := t.rows * t.cols
+	C.Cuda_Tanh(t.backend.ctx, t.buf, t.buf, C.int(size))
 }
 
 func (t *CudaTensor) LayerNorm(gamma, beta Tensor, eps float32) {
@@ -222,13 +233,13 @@ func (t *CudaTensor) LayerNorm(gamma, beta Tensor, eps float32) {
 func (t *CudaTensor) Gather(indices []int) Tensor {
 	idxRows := len(indices)
 	out := t.backend.GetTensor(idxRows, t.cols)
-	
+
 	// Copy indices to device (temp allocation)
 	idxBuf := C.Cuda_Alloc(t.backend.ctx, C.int(idxRows*4))
 	defer C.Cuda_FreeBuffer(t.backend.ctx, idxBuf)
-	
+
 	C.Cuda_CopyToDevice(idxBuf, 0, unsafe.Pointer(&indices[0]), C.int(idxRows*4))
-	
+
 	C.Cuda_Gather(t.backend.ctx, t.buf, idxBuf, out.(*CudaTensor).buf, C.int(idxRows), C.int(t.cols))
 	return out
 }
@@ -241,7 +252,7 @@ func (t *CudaTensor) LinearActivation(input, weight, bias Tensor, activation Act
 	in := input.(*CudaTensor)
 	var w, b C.CudaBufferRef
 	var wtCols int
-	
+
 	if weight != nil {
 		w = weight.(*CudaTensor).buf
 		_, wtCols = weight.Dims()
@@ -249,13 +260,13 @@ func (t *CudaTensor) LinearActivation(input, weight, bias Tensor, activation Act
 		// If weight is nil, it's an element-wise activation on input
 		wtCols = in.cols
 	}
-	
+
 	if bias != nil {
 		b = bias.(*CudaTensor).buf
 	}
 
-	C.Cuda_Linear_Fused(t.backend.ctx, in.buf, C.int(in.rows), C.int(in.cols), 
-	                   w, C.int(wtCols), b, t.buf, C.int(activation))
+	C.Cuda_Linear_Fused(t.backend.ctx, in.buf, C.int(in.rows), C.int(in.cols),
+		w, C.int(wtCols), b, t.buf, C.int(activation))
 	return t
 }
 
@@ -284,7 +295,7 @@ func (t *CudaTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 }
 
 func (t *CudaTensor) ExtractTo(destination [][]float32, startRow int) {
-	// For CUDA, we'll use a simple host copy for now. 
+	// For CUDA, we'll use a simple host copy for now.
 	// Future optimization: pinned memory and async streaming.
 	data := t.ToHost()
 	r, c := t.rows, t.cols
@@ -299,17 +310,17 @@ func (t *CudaTensor) ExtractBytes() []byte {
 	// For CUDA, since we don't have pinned memory logic fully wired for zero-copy to arrow yet,
 	// we fall back to copy-to-host and then unsafe cast to bytes.
 	// This ensures correctness but not yet full performance on Linux.
-	
+
 	// If FP16, ToHost returns float32 (converted).
 	// If we want raw bytes of the *device* tensor (which might be FP16), we need a raw read.
-	
+
 	size := t.rows * t.cols
 	if t.backend.useFP16 {
 		// FP16 on device. We want those bytes if we are doing zero-copy transfer.
 		// ToHost converts to FP32. We don't want that for "ExtractBytes" if the intention is to get raw transport format.
 		// However, the interface contract implies "raw underlying byte representation".
 		// If the tensor is FP16, we should return FP16 bytes.
-		
+
 		sizeBytes := size * 2
 		out := make([]byte, sizeBytes)
 		// Access C buffer directly
@@ -325,13 +336,19 @@ func (t *CudaTensor) ExtractBytes() []byte {
 }
 
 func (t *CudaTensor) Cast(dtype DataType) Tensor {
-	// Stub implementation for now
-	if dtype == Float32 && !t.backend.useFP16 {
-		// Copy
+	size := t.rows * t.cols
+	if dtype == Float32 && t.backend.useFP16 {
+		nt := t.backend.NewTensor(t.rows, t.cols, nil).(*CudaTensor)
+		C.Cuda_Cast_F16_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		return nt
+	} else if dtype == Float16 && !t.backend.useFP16 {
+		nt := t.backend.GetTensor(t.rows, t.cols).(*CudaTensor)
+		C.Cuda_Cast_F32_to_F16(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		return nt
+	} else if dtype == Float32 && !t.backend.useFP16 {
 		nt := t.backend.NewTensor(t.rows, t.cols, nil)
 		nt.Copy(t)
 		return nt
 	}
-	// TODO: Implement proper casting kernels for CUDA
-	panic("Cast not fully implemented for CUDA yet")
+	panic("Cast: Unsupported conversion")
 }
