@@ -153,16 +153,16 @@ void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef
 void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output,
                 int srcRow, int srcCol, int rows, int cols, int srcCols) {
   cudaMemcpy2D(output, cols * sizeof(float),
-               (char*)input + (srcRow * srcCol + srcCol) * sizeof(float), srcCols * sizeof(float),
-               rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
+               (char*)input + (srcRow * srcCols + srcCol) * sizeof(float), srcCols * sizeof(float),
+               cols * sizeof(float), rows, cudaMemcpyDeviceToDevice);
 }
 
 void Cuda_Paste(CudaContextRef ctx, CudaBufferRef dst, CudaBufferRef src,
                 int dstRow, int dstCol, int srcRow, int srcCol,
                 int rows, int cols, int dstCols, int srcCols) {
   cudaMemcpy2D((char*)dst + (dstRow * dstCols + dstCol) * sizeof(float), dstCols * sizeof(float),
-               src, srcCols * sizeof(float),
-               rows * cols * sizeof(float), cudaMemcpyDeviceToDevice);
+               (char*)src + (srcRow * srcCols + srcCol) * sizeof(float), srcCols * sizeof(float),
+               cols * sizeof(float), rows, cudaMemcpyDeviceToDevice);
 }
 
 void Cuda_AddLayerNorm(CudaContextRef ctx, CudaBufferRef residual,
