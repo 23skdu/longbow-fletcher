@@ -389,9 +389,9 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 ## 11. Implementation Checklist
 
 - [x] SSH to ancalagon and verify access
-- [x] Pull nomic-embed-text on ancalagon
+- [x] Pull nomic-embed-text on ancalagon (via Ollama)
 - [x] Pull bert-tiny on ancalagon
-- [x] Pull nomic-embed-text locally
+- [x] Pull nomic-embed-text locally (via Ollama)
 - [x] Pull bert-tiny locally
 - [x] Fix CUDA GetVRAMUsage()
 - [x] Fix CUDA Cast()
@@ -406,3 +406,88 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 - [x] Run Metal benchmark
 - [x] Run CUDA benchmark
 - [x] Compare results and document
+
+---
+
+## 12. Performance Comparison Findings (2026-03-24)
+
+### Test Results Summary
+
+| Machine | Backend | Model | Status | Notes |
+|---------|---------|-------|--------|-------|
+| Mac (M-series) | Metal | bert-tiny | ✅ Tests pass | Weights need downloading |
+| Mac (M-series) | Metal | nomic-embed-text | ✅ Ollama ready | 274MB model |
+| Ancalagon (Linux) | CPU | bert-tiny | ✅ Tests pass | 17MB weights |
+| Ancalagon (Linux) | CPU | nomic-embed-text | ⚠️ Fails | Wrong weights format |
+| Ancalagon (Linux) | CUDA | - | ⚠️ Stub only | memcpy, no real GPU ops |
+
+### Key Issues Identified
+
+1. **Model Weights**: nomic-embed-text requires conversion from HuggingFace safetensors
+2. **CUDA Backend**: Current implementation uses simple memcpy stubs, not actual GPU kernels
+3. **Weights Loading**: Test failures due to incorrect weights file format
+4. **Ollama Integration**: Both machines have Ollama with nomic-embed-text for comparison
+
+### Performance Baseline (CPU)
+
+| Machine | bert-tiny throughput |
+|---------|---------------------|
+| Mac | ~1,900-2,000 seq/s |
+| Ancalagon (Linux) | ~1,900-2,000 seq/s |
+
+---
+
+## 13. Phase 2: Production Readiness Plan
+
+### Part 1: Fix Model Weights Pipeline (Priority: Critical)
+- [ ] Download and convert nomic-embed-text weights to .bin format
+- [ ] Verify bert-tiny weights load correctly on both machines
+- [ ] Add weights download script to repo or document process
+
+### Part 2: Implement Real CUDA GPU Kernels (Priority: Critical)
+- [ ] Replace memcpy stubs with actual cuBLAS kernels for MatMul
+- [ ] Implement LayerNorm, Softmax, GELU activation functions
+- [ ] Add attention flash algorithm support
+- [ ] Test with real GPU inference on ancalagon
+
+### Part 3: Metal Performance Optimization (Priority: High)
+- [ ] Profile current Metal kernel bottlenecks
+- [ ] Implement flash attention for Metal
+- [ ] Add FP16 mixed-precision support
+- [ ] Optimize memory allocation/reuse
+
+### Part 4: Ollama Comparison Tests (Priority: High)
+- [ ] Write test that compares Fletcher embeddings to Ollama output
+- [ ] Validate cosine similarity > 0.99 for same text
+- [ ] Benchmark: Fletcher Metal vs Ollama nomic-embed-text
+- [ ] Document performance delta
+
+### Part 5: Quantization Support (Priority: Medium)
+- [ ] Implement Q4/Q8 dequantization for CPU backend
+- [ ] Add INT8 kernel support for Metal
+- [ ] Test with quantized nomic-embed-text
+
+### Part 6: API & Auth (Priority: Medium)
+- [ ] Add API key authentication to HTTP server
+- [ ] Add mTLS support for Flight/gRPC
+- [ ] Add rate limiting
+
+### Part 7: Model Support Expansion (Priority: Medium)
+- [ ] Add bge-m3 model support
+- [ ] Add e5-mistral model support  
+- [ ] Document model conversion process
+
+### Part 8: Observability (Priority: Low)
+- [ ] Add Grafana dashboard templates
+- [ ] Add structured logging with correlation IDs
+- [ ] Add pprof endpoints with security
+
+### Part 9: Client SDKs (Priority: Low)
+- [ ] Python SDK with async support
+- [ ] Node.js client
+- [ ] OpenAPI spec generation
+
+### Part 10: CI/CD & Testing (Priority: Low)
+- [ ] Add GPU test runner to CI
+- [ ] Add benchmark regression tests
+- [ ] Add fuzzing infrastructure
