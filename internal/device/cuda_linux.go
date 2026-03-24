@@ -320,6 +320,10 @@ func (t *CudaTensor) Attention(q, k, v Tensor, batchSize, seqLen, numHeads int, 
 	return t
 }
 
+func (t *CudaTensor) AttentionVarLen(q, k, v Tensor, lengths []int, numHeads int, scale float32) Tensor {
+	panic("AttentionVarLen not implemented for CUDA")
+}
+
 func (t *CudaTensor) ApplyRoPE(batchSize, seqLen, numHeads, headDim int) {
 	C.Cuda_ApplyRoPE(t.backend.ctx, t.buf, C.int(batchSize), C.int(seqLen), C.int(numHeads), C.int(headDim))
 }
