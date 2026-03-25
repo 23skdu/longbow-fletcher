@@ -51,3 +51,39 @@ func TestBufferPool_Resize(t *testing.T) {
 		t.Errorf("GetSeqHidden(5, 5) = %dx%d", r, c)
 	}
 }
+
+func TestBufferPool_SeqSeq(t *testing.T) {
+	pool := &BufferPool{}
+
+	m := pool.GetSeqSeq(8)
+	r, c := m.Dims()
+	if r != 8 || c != 8 {
+		t.Errorf("GetSeqSeq(8) = %dx%d, want 8x8", r, c)
+	}
+	pool.PutSeqSeq(m)
+
+	m2 := pool.GetSeqSeq(16)
+	r2, c2 := m2.Dims()
+	if r2 != 16 || c2 != 16 {
+		t.Errorf("GetSeqSeq(16) = %dx%d, want 16x16", r2, c2)
+	}
+	pool.PutSeqSeq(m2)
+}
+
+func TestBufferPool_SeqInter(t *testing.T) {
+	pool := &BufferPool{}
+
+	m := pool.GetSeqInter(8, 32)
+	r, c := m.Dims()
+	if r != 8 || c != 32 {
+		t.Errorf("GetSeqInter(8, 32) = %dx%d, want 8x32", r, c)
+	}
+	pool.PutSeqInter(m)
+
+	m2 := pool.GetSeqInter(16, 64)
+	r2, c2 := m2.Dims()
+	if r2 != 16 || c2 != 64 {
+		t.Errorf("GetSeqInter(16, 64) = %dx%d, want 16x64", r2, c2)
+	}
+	pool.PutSeqInter(m2)
+}

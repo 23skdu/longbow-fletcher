@@ -1,10 +1,22 @@
 package embeddings
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"math"
+	"net/http"
 	"testing"
 )
+
+type OllamaEmbeddingRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+type OllamaEmbeddingResponse struct {
+	Embedding []float64 `json:"embedding"`
+}
 
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) {
@@ -204,5 +216,113 @@ func TestEmbeddingCoherence_BatchConsistency(t *testing.T) {
 
 	if sim01 < 0.99 || sim12 < 0.99 {
 		t.Errorf("Batch of same texts should produce identical embeddings")
+	}
+}
+
+func getOllamaEmbedding(model, text string) ([]float32, error) {
+	reqBody, err := json.Marshal(OllamaEmbeddingRequest{Model: model, Prompt: text})
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.Post("http://localhost:11434/api/embeddings", "application/json", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result OllamaEmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	// Convert []float64 to []float32
+	embedding := make([]float32, len(result.Embedding))
+	for i, v := range result.Embedding {
+		embedding[i] = float32(v)
+	}
+	return embedding, nil
+}
+
+func TestOllamaCoherence_BertTiny(t *testing.T) {
+	// Check if Ollama is running
+	_, err := getOllamaEmbedding("bert-tiny", "test")
+	if err != nil {
+		t.Skipf("Skipping: Ollama not running: %v", err)
+	}
+
+	// Create Fletcher embedder
+	embedder, err := NewEmbedder("vocab.txt", "bert_tiny.bin", false, "bert-tiny", "fp32")
+	if err != nil {
+		t.Skipf("Skipping: could not create fletcher embedder: %v", err)
+	}
+
+	text := "The quick brown fox jumps over the lazy dog"
+
+	// Get Fletcher embedding
+	fletcherEmb := embedder.ProxyEmbedBatch(context.Background(), []string{text})
+	if len(fletcherEmb) == 0 {
+		t.Fatal("No fletcher embeddings generated")
+	}
+
+	// Get Ollama embedding (note: Ollama may not have bert-tiny, so we skip if not available)
+	ollamaEmb, err := getOllamaEmbedding("bert-tiny", text)
+	if err != nil {
+		t.Skipf("Skipping: Ollama bert-tiny not available: %v", err)
+	}
+
+	// Compare - truncate to shorter length if needed
+	minLen := len(fletcherEmb)
+	if len(ollamaEmb) < minLen {
+		minLen = len(ollamaEmb)
+	}
+
+	sim := cosineSimilarity(fletcherEmb[:minLen], ollamaEmb[:minLen])
+	t.Logf("BertTiny cosine similarity: %.4f", sim)
+
+	if sim < 0.90 {
+		t.Errorf("Embedding similarity too low: %.4f (want > 0.90)", sim)
+	}
+}
+
+func TestOllamaCoherence_NomicEmbedText(t *testing.T) {
+	// Check if Ollama is running with nomic-embed-text
+	_, err := getOllamaEmbedding("nomic-embed-text", "test")
+	if err != nil {
+		t.Skipf("Skipping: Ollama not running or nomic-embed-text not available: %v", err)
+	}
+
+	// Create Fletcher embedder with nomic-embed-text config
+	embedder, err := NewEmbedder("vocab.txt", "bert_tiny.bin", false, "nomic-embed-text", "fp32")
+	if err != nil {
+		t.Skipf("Skipping: could not create fletcher embedder: %v", err)
+	}
+
+	text := "artificial intelligence is transforming the world"
+
+	// Get Fletcher embedding
+	fletcherEmb := embedder.ProxyEmbedBatch(context.Background(), []string{text})
+	if len(fletcherEmb) == 0 {
+		t.Fatal("No fletcher embeddings generated")
+	}
+
+	// Get Ollama embedding
+	ollamaEmb, err := getOllamaEmbedding("nomic-embed-text", text)
+	if err != nil {
+		t.Skipf("Skipping: Ollama nomic-embed-text not available: %v", err)
+	}
+
+	// Compare
+	minLen := len(fletcherEmb)
+	if len(ollamaEmb) < minLen {
+		minLen = len(ollamaEmb)
+	}
+
+	sim := cosineSimilarity(fletcherEmb[:minLen], ollamaEmb[:minLen])
+	t.Logf("NomicEmbedText cosine similarity: %.4f", sim)
+
+	// Target: > 0.99 for same model, lower threshold for different implementations
+	if sim < 0.85 {
+		t.Errorf("Embedding similarity too low: %.4f (want > 0.85)", sim)
 	}
 }

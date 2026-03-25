@@ -50,3 +50,44 @@ func TestBertModelForward(t *testing.T) {
 	}
 	require.True(t, hasNonZero, "Output should not be all zeros")
 }
+
+func TestBertConfigDefaults(t *testing.T) {
+	cfg := DefaultBertTinyConfig()
+	require.Equal(t, 30522, cfg.VocabSize)
+	require.Equal(t, 128, cfg.HiddenSize)
+	require.Equal(t, 2, cfg.NumHiddenLayers)
+
+	cfg = DefaultNomicConfig()
+	require.Equal(t, 30522, cfg.VocabSize)
+	require.Equal(t, 768, cfg.HiddenSize)
+	require.Equal(t, 12, cfg.NumHiddenLayers)
+	require.Equal(t, PositionalRoPE, cfg.PositionEmbedding)
+	require.Equal(t, true, cfg.FusedQKV)
+
+	cfg = DefaultMiniLMConfig()
+	require.Equal(t, 384, cfg.HiddenSize)
+	require.Equal(t, 6, cfg.NumHiddenLayers)
+	require.Equal(t, 12, cfg.NumAttentionHeads)
+}
+
+func TestBertModelForwardNonBatch(t *testing.T) {
+	config := BertConfig{
+		VocabSize:             100,
+		HiddenSize:            16,
+		NumHiddenLayers:       1,
+		NumAttentionHeads:     2,
+		IntermediateSize:      32,
+		MaxPositionEmbeddings: 10,
+	}
+
+	model := NewBertModel(config)
+
+	inputIDs := []int{1, 2, 3}
+	lengths := []int{3}
+
+	output := model.ForwardBatch(inputIDs, lengths)
+
+	r, c := output.Dims()
+	require.Equal(t, 1, r)
+	require.Equal(t, config.HiddenSize, c)
+}

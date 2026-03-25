@@ -52,9 +52,15 @@ func (l *Loader) LoadFromRawBinary(path string) error {
 
 	// Load Encoder Layers
 	for i, layer := range l.Model.Encoder.Layers {
-		// Attention
-		if err := l.loadSelfAttention(file, layer.Attention.Self); err != nil {
-			return fmt.Errorf("failed to load self-attention for layer %d: %w", i, err)
+		// Attention - check for fused QKV
+		if l.Model.Config.FusedQKV {
+			if err := l.loadFusedQKVFromRaw(file, layer.Attention.Self); err != nil {
+				return fmt.Errorf("failed to load fused QKV for layer %d: %w", i, err)
+			}
+		} else {
+			if err := l.loadSelfAttention(file, layer.Attention.Self); err != nil {
+				return fmt.Errorf("failed to load self-attention for layer %d: %w", i, err)
+			}
 		}
 		if err := l.loadSelfOutput(file, layer.Attention.Output); err != nil {
 			return fmt.Errorf("failed to load attention output for layer %d: %w", i, err)
@@ -144,6 +150,80 @@ func (l *Loader) loadSelfOutput(r io.Reader, so *model.BertSelfOutput) error {
 	return l.loadLayerNorm(r, so.LayerNorm)
 }
 
+// loadFusedQKV loads a fused QKV weight matrix and splits it into Q, K, V tensors.
+// The fused weight has shape [3*hidden_size, hidden_size] and is stored as [Q; K; V].
+func (l *Loader) loadFusedQKVFromRaw(file *os.File, sa *model.BertSelfAttention) error {
+	hiddenSize := l.Model.Config.HiddenSize
+	fusedRows := 3 * hiddenSize
+	fusedSize := fusedRows * hiddenSize
+
+	data := make([]float32, fusedSize)
+	if err := binary.Read(file, binary.LittleEndian, data); err != nil {
+		return err
+	}
+
+	// Split: first hiddenSize rows = Q, next = K, last = V
+	qData := data[0 : hiddenSize*hiddenSize]
+	kData := data[hiddenSize*hiddenSize : 2*hiddenSize*hiddenSize]
+	vData := data[2*hiddenSize*hiddenSize:]
+
+	sa.Query.CopyFromFloat32(qData)
+	sa.Key.CopyFromFloat32(kData)
+	sa.Value.CopyFromFloat32(vData)
+
+	return nil
+}
+
+// loadFusedQKVSafeTensors loads fused QKV from SafeTensors file given the header map.
+func (l *Loader) loadFusedQKVSafeTensors(file *os.File, header map[string]SafeTensorsInfo, name string, sa *model.BertSelfAttention) error {
+	info, ok := header[name]
+	if !ok {
+		return fmt.Errorf("tensor %q not found in SafeTensors file", name)
+	}
+
+	hiddenSize := l.Model.Config.HiddenSize
+	expectedSize := 3 * hiddenSize * hiddenSize
+
+	var headerSize int64 = 1
+	for _, dim := range info.Shape {
+		headerSize *= int64(dim)
+	}
+
+	if headerSize != int64(expectedSize) {
+		return fmt.Errorf("fused QKV tensor %q size mismatch: expected %d, got %d (shape %v)", name, expectedSize, headerSize, info.Shape)
+	}
+
+	dataStart := int64(8) + int64(len(header)) // rough, will be recalculated below
+	// Re-read header size from file position
+	file.Seek(0, io.SeekStart)
+	var hs uint64
+	binary.Read(file, binary.LittleEndian, &hs)
+	dataStart = int64(8) + int64(hs)
+
+	length := info.DataOffsets[1] - info.DataOffsets[0]
+	data := make([]byte, length)
+	if _, err := file.ReadAt(data, dataStart+info.DataOffsets[0]); err != nil {
+		return fmt.Errorf("failed to read data for %q: %w", name, err)
+	}
+
+	// Convert to float32 and split
+	floats := make([]float32, expectedSize)
+	for i := range floats {
+		floats[i] = math.Float32frombits(binary.LittleEndian.Uint32(data[i*4 : (i+1)*4]))
+	}
+
+	// Split: Q, K, V
+	qData := floats[0 : hiddenSize*hiddenSize]
+	kData := floats[hiddenSize*hiddenSize : 2*hiddenSize*hiddenSize]
+	vData := floats[2*hiddenSize*hiddenSize:]
+
+	sa.Query.CopyFromFloat32(qData)
+	sa.Key.CopyFromFloat32(kData)
+	sa.Value.CopyFromFloat32(vData)
+
+	return nil
+}
+
 // SafeTensorsInfo holds metadata for a single tensor in the SafeTensors header
 type SafeTensorsInfo struct {
 	DType       string  `json:"dtype"`
@@ -180,6 +260,11 @@ func (l *Loader) LoadFromSafeTensors(path string) error {
 	}
 
 	dataStart := int64(8) + int64(headerSize)
+
+	// Helper to load fused QKV (used in the loop below)
+	loadFusedQKV := func(name string, sa *model.BertSelfAttention) error {
+		return l.loadFusedQKVSafeTensors(file, header, name, sa)
+	}
 
 	// Helper to load by name
 	load := func(name string, dest device.Tensor) error {
@@ -274,25 +359,41 @@ func (l *Loader) LoadFromSafeTensors(path string) error {
 	// Load Encoder Layers
 	for i, layer := range l.Model.Encoder.Layers {
 		prefix := fmt.Sprintf("encoder.layer.%d", i)
-		// Attention
-		if err := load(prefix+".attention.self.query.weight", layer.Attention.Self.Query); err != nil {
-			return err
+
+		// Attention - check if using fused QKV (nomic-embed-text style)
+		if l.Model.Config.FusedQKV {
+			// Load fused qkv weight: shape [3*hidden_size, hidden_size]
+			// Try multiple possible key naming conventions
+			qkvWeightName := prefix + ".attention.self.qkv.weight"
+			if err := loadFusedQKV(qkvWeightName, layer.Attention.Self); err != nil {
+				// Try alternative naming
+				qkvWeightName = prefix + ".attention.self.query.key_value.weight"
+				if err := loadFusedQKV(qkvWeightName, layer.Attention.Self); err != nil {
+					return fmt.Errorf("failed to load fused QKV for layer %d: %w", i, err)
+				}
+			}
+		} else {
+			// Separate Q, K, V weights
+			if err := load(prefix+".attention.self.query.weight", layer.Attention.Self.Query); err != nil {
+				return err
+			}
+			if err := load(prefix+".attention.self.query.bias", layer.Attention.Self.QueryBias); err != nil {
+				return err
+			}
+			if err := load(prefix+".attention.self.key.weight", layer.Attention.Self.Key); err != nil {
+				return err
+			}
+			if err := load(prefix+".attention.self.key.bias", layer.Attention.Self.KeyBias); err != nil {
+				return err
+			}
+			if err := load(prefix+".attention.self.value.weight", layer.Attention.Self.Value); err != nil {
+				return err
+			}
+			if err := load(prefix+".attention.self.value.bias", layer.Attention.Self.ValueBias); err != nil {
+				return err
+			}
 		}
-		if err := load(prefix+".attention.self.query.bias", layer.Attention.Self.QueryBias); err != nil {
-			return err
-		}
-		if err := load(prefix+".attention.self.key.weight", layer.Attention.Self.Key); err != nil {
-			return err
-		}
-		if err := load(prefix+".attention.self.key.bias", layer.Attention.Self.KeyBias); err != nil {
-			return err
-		}
-		if err := load(prefix+".attention.self.value.weight", layer.Attention.Self.Value); err != nil {
-			return err
-		}
-		if err := load(prefix+".attention.self.value.bias", layer.Attention.Self.ValueBias); err != nil {
-			return err
-		}
+
 		if err := load(prefix+".attention.output.dense.weight", layer.Attention.Output.Dense); err != nil {
 			return err
 		}

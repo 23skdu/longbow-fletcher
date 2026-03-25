@@ -26,6 +26,7 @@ type BertConfig struct {
 	Activation            device.ActivationType
 	PositionEmbedding     PositionEmbeddingType
 	LayerNormEps          float32
+	FusedQKV              bool // Use fused QKV projection (nomic-embed-text style)
 }
 
 // DefaultBertTinyConfig returns the configuration for BERT-Tiny.
@@ -55,6 +56,7 @@ func DefaultNomicConfig() BertConfig {
 		Activation:            device.ActivationSwiGLU,
 		PositionEmbedding:     PositionalRoPE,
 		LayerNormEps:          1e-5,
+		FusedQKV:              true,
 	}
 }
 
