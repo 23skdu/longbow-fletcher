@@ -574,14 +574,15 @@ Based on analysis of [vllm-project/vllm](https://github.com/vllm-project/vllm), 
 - [x] Add chunked prefill - Added `ChunkedPrefill` in advanced.go
 - [x] Add FP8 KV cache - Added `FP8KVCache` in advanced.go
 - [x] Add structured output - Added `StructuredOutput` in advanced.go
-- [ ] Implement multiple pooling strategies (mean, cls, max, last)
+- [x] Implement multiple pooling strategies (mean, cls, max, last)
+  - Added Pooler with CLS, Mean, Max, Last strategies in model/pooler.go
 
 ### Part 15: OpenAI Compatibility (P1)
 - [x] Full OpenAI Embedding API compatibility - Added in server.go
 - [x] Add `/v1/embeddings` endpoint - Added `handleV1Embeddings`
 - [x] Add `/v1/models` and `/v1/models/list` endpoints
 - [x] Add batch embedding API - Added `handleV1EmbeddingsBatch`
-- [ ] Add `/v1/rerank` endpoint for reranking models
+- [x] Add `/v1/rerank` endpoint for reranking models - Added handleV1Rerank
 
 ### Part 16: Hardware Support (P3)
 - [x] Add AMD ROCm backend stub - Added cuda_stub.go with ROCm support structure

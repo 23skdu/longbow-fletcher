@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	_ "net/http/pprof"
 	"runtime"
@@ -138,6 +139,7 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	http.HandleFunc("/v1/embeddings/batch", srv.recoverMiddleware(srv.handleV1EmbeddingsBatch))
 	http.HandleFunc("/v1/models", srv.handleV1Models)
 	http.HandleFunc("/v1/models/list", srv.handleV1ModelsList)
+	http.HandleFunc("/v1/rerank", srv.recoverMiddleware(srv.handleV1Rerank))
 	http.HandleFunc("/healthz", srv.handleHealthz)
 	http.HandleFunc("/readyz", srv.handleReadyz)
 
@@ -746,4 +748,107 @@ func (s *Server) handleV1ModelsList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+type V1RerankRequest struct {
+	Query     string   `json:"query"`
+	Documents []string `json:"documents"`
+	Model     string   `json:"model"`
+	TopN      int      `json:"top_n"`
+}
+
+type V1RerankResponse struct {
+	Model   string           `json:"model"`
+	Results []V1RerankResult `json:"results"`
+}
+
+type V1RerankResult struct {
+	Index    int     `json:"index"`
+	Document string  `json:"document"`
+	Score    float64 `json:"score"`
+}
+
+func (s *Server) handleV1Rerank(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req V1RerankRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.TopN == 0 {
+		req.TopN = len(req.Documents)
+	}
+
+	queryEmb := s.embedder.ProxyEmbedBatch(r.Context(), []string{req.Query})
+
+	type scoredDoc struct {
+		index    int
+		document string
+		score    float64
+	}
+
+	var scored []scoredDoc
+	for i, doc := range req.Documents {
+		docEmb := s.embedder.ProxyEmbedBatch(r.Context(), []string{doc})
+		score := cosineSimilarityFloat64(queryEmb, docEmb)
+		scored = append(scored, scoredDoc{index: i, document: doc, score: score})
+	}
+
+	for i := 0; i < len(scored)-1; i++ {
+		for j := i + 1; j < len(scored); j++ {
+			if scored[j].score > scored[i].score {
+				scored[i], scored[j] = scored[j], scored[i]
+			}
+		}
+	}
+
+	topN := req.TopN
+	if topN > len(scored) {
+		topN = len(scored)
+	}
+
+	results := make([]V1RerankResult, topN)
+	for i := 0; i < topN; i++ {
+		results[i] = V1RerankResult{
+			Index:    scored[i].index,
+			Document: scored[i].document,
+			Score:    scored[i].score,
+		}
+	}
+
+	resp := V1RerankResponse{
+		Model:   req.Model,
+		Results: results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func cosineSimilarityFloat64(a, b []float32) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+
+	var dot, normA, normB float64
+	minLen := len(a)
+	if len(b) < minLen {
+		minLen = len(b)
+	}
+	for i := 0; i < minLen; i++ {
+		dot += float64(a[i] * b[i])
+		normA += float64(a[i] * a[i])
+		normB += float64(b[i] * b[i])
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
