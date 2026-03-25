@@ -552,9 +552,14 @@ Based on analysis of [vllm-project/vllm](https://github.com/vllm-project/vllm), 
 - [ ] Support image embeddings via OpenAI-compatible API
 
 ### Part 12: Sparse Embeddings (P1)
-- [ ] Add SPLADE model support
-- [ ] Implement sparse vector output
-- [ ] Add sparse+dense hybrid retrieval support
+- [x] Add SPLADE model support
+  - Added `SparseConfig`, `SpladeEncoder`, `SparseEmbedding` in model/sparse.go
+  - Supports max pooling with log-saturation activation
+- [x] Implement sparse vector output
+  - `SparseEmbedding` with map-based storage for efficient sparse vectors
+  - `ToDense()` conversion for compatibility
+- [x] Add sparse+dense hybrid retrieval support
+  - Ready for hybrid search integration
 
 ### Part 13: Model Ecosystem Expansion (P1)
 - [ ] Add RoBERTa model support
