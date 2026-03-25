@@ -123,10 +123,10 @@ These panic at runtime when called:
 ### Phase 4: Production Hardening (2-3 weeks)
 
 - [ ] **P0**: Implement mTLS for Arrow Flight
-- [ ] **P0**: Add API Key authentication middleware
-- [ ] **P1**: Create Python SDK (`pip install fletcher`)
+- [x] **P0**: Add API Key authentication middleware - Added apiKeyAuthMiddleware in server.go
+- [x] **P1**: Create Python SDK (`pip install fletcher`) - Added python/fletcher/ SDK
 - [ ] **P1**: Create Node.js client library
-- [ ] **P2**: Publish OpenAPI spec
+- [x] **P2**: Publish OpenAPI spec - Added /openapi.json endpoint
 
 ### Phase 5: Observability (1 week)
 

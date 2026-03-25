@@ -135,11 +135,12 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	http.HandleFunc("/healthz", srv.handleHealthz)
 	http.HandleFunc("/readyz", srv.handleReadyz)
 
-	http.HandleFunc("/v1/embeddings", srv.recoverMiddleware(srv.handleV1Embeddings))
-	http.HandleFunc("/v1/embeddings/batch", srv.recoverMiddleware(srv.handleV1EmbeddingsBatch))
-	http.HandleFunc("/v1/models", srv.handleV1Models)
-	http.HandleFunc("/v1/models/list", srv.handleV1ModelsList)
-	http.HandleFunc("/v1/rerank", srv.recoverMiddleware(srv.handleV1Rerank))
+	http.HandleFunc("/v1/embeddings", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Embeddings)))
+	http.HandleFunc("/v1/embeddings/batch", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1EmbeddingsBatch)))
+	http.HandleFunc("/v1/models", apiKeyAuthMiddleware(srv.handleV1Models))
+	http.HandleFunc("/v1/models/list", apiKeyAuthMiddleware(srv.handleV1ModelsList))
+	http.HandleFunc("/v1/rerank", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Rerank)))
+	http.HandleFunc("/openapi.json", srv.handleOpenAPI)
 	http.HandleFunc("/healthz", srv.handleHealthz)
 	http.HandleFunc("/readyz", srv.handleReadyz)
 
@@ -600,6 +601,38 @@ func (s *Server) recoverMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+var apiKey string
+
+func SetAPIKey(key string) {
+	apiKey = key
+}
+
+func apiKeyAuthMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if apiKey == "" {
+			next(w, r)
+			return
+		}
+
+		key := r.Header.Get("Authorization")
+		if key == "" {
+			key = r.URL.Query().Get("api_key")
+		}
+
+		if key == "" {
+			http.Error(w, "Missing API key", http.StatusUnauthorized)
+			return
+		}
+
+		if key != apiKey {
+			http.Error(w, "Invalid API key", http.StatusUnauthorized)
+			return
+		}
+
+		next(w, r)
+	}
+}
+
 func debugStack() []byte {
 	// Simple stack trace
 	var buf [4096]byte
@@ -851,4 +884,61 @@ func cosineSimilarityFloat64(a, b []float32) float64 {
 	}
 
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+var openAPISpec = `{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Fletcher Embedding API",
+    "version": "1.0.0",
+    "description": "High-performance embedding server"
+  },
+  "servers": [{"url": "http://localhost:8080"}],
+  "paths": {
+    "/v1/embeddings": {
+      "post": {
+        "summary": "Generate embeddings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "input": {"type": "string"},
+                  "model": {"type": "string"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Embedding response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "properties": {
+                          "embedding": {"type": "array", "items": {"type": "number"}}
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(openAPISpec))
 }
