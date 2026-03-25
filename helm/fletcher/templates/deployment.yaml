@@ -58,6 +58,10 @@ spec:
             - "-flight"
             - ":{{ .Values.server.flightPort }}"
             {{- end }}
+            {{- if .Values.server.apiKey }}
+            - "-api-key"
+            - "{{ .Values.server.apiKey }}"
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

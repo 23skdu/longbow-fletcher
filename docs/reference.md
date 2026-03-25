@@ -14,7 +14,7 @@
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-model` | `bert-tiny` | Model type (`bert-tiny`, `nomic-embed-text`). |
+| `-model` | `bert-tiny` | Model type (`bert-tiny`, `nomic-embed-text`, `all-MiniLM-L6-v2`, `roberta-base`, `xlm-roberta-base`, `bge-m3`, `e5-mistral-7b-instruct`). |
 | `-vocab` | `vocab.txt` | Path to WordPiece vocabulary. |
 | `-weights` | `bert_tiny.bin` | Path to weights file (.bin or .safetensors). |
 
@@ -44,12 +44,19 @@
 | Model | Dimensions | Layers | Heads | Max Seq | Features |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **BERT-Tiny** | 128 | 2 | 2 | 512 | Absolute Pos |
-| **Nomic-v1.5** | 768 | 12 | 12 | 8192 | **RoPE**, **SwiGLU** |
+| **MiniLM-L6** | 384 | 6 | 12 | 512 | Mean Pool |
+| **Nomic-v1.5** | 768 | 12 | 12 | 8192 | **RoPE**, **SwiGLU**, FusedQKV |
+| **RoBERTa-base** | 768 | 12 | 12 | 512 | Absolute Pos |
+| **XLM-RoBERTa** | 768 | 12 | 12 | 514 | Multi-lingual |
+| **bge-m3** | 1024 | 24 | 16 | 512 | Multi-lingual |
+| **e5-mistral** | 4096 | 32 | 32 | 32768 | **RoPE**, **SwiGLU** |
 
 ### Special Features
 
 - **RoPE**: Rotary Positional Embeddings allow for long contexts (8k+).
 - **SwiGLU**: Activation function used in Nomic, accelerated by custom Metal kernels.
+- **FusedQKV**: Combined QKV projection for efficiency.
+- **Sparse (SPLADE)**: Lexical sparse embeddings.
 
 ### Weight Formats
 
@@ -60,7 +67,35 @@ Fletcher supports two weight formats:
 | **Binary** | `.bin` | Raw float32 weights in Fletcher's internal order (see `weights/loader.go`). |
 | **SafeTensors** | `.safetensors` | HuggingFace format with automatic transpose handling. |
 
-**Note**: Nomic-embed-text is NOT a BERT architecture and requires model architecture updates to support.
+---
+
+## API Endpoints
+
+### OpenAI-Compatible API
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/v1/embeddings` | POST | Generate embedding for single text |
+| `/v1/embeddings/batch` | POST | Generate embeddings for multiple texts |
+| `/v1/models` | GET | Get model info |
+| `/v1/models/list` | GET | List available models |
+| `/v1/rerank` | POST | Rerank documents by query relevance |
+| `/openapi.json` | GET | OpenAPI specification |
+
+### Legacy API
+
+| Endpoint | Method | Description |
+| :--- | :--- | :--- |
+| `/encode` | POST | Generate embeddings (JSON body) |
+| `/encode/arrow` | POST | Generate embeddings (Arrow payload) |
+| `/health` | GET | Health check |
+| `/metrics` | GET | Prometheus metrics |
+
+### Authentication
+
+API key authentication is supported via:
+- Header: `Authorization: <api_key>`
+- Query: `?api_key=<api_key>`
 
 ---
 

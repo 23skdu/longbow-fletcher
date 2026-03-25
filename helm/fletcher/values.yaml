@@ -54,7 +54,7 @@ resources: {}
 
 # Fletcher Server Specific Configuration
 server:
-  # Model to load (e.g., bert-tiny, nomic-embed-text)
+  # Model to load (bert-tiny, nomic-embed-text, all-MiniLM-L6-v2, roberta-base, xlm-roberta-base, bge-m3, e5-mistral-7b-instruct)
   model: "bert-tiny"
   # Precision: fp32 or fp16
   precision: "fp32"
@@ -73,6 +73,12 @@ server:
   # Flight Server Configuration
   flightEnabled: false
   flightPort: 9090
+  # API Key for authentication (optional)
+  apiKey: ""
+  # Vocab file path
+  vocabPath: "vocab.txt"
+  # Weights file path
+  weightsPath: "bert_tiny.bin"
 
 # Monitoring Configuration
 monitoring:

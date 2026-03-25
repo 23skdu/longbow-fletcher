@@ -48,7 +48,9 @@ Text Input → Tokenizer → Embeddings (Absolute/RoPE) → Encoder → Pooler �
 | **Tokenizer** | WordPiece tokenizer using BERT-style vocabulary. |
 | **Embeddings** | Lookup table mapping token IDs to vectors. Supports **Absolute** (BERT) and **Rotary (RoPE)** (Nomic). |
 | **Encoder** | Configurable stack of self-attention + feed-forward layers. Supports **SwiGLU** activation. |
-| **Pooler** | Extracts [CLS] token or Mean Pool representation. |
+| **Pooler** | Extracts [CLS] token, Mean, Max, or Last token pooling. |
+| **Vision Encoder** | CLIP-style ViT for multi-modal image embeddings. |
+| **Sparse Encoder** | SPLADE-style sparse lexical embeddings. |
 
 ### Weight Initialization
 
@@ -91,3 +93,34 @@ On Linux with NVIDIA GPUs, Fletcher uses CUDA for GPU acceleration.
 - Tanh, Add, Scale (custom kernels)
 - FP32/FP16 cast (custom kernels)
 - Fused Add+LayerNorm (custom kernel)
+
+## Advanced Features
+
+### Multi-Modal Support
+
+Fletcher supports image embeddings via a CLIP-style Vision Transformer:
+
+- **Vision Encoder**: ViT-B/ViT-S architecture with patch embedding
+- **Image Preprocessing**: Resize, normalize with ImageNet mean/std
+- **Output**: 512-768 dimensional embeddings
+
+### Sparse Embeddings (SPLADE)
+
+Fletcher supports SPLADE-style sparse lexical embeddings:
+
+- **MLM Head**: Projects hidden states to vocabulary space
+- **Max Pooling**: Selects maximum importance per token
+- **Log-Saturation**: Applies log(1 + ReLU) for sparsity
+- **Output**: Sparse map of token weights
+
+### Supported Models
+
+| Model Type | Description |
+|------------|-------------|
+| BERT-Tiny | 2-layer, 128 hidden |
+| all-MiniLM-L6-v2 | 6-layer, 384 hidden |
+| nomic-embed-text | 12-layer, 768 hidden, RoPE, SwiGLU, FusedQKV |
+| RoBERTa-base | 12-layer, 768 hidden |
+| XLM-RoBERTa | 12-layer, 768 hidden, 250k vocab |
+| bge-m3 | 24-layer, 1024 hidden |
+| e5-mistral-7b | 32-layer, 4096 hidden, RoPE, SwiGLU |
