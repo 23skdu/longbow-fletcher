@@ -70,6 +70,27 @@ func TestBertConfigDefaults(t *testing.T) {
 	require.Equal(t, 12, cfg.NumAttentionHeads)
 }
 
+func TestModelConfigs(t *testing.T) {
+	cfg := DefaultRoBERTaConfig()
+	require.Equal(t, 50265, cfg.VocabSize)
+	require.Equal(t, 768, cfg.HiddenSize)
+
+	cfg = DefaultXLMRoBERTaConfig()
+	require.Equal(t, 250002, cfg.VocabSize)
+	require.Equal(t, 768, cfg.HiddenSize)
+
+	cfg = DefaultBGEM3Config()
+	require.Equal(t, 250002, cfg.VocabSize)
+	require.Equal(t, 1024, cfg.HiddenSize)
+	require.Equal(t, 24, cfg.NumHiddenLayers)
+
+	cfg = DefaultE5MistralConfig()
+	require.Equal(t, 32000, cfg.VocabSize)
+	require.Equal(t, 4096, cfg.HiddenSize)
+	require.Equal(t, 32, cfg.NumHiddenLayers)
+	require.Equal(t, PositionalRoPE, cfg.PositionEmbedding)
+}
+
 func TestBertModelForwardNonBatch(t *testing.T) {
 	config := BertConfig{
 		VocabSize:             100,

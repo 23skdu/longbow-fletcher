@@ -60,6 +60,14 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 		config = model.DefaultMiniLMConfig()
 	case "nomic-embed-text":
 		config = model.DefaultNomicConfig()
+	case "roberta-base":
+		config = model.DefaultRoBERTaConfig()
+	case "xlm-roberta-base":
+		config = model.DefaultXLMRoBERTaConfig()
+	case "bge-m3":
+		config = model.DefaultBGEM3Config()
+	case "e5-mistral-7b-instruct":
+		config = model.DefaultE5MistralConfig()
 	default:
 		return nil, fmt.Errorf("unknown model type: %s", modelType)
 	}

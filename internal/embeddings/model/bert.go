@@ -75,6 +75,66 @@ func DefaultMiniLMConfig() BertConfig {
 	}
 }
 
+// DefaultRoBERTaConfig returns the configuration for RoBERTa-base.
+func DefaultRoBERTaConfig() BertConfig {
+	return BertConfig{
+		VocabSize:             50265,
+		HiddenSize:            768,
+		NumHiddenLayers:       12,
+		NumAttentionHeads:     12,
+		IntermediateSize:      3072,
+		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:     PositionalAbsolute,
+		LayerNormEps:          1e-5,
+	}
+}
+
+// DefaultXLMRoBERTaConfig returns the configuration for xlm-roberta-base.
+func DefaultXLMRoBERTaConfig() BertConfig {
+	return BertConfig{
+		VocabSize:             250002,
+		HiddenSize:            768,
+		NumHiddenLayers:       12,
+		NumAttentionHeads:     12,
+		IntermediateSize:      3072,
+		MaxPositionEmbeddings: 514,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:     PositionalAbsolute,
+		LayerNormEps:          1e-5,
+	}
+}
+
+// DefaultBGEM3Config returns the configuration for bge-m3.
+func DefaultBGEM3Config() BertConfig {
+	return BertConfig{
+		VocabSize:             250002,
+		HiddenSize:            1024,
+		NumHiddenLayers:       24,
+		NumAttentionHeads:     16,
+		IntermediateSize:      4096,
+		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:     PositionalAbsolute,
+		LayerNormEps:          1e-5,
+	}
+}
+
+// DefaultE5MistralConfig returns the configuration for e5-mistral-7b-instruct.
+func DefaultE5MistralConfig() BertConfig {
+	return BertConfig{
+		VocabSize:             32000,
+		HiddenSize:            4096,
+		NumHiddenLayers:       32,
+		NumAttentionHeads:     32,
+		IntermediateSize:      14336,
+		MaxPositionEmbeddings: 32768,
+		Activation:            device.ActivationSwiGLU,
+		PositionEmbedding:     PositionalRoPE,
+		LayerNormEps:          1e-5,
+	}
+}
+
 // BertModel is the main BERT model structure.
 type BertModel struct {
 	Config     BertConfig

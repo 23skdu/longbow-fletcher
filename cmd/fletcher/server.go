@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
@@ -10,9 +11,9 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/arrow-go/v18/arrow/float16"
 	"github.com/fxamacker/cbor/v2"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,7 +34,7 @@ var (
 		Name: "fletcher_vectors_processed_total",
 		Help: "The total number of vectors embedded",
 	})
-	
+
 	requestDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "fletcher_request_duration_seconds",
 		Help:    "Time spent processing encode requests",
@@ -87,7 +88,7 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 	if maxVRAM > 0 {
 		vs = semaphore.NewWeighted(maxVRAM)
 	}
-	
+
 	s := &Server{
 		embedder:     embedder,
 		flightClient: fc,
@@ -128,8 +129,15 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/encode", srv.recoverMiddleware(srv.handleEncode))
 	http.HandleFunc("/encode/arrow", srv.recoverMiddleware(srv.handleEncodeArrow))
-	
-	http.HandleFunc("/health", srv.handleHealth) // Legacy
+
+	http.HandleFunc("/health", srv.handleHealth)
+	http.HandleFunc("/healthz", srv.handleHealthz)
+	http.HandleFunc("/readyz", srv.handleReadyz)
+
+	http.HandleFunc("/v1/embeddings", srv.recoverMiddleware(srv.handleV1Embeddings))
+	http.HandleFunc("/v1/embeddings/batch", srv.recoverMiddleware(srv.handleV1EmbeddingsBatch))
+	http.HandleFunc("/v1/models", srv.handleV1Models)
+	http.HandleFunc("/v1/models/list", srv.handleV1ModelsList)
 	http.HandleFunc("/healthz", srv.handleHealthz)
 	http.HandleFunc("/readyz", srv.handleReadyz)
 
@@ -158,14 +166,14 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Enhanced logging with Trace ID and Client IP
 	sc := span.SpanContext()
 	logger := log.With().
 		Str("client_ip", r.RemoteAddr).
 		Str("user_agent", r.UserAgent()).
 		Logger()
-	
+
 	if sc.HasTraceID() {
 		logger = logger.With().Str("trace_id", sc.TraceID().String()).Logger()
 	}
@@ -182,13 +190,13 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	
+
 	logger.Info().Int("sequence_count", len(texts)).Msg("Received encode request")
 
 	span.SetAttributes(
 		attribute.Int("sequence_count", len(texts)),
 	)
-	
+
 	// Use total character count for estimation
 	totalBytes := 0
 	for _, t := range texts {
@@ -201,7 +209,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		if taskType == "" {
 			taskType = "search_document" // Default
 		}
-		
+
 		prefix := ""
 		switch taskType {
 		case "search_query":
@@ -211,7 +219,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		default:
 			prefix = taskType + ": "
 		}
-		
+
 		if prefix != "" {
 			for i := range texts {
 				texts[i] = prefix + texts[i]
@@ -228,7 +236,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.sem.Release(weight)
-	
+
 	// 2. VRAM Limit
 	if s.vramSem != nil {
 		estVRAM := s.embedder.EstimateVRAM(len(texts), totalBytes)
@@ -265,7 +273,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		for chunk := range ch {
 			if chunk.Err != nil {
 				logger.Error().Err(chunk.Err).Msg("Inference error in stream")
-				continue 
+				continue
 			}
 			// Forward slice of original texts
 			chunkTexts := texts[chunk.Offset : chunk.Offset+chunk.Count]
@@ -276,7 +284,8 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Drain the channel if no client
-		for range ch {}
+		for range ch {
+		}
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -285,7 +294,7 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embeddings.StreamResult) error {
 	curBatchSize := len(texts)
-	
+
 	// Text Column
 	tb := s.sbPool.Get().(*array.StringBuilder)
 	defer s.sbPool.Put(tb)
@@ -297,7 +306,7 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 	var embedBytes int
 	var fslType *arrow.FixedSizeListType
 	var valuesData *array.Data
-	
+
 	if res.RawBytes != nil && s.TransportFmt == "fp16" {
 		// Zero-copy path for FP16
 		resultBuf := memory.NewBufferBytes(res.RawBytes)
@@ -309,7 +318,7 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 		// FP32 path (or fallback)
 		flatBatch := res.Vectors
 		cols := len(flatBatch) / curBatchSize
-		
+
 		if s.TransportFmt == "fp16" {
 			// Convert FP32 -> FP16 manually
 			fp16Data := make([]float16.Num, len(flatBatch))
@@ -337,20 +346,20 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 		return nil // No data?
 	}
 	defer valuesData.Release()
-	
+
 	fslData := array.NewData(
 		fslType,
 		curBatchSize,
-		[]*memory.Buffer{nil}, 
+		[]*memory.Buffer{nil},
 		[]arrow.ArrayData{valuesData},
 		0,
 		0,
 	)
 	defer fslData.Release()
-	
+
 	fslArr := array.NewFixedSizeListData(fslData)
 	defer fslArr.Release()
-	
+
 	rec := array.NewRecord(
 		arrow.NewSchema(
 			[]arrow.Field{
@@ -363,7 +372,7 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 		int64(curBatchSize),
 	)
 	defer rec.Release()
-	
+
 	start := time.Now()
 	// Use Async Stream
 	if s.stream != nil {
@@ -384,7 +393,6 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 	return nil
 }
 
-
 func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 	ctx, span := tracer.Start(r.Context(), "handleEncodeArrow")
 	defer span.End()
@@ -395,7 +403,7 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 		Str("client_ip", r.RemoteAddr).
 		Str("user_agent", r.UserAgent()).
 		Logger()
-	
+
 	if sc.HasTraceID() {
 		logger = logger.With().Str("trace_id", sc.TraceID().String()).Logger()
 	}
@@ -418,15 +426,15 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 	defer reader.Release()
 
 	totalProcessed := 0
-	
+
 	for reader.Next() {
 		rec := reader.Record()
 		if rec.NumCols() == 0 {
 			continue
 		}
-		
+
 		// Expect "text" column. Assume 0 is text for now or by name "text"
-		col := rec.Column(0) 
+		col := rec.Column(0)
 		// If schema has names, check for "text"
 		indices := rec.Schema().FieldIndices("text")
 		if len(indices) > 0 {
@@ -448,7 +456,7 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 				totalProcessed += len(texts)
 				continue
 			}
-			
+
 			logger.Warn().Msg("First column is not String/Binary array, skipping batch")
 			continue
 		}
@@ -457,14 +465,14 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 		for i := 0; i < strArr.Len(); i++ {
 			texts[i] = strArr.Value(i)
 		}
-		
+
 		// Apply Nomic Prefix if needed (Arrow path)
 		if s.ModelType == "nomic-embed-text" || s.ModelType == "nomic-embed-text-v1.5" {
 			taskType := r.URL.Query().Get("task")
 			if taskType == "" {
 				taskType = "search_document" // Default
 			}
-			
+
 			prefix := ""
 			switch taskType {
 			case "search_query":
@@ -474,7 +482,7 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 			default:
 				prefix = taskType + ": "
 			}
-			
+
 			if prefix != "" {
 				for i := range texts {
 					texts[i] = prefix + texts[i]
@@ -487,13 +495,13 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 		for _, t := range texts {
 			totalBytes += len(t)
 		}
-		
+
 		weight := int64(len(texts))
 		if err := s.sem.Acquire(ctx, weight); err != nil {
 			logger.Error().Err(err).Msg("Failed to acquire semaphore for arrow batch")
 			break
 		}
-		
+
 		// VRAM Limit (nested to ensure we release both)
 		var vramAcquired int64
 		if s.vramSem != nil {
@@ -505,14 +513,14 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 			}
 			vramAcquired = estVRAM
 		}
-		
+
 		s.processBatch(ctx, texts)
-		
+
 		if s.vramSem != nil {
 			s.vramSem.Release(vramAcquired)
 		}
 		s.sem.Release(weight)
-		
+
 		totalProcessed += len(texts)
 	}
 
@@ -539,7 +547,7 @@ func (s *Server) processBatch(ctx context.Context, texts []string) {
 		for chunk := range ch {
 			if chunk.Err != nil {
 				log.Error().Err(chunk.Err).Msg("Inference error in stream")
-				continue 
+				continue
 			}
 			chunkTexts := texts[chunk.Offset : chunk.Offset+chunk.Count]
 			if err := s.forwardToLongbow(ctx, chunkTexts, chunk); err != nil {
@@ -547,7 +555,8 @@ func (s *Server) processBatch(ctx context.Context, texts []string) {
 			}
 		}
 	} else {
-		for range ch {}
+		for range ch {
+		}
 	}
 }
 
@@ -562,10 +571,10 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not Ready", http.StatusServiceUnavailable)
 		return
 	}
-	
+
 	// Optional: Check VRAM availability or basic inference capability
 	// For now, if we are up and have an embedder, we are ready.
-	
+
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("Ready"))
 }
@@ -575,13 +584,13 @@ func (s *Server) recoverMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		defer func() {
 			if err := recover(); err != nil {
 				// Metrics
-				embeddings.PanicTotal.Inc() 
-				
+				embeddings.PanicTotal.Inc()
+
 				log.Error().
 					Interface("panic", err).
 					Str("stack", string(debugStack())).
 					Msg("Panic recovered in HTTP handler")
-				
+
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
@@ -599,4 +608,142 @@ func debugStack() []byte {
 // Deprecated: use handleHealthz
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	s.handleHealthz(w, r)
+}
+
+type V1EmbeddingRequest struct {
+	Input string `json:"input"`
+	Model string `json:"model"`
+}
+
+type V1EmbeddingResponse struct {
+	Object string        `json:"object"`
+	Data   []V1Embedding `json:"data"`
+	Model  string        `json:"model"`
+	Usage  V1Usage       `json:"usage"`
+}
+
+type V1Embedding struct {
+	Object    string    `json:"object"`
+	Embedding []float32 `json:"embedding"`
+	Index     int       `json:"index"`
+}
+
+type V1Usage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+func (s *Server) handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req V1EmbeddingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	embeddings := s.embedder.ProxyEmbedBatch(r.Context(), []string{req.Input})
+
+	resp := V1EmbeddingResponse{
+		Object: "list",
+		Data: []V1Embedding{
+			{
+				Object:    "embedding",
+				Embedding: embeddings,
+				Index:     0,
+			},
+		},
+		Model: req.Model,
+		Usage: V1Usage{
+			PromptTokens: len(req.Input),
+			TotalTokens:  len(req.Input),
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+type V1BatchEmbeddingRequest struct {
+	Inputs []string `json:"inputs"`
+	Model  string   `json:"model"`
+}
+
+func (s *Server) handleV1EmbeddingsBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req V1BatchEmbeddingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	embeddings := s.embedder.ProxyEmbedBatch(r.Context(), req.Inputs)
+
+	dim := 384
+	if len(embeddings) > 0 {
+		dim = len(embeddings) / len(req.Inputs)
+	}
+
+	data := make([]V1Embedding, len(req.Inputs))
+	for i := range req.Inputs {
+		start := i * dim
+		end := start + dim
+		data[i] = V1Embedding{
+			Object:    "embedding",
+			Embedding: embeddings[start:end],
+			Index:     i,
+		}
+	}
+
+	resp := V1EmbeddingResponse{
+		Object: "list",
+		Data:   data,
+		Model:  req.Model,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+type V1Model struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	Created int    `json:"created"`
+	OwnedBy string `json:"owned_by"`
+}
+
+func (s *Server) handleV1Models(w http.ResponseWriter, r *http.Request) {
+	resp := V1Model{
+		ID:      "fletcher-embed",
+		Object:  "model",
+		Created: 1700000000,
+		OwnedBy: "fletcher",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleV1ModelsList(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]interface{}{
+		"object": "list",
+		"data": []V1Model{
+			{
+				ID:      "fletcher-embed",
+				Object:  "model",
+				Created: 1700000000,
+				OwnedBy: "fletcher",
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
