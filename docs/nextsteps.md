@@ -513,3 +513,89 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 - [ ] Add GPU test runner to CI
 - [ ] Add benchmark regression tests
 - [ ] Add fuzzing infrastructure
+
+---
+
+## 14. vLLM Feature Parity Roadmap
+
+Based on analysis of [vllm-project/vllm](https://github.com/vllm-project/vllm), this section outlines features needed for competitive feature parity.
+
+### vLLM Key Features (What's Missing in Fletcher)
+
+| Feature | vLLM Status | Fletcher Status | Priority |
+|---------|-------------|------------------|----------|
+| Multi-Modal (Images, Audio, Video) | ✅ Supported | ❌ Missing | P0 |
+| Sparse Embeddings (SPLADE) | ✅ Supported | ❌ Missing | P1 |
+| RoBERTa / XLM-RoBERTa | ✅ Supported | ❌ Missing | P1 |
+| BERT variants | ✅ Supported | ⚠️ Basic | P1 |
+| LoRA Support | ✅ Supported | ❌ Missing | P2 |
+| Prefix Caching | ✅ Optimized | ❌ Missing | P2 |
+| Chunked Prefill | ✅ Optimized | ❌ Missing | P2 |
+| FP8 KV Cache | ✅ Supported (Hopper) | ❌ Missing | P2 |
+| Spec Decode | ⚠️ WIP | ❌ N/A | P3 |
+| Structured Output | ✅ Supported | ❌ Missing | P2 |
+| Multiple Pooling Strategies | ✅ Supported | ⚠️ Basic | P1 |
+| Model Registry/Auto-Discovery | ✅ Supported | ❌ Missing | P1 |
+| HuggingFace Hub Integration | ✅ Full | ⚠️ Limited | P1 |
+| OpenAI Compatible API | ✅ Full | ⚠️ Partial | P1 |
+| AMD/TPU Support | ⚠️ WIP | ❌ Missing | P3 |
+
+### Part 11: Multi-Modal Support (P0)
+- [ ] Add image encoding support (CLIP-like vision encoder)
+- [ ] Add image-to-text embedding pipeline
+- [ ] Add multi-modal input preprocessing
+- [ ] Support image embeddings via OpenAI-compatible API
+
+### Part 12: Sparse Embeddings (P1)
+- [ ] Add SPLADE model support
+- [ ] Implement sparse vector output
+- [ ] Add sparse+dense hybrid retrieval support
+
+### Part 13: Model Ecosystem Expansion (P1)
+- [ ] Add RoBERTa model support
+- [ ] Add XLM-RoBERTa support
+- [ ] Add bge-m3 support (MMReranker)
+- [ ] Add e5-mistral support
+- [ ] Implement model registry with auto-discovery
+- [ ] Support HuggingFace AutoConfig/AutoModel
+
+### Part 14: Advanced Features (P2)
+- [ ] Implement LoRA fine-tuning support
+- [ ] Add prefix caching for repeated prompts
+- [ ] Implement chunked prefill
+- [ ] Add FP8 KV cache for Ampere+ GPUs
+- [ ] Add structured output support (JSON schemas)
+- [ ] Implement multiple pooling strategies (mean, cls, max, last)
+
+### Part 15: OpenAI Compatibility (P1)
+- [ ] Full OpenAI Embedding API compatibility
+- [ ] Add `/v1/embeddings` endpoint
+- [ ] Add `/v1/rerank` endpoint for reranking models
+- [ ] Add batch embedding API
+
+### Part 16: Hardware Support (P3)
+- [ ] Add AMD ROCm backend
+- [ ] Add TPU backend (via JAX/PUF)
+- [ ] Improve CPU backend performance
+
+---
+
+### Feature Parity Priority Matrix
+
+```
+                          | Quick Win | Medium Effort | Long Term |
+|------------------------|-----------|---------------|-----------|
+| High Impact            | Ollama comp| Multi-modal  | Sparse emb|
+|                        | Pooling   | Model expand | Full HF   |
+| Medium Impact          | Prefix    | Structured   | LoRA      |
+|                        | cache     | output       |           |
+| Low Impact             | AMD ROCm  | TPU backend  | Spec dec  |
+```
+
+### Top 5 Priorities for vLLM Parity
+
+1. **Multi-Modal Support** - Biggest gap vs vLLM
+2. **Model Auto-Discovery** - Load any HF model automatically
+3. **Full OpenAI Compatibility** - Drop-in replacement
+4. **SPLADE/Sparse Embeddings** - Hybrid retrieval
+5. **More Pooling Strategies** - Mean, CLS, Max, last-token
