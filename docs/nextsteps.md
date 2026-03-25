@@ -541,9 +541,14 @@ Based on analysis of [vllm-project/vllm](https://github.com/vllm-project/vllm), 
 | AMD/TPU Support | ⚠️ WIP | ❌ Missing | P3 |
 
 ### Part 11: Multi-Modal Support (P0)
-- [ ] Add image encoding support (CLIP-like vision encoder)
+- [x] Add image encoding support (CLIP-like vision encoder)
+  - Added `VisionConfig`, `VisionModel`, `TransformerEncoder` in model/vision.go
+  - Added `VisionEncoder` interface with ViT implementation
+- [x] Add multi-modal input types
+  - Added `MultiModalInput`, `EmbeddingInput` in embeddings/multimodal.go
+  - Added `ImagePreprocessor` with CLIP normalization values
 - [ ] Add image-to-text embedding pipeline
-- [ ] Add multi-modal input preprocessing
+- [ ] Add multi-modal input preprocessing for HTTP API
 - [ ] Support image embeddings via OpenAI-compatible API
 
 ### Part 12: Sparse Embeddings (P1)
