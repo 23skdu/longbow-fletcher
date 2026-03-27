@@ -486,7 +486,8 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 
 ### Part 5: Quantization Support (Priority: Medium)
 - [x] Implement Q4/Q8 dequantization for CPU backend
-- [ ] Add INT8 kernel support for Metal
+- [x] Add INT8 datatype support to Tensor interface (CPU supports)
+- [ ] Add INT8 kernel support for Metal (requires Metal kernel implementation)
 - [ ] Test with quantized nomic-embed-text
 
 ### Part 6: API & Auth (Priority: Medium)
