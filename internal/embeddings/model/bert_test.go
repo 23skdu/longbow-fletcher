@@ -91,6 +91,26 @@ func TestModelConfigs(t *testing.T) {
 	require.Equal(t, PositionalRoPE, cfg.PositionEmbedding)
 }
 
+func TestExtendedDimensionConfigs(t *testing.T) {
+	cfg := DefaultDim1536Config()
+	require.Equal(t, 1536, cfg.HiddenSize)
+	require.Equal(t, 12, cfg.NumHiddenLayers)
+	require.Equal(t, 12, cfg.NumAttentionHeads)
+	require.Equal(t, 6144, cfg.IntermediateSize)
+
+	cfg = DefaultDim2048Config()
+	require.Equal(t, 2048, cfg.HiddenSize)
+	require.Equal(t, 16, cfg.NumHiddenLayers)
+	require.Equal(t, 16, cfg.NumAttentionHeads)
+	require.Equal(t, 8192, cfg.IntermediateSize)
+
+	cfg = DefaultDim3072Config()
+	require.Equal(t, 3072, cfg.HiddenSize)
+	require.Equal(t, 24, cfg.NumHiddenLayers)
+	require.Equal(t, 24, cfg.NumAttentionHeads)
+	require.Equal(t, 12288, cfg.IntermediateSize)
+}
+
 func TestBertModelForwardNonBatch(t *testing.T) {
 	config := BertConfig{
 		VocabSize:             100,

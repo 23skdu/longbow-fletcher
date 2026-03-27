@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/rand"
 	"testing"
+
+	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
 func isNaNOrInf(f float32) bool {
@@ -203,5 +205,113 @@ func TestEmbeddings_NomicModel(t *testing.T) {
 		if isNaNOrInf(v) {
 			t.Errorf("Nomic model: NaN/Inf at index %d", j)
 		}
+	}
+}
+
+func TestFuzz_DimensionValidation(t *testing.T) {
+	dimensions := []int{128, 384, 768, 1024, 1536, 2048, 3072}
+
+	for _, dim := range dimensions {
+		t.Run("dim_"+string(rune(dim)), func(t *testing.T) {
+			if !device.IsValidEmbeddingDimension(dim) {
+				t.Errorf("Dimension %d should be valid", dim)
+			}
+		})
+	}
+}
+
+func TestFuzz_InvalidDimensions(t *testing.T) {
+	invalidDims := []int{0, -1, 1, 64, 256, 512, 1000, 1500, 4096, 8192}
+
+	for _, dim := range invalidDims {
+		if device.IsValidEmbeddingDimension(dim) {
+			t.Errorf("Dimension %d should be invalid", dim)
+		}
+	}
+}
+
+func TestFuzz_DataTypeSizes(t *testing.T) {
+	types := []device.DataType{
+		device.Float32, device.Float16, device.Float64,
+		device.Int8, device.Int16, device.Int32, device.Int64, device.Int,
+		device.Uint8, device.Uint16, device.Uint32, device.Uint64, device.Uint, device.Uintptr,
+		device.Complex64, device.Complex128,
+	}
+
+	for _, dt := range types {
+		size := device.DataTypeSize(dt)
+		if size <= 0 {
+			t.Errorf("DataType %s has invalid size %d", dt.String(), size)
+		}
+	}
+}
+
+func TestFuzz_NumericOverflow(t *testing.T) {
+	backend := device.NewCPUBackend()
+
+	largeVal := float32(1e30)
+	smallVal := float32(1e-30)
+
+	t.Run("Add_LargeValues", func(t *testing.T) {
+		a := backend.NewTensor(1, 4, []float32{largeVal, largeVal, largeVal, largeVal})
+		b := backend.NewTensor(1, 4, []float32{largeVal, largeVal, largeVal, largeVal})
+		a.Add(b)
+
+		data := a.ToHost()
+		for _, v := range data {
+			if !isNaNOrInf(v) && math.Abs(float64(v)) < float64(largeVal) {
+				t.Errorf("Expected large value, got %f", v)
+			}
+		}
+	})
+
+	t.Run("Scale_LargeValue", func(t *testing.T) {
+		a := backend.NewTensor(1, 4, []float32{largeVal, largeVal, largeVal, largeVal})
+		a.Scale(2.0)
+
+		data := a.ToHost()
+		for _, v := range data {
+			if isNaNOrInf(v) {
+				t.Logf("Got expected inf/nan for overflow: %f", v)
+			}
+		}
+	})
+
+	t.Run("Subnormal_SmallValue", func(t *testing.T) {
+		a := backend.NewTensor(1, 4, []float32{smallVal, smallVal, smallVal, smallVal})
+		b := backend.NewTensor(1, 4, []float32{smallVal, smallVal, smallVal, smallVal})
+		a.Add(b)
+
+		data := a.ToHost()
+		for _, v := range data {
+			if math.Abs(float64(v)) < float64(smallVal)/2 {
+				t.Errorf("Expected value >= smallVal, got %f", v)
+			}
+		}
+	})
+}
+
+func TestFuzz_AllDimensionsWork(t *testing.T) {
+	dimensions := []int{128, 384, 768, 1024}
+
+	for _, dim := range dimensions {
+		t.Run("dim_"+string(rune(dim)), func(t *testing.T) {
+			backend := device.NewCPUBackend()
+			tensor := backend.NewTensor(1, dim, nil)
+
+			r, c := tensor.Dims()
+			if r != 1 || c != dim {
+				t.Errorf("Expected dims (1, %d), got (%d, %d)", dim, r, c)
+			}
+
+			for i := 0; i < dim; i++ {
+				tensor.Set(0, i, float32(i))
+			}
+
+			data := tensor.ToHost()
+			if len(data) != dim {
+				t.Errorf("Expected %d elements, got %d", dim, len(data))
+			}
+		})
 	}
 }

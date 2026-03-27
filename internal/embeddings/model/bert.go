@@ -135,6 +135,51 @@ func DefaultE5MistralConfig() BertConfig {
 	}
 }
 
+// DefaultDim1536Config returns a configuration for 1536-dimensional embeddings.
+func DefaultDim1536Config() BertConfig {
+	return BertConfig{
+		VocabSize:             30522,
+		HiddenSize:            1536,
+		NumHiddenLayers:       12,
+		NumAttentionHeads:     12,
+		IntermediateSize:      6144,
+		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:     PositionalAbsolute,
+		LayerNormEps:          1e-5,
+	}
+}
+
+// DefaultDim2048Config returns a configuration for 2048-dimensional embeddings.
+func DefaultDim2048Config() BertConfig {
+	return BertConfig{
+		VocabSize:             30522,
+		HiddenSize:            2048,
+		NumHiddenLayers:       16,
+		NumAttentionHeads:     16,
+		IntermediateSize:      8192,
+		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:     PositionalAbsolute,
+		LayerNormEps:          1e-5,
+	}
+}
+
+// DefaultDim3072Config returns a configuration for 3072-dimensional embeddings.
+func DefaultDim3072Config() BertConfig {
+	return BertConfig{
+		VocabSize:             50265,
+		HiddenSize:            3072,
+		NumHiddenLayers:       24,
+		NumAttentionHeads:     24,
+		IntermediateSize:      12288,
+		MaxPositionEmbeddings: 512,
+		Activation:            device.ActivationGELU,
+		PositionEmbedding:     PositionalAbsolute,
+		LayerNormEps:          1e-5,
+	}
+}
+
 // BertModel is the main BERT model structure.
 type BertModel struct {
 	Config     BertConfig

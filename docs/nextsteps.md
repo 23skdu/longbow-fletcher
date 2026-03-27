@@ -610,3 +610,88 @@ Based on analysis of [vllm-project/vllm](https://github.com/vllm-project/vllm), 
 3. **Full OpenAI Compatibility** - Drop-in replacement
 4. **SPLADE/Sparse Embeddings** - Hybrid retrieval
 5. **More Pooling Strategies** - Mean, CLS, Max, last-token
+
+---
+
+## 15. Multi-Dimension & Multi-Datatype Support
+
+### Goals
+
+Support all standard embedding dimensions and Go native datatypes for maximum flexibility.
+
+### Supported Dimensions
+
+| Dimension | Status | Use Case |
+|-----------|--------|----------|
+| 128 | ✅ Implemented | BERT-Tiny |
+| 384 | ✅ Implemented | all-MiniLM-L6-v2 |
+| 768 | ✅ Implemented | BERT-Base, Nomic |
+| 1024 | ✅ Implemented | bge-m3 |
+| 1536 | ❌ Missing | Custom models |
+| 2048 | ❌ Missing | Large models |
+| 3072 | ❌ Missing | XL models |
+
+### Supported Datatypes
+
+| Category | Types | Status |
+|----------|-------|--------|
+| **Integers** | int, int8, int16, int32, int64 | ❌ Missing |
+| **Unsigned** | uint, uint8, uint16, uint32, uint64, uintptr | ❌ Missing |
+| **Float** | float32, float64 | ✅ Implemented (float32) |
+| **Complex** | complex64, complex128 | ❌ Missing |
+
+### Implementation Plan
+
+#### Task 1: Add Dimension Support (Priority: High)
+
+- [ ] **P0**: Add dimension 1536 support in model configs
+- [ ] **P0**: Add dimension 2048 support in model configs
+- [ ] **P0**: Add dimension 3072 support in model configs
+- [ ] **P1**: Add dimension validation in embeddings.go
+- [ ] **P1**: Update pooling layer for variable dimensions
+- [ ] **P2**: Add benchmark tests for each dimension
+
+#### Task 2: Add Datatype Support (Priority: High)
+
+- [ ] **P0**: Add int8/int16/int32/int64 support to Tensor interface
+- [ ] **P0**: Add uint8/uint16/uint32/uint64 support to Tensor interface
+- [ ] **P0**: Add float64 support (in addition to float32)
+- [ ] **P0**: Add complex64/complex128 support
+- [ ] **P1**: Implement datatype conversion kernels for CPU
+- [ ] **P1**: Implement datatype conversion kernels for Metal
+- [ ] **P1**: Implement datatype conversion kernels for CUDA
+- [ ] **P2**: Add datatype-aware memory allocation
+
+#### Task 3: Add Unit Tests (Priority: High)
+
+- [ ] **P0**: Add dimension validation tests (128, 384, 768, 1024, 1536, 2048, 3072)
+- [ ] **P0**: Add datatype conversion tests (int/uint/float/complex)
+- [ ] **P1**: Add backend-specific tests (CPU, Metal, CUDA)
+- [ ] **P1**: Add pooling tests for all dimensions
+
+#### Task 4: Add Fuzz Tests (Priority: High)
+
+- [ ] **P0**: Add fuzz tests for dimension handling
+- [ ] **P0**: Add fuzz tests for datatype conversions
+- [ ] **P1**: Add fuzz tests for numeric overflow handling
+- [ ] **P1**: Add fuzz tests for NaN/Inf in all datatypes
+- [ ] **P2**: Add fuzz tests for cross-dimension operations
+
+### Files to Modify
+
+1. `internal/device/device.go` - Add datatype constants and interface methods
+2. `internal/device/cpu_backend.go` - Add datatype-specific implementations
+3. `internal/device/metal_darwin.go` - Add Metal datatype kernels
+4. `internal/device/cuda_linux.go` - Add CUDA datatype kernels
+5. `internal/embeddings/model/bert.go` - Add dimension configs
+6. `internal/embeddings/embeddings.go` - Add dimension validation
+7. `internal/device/*_test.go` - Add unit tests
+8. `internal/embeddings/*_test.go` - Add fuzz tests
+
+### Success Criteria
+
+- [ ] All 7 dimensions (128, 384, 768, 1024, 1536, 2048, 3072) work correctly
+- [ ] All Go native datatypes (int, uint, float, complex) supported
+- [ ] Unit test coverage > 80% for new code
+- [ ] Fuzz tests pass with 10,000 iterations
+- [ ] No performance regression for existing dimensions

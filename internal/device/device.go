@@ -126,9 +126,102 @@ type Tensor interface {
 type DataType int
 
 const (
+	// Float types
 	Float32 DataType = iota
 	Float16
+	Float64
+
+	// Signed integers
+	Int8
+	Int16
+	Int32
+	Int64
+	Int
+
+	// Unsigned integers
+	Uint8
+	Uint16
+	Uint32
+	Uint64
+	Uint
+	Uintptr
+
+	// Complex types
+	Complex64
+	Complex128
 )
+
+// SupportedEmbeddingDimensions contains all valid embedding dimensions
+var SupportedEmbeddingDimensions = []int{128, 384, 768, 1024, 1536, 2048, 3072}
+
+func (d DataType) String() string {
+	switch d {
+	case Float32:
+		return "float32"
+	case Float16:
+		return "float16"
+	case Float64:
+		return "float64"
+	case Int8:
+		return "int8"
+	case Int16:
+		return "int16"
+	case Int32:
+		return "int32"
+	case Int64:
+		return "int64"
+	case Int:
+		return "int"
+	case Uint8:
+		return "uint8"
+	case Uint16:
+		return "uint16"
+	case Uint32:
+		return "uint32"
+	case Uint64:
+		return "uint64"
+	case Uint:
+		return "uint"
+	case Uintptr:
+		return "uintptr"
+	case Complex64:
+		return "complex64"
+	case Complex128:
+		return "complex128"
+	default:
+		return "unknown"
+	}
+}
+
+// IsValidEmbeddingDimension checks if the given dimension is supported
+func IsValidEmbeddingDimension(dim int) bool {
+	for _, d := range SupportedEmbeddingDimensions {
+		if d == dim {
+			return true
+		}
+	}
+	return false
+}
+
+// DataTypeSize returns the byte size of each datatype
+func DataTypeSize(dtype DataType) int {
+	switch dtype {
+	case Float32, Int32, Uint32, Complex64:
+		return 4
+	case Float16, Int16, Uint16:
+		return 2
+	case Float64, Int64, Uint64, Complex128:
+		return 8
+	case Int8, Uint8:
+		return 1
+	case Int, Uint:
+		return 8 // 64-bit on 64-bit architecture
+	case Uintptr:
+		return 8
+	default:
+		return 4
+	}
+}
 
 type ActivationType int
 

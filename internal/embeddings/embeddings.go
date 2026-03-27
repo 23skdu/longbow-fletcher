@@ -77,6 +77,11 @@ func NewEmbedder(vocabPath, weightsPath string, useGPU bool, modelType string, p
 		precision = "fp32"
 	}
 
+	// Validate embedding dimension is supported
+	if !device.IsValidEmbeddingDimension(config.HiddenSize) {
+		return nil, fmt.Errorf("unsupported embedding dimension: %d. Supported dimensions: %v", config.HiddenSize, device.SupportedEmbeddingDimensions)
+	}
+
 	deviceCount := 1
 	if useGPU {
 		// Probe for device count using a temporary backend
