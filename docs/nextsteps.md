@@ -491,6 +491,9 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
   - PolarQuant: Cartesian to polar coordinate conversion
   - QJL: 1-bit Johnson-Lindenstrauss residual correction
   - 6x memory reduction with zero accuracy loss
+- [x] Implement datatype conversion kernels for CUDA
+  - Float32<->Float64, Int8/16/32/64, Uint8/16/32/64
+  - Added dtype tracking to CudaTensor
 - [ ] Add INT8 kernel support for Metal (requires Metal kernel implementation)
 - [ ] Test with quantized nomic-embed-text
 
@@ -664,7 +667,7 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 - [x] **P0**: Add complex64/complex128 support
 - [x] **P1**: Implement datatype conversion kernels for CPU
 - [ ] **P1**: Implement datatype conversion kernels for Metal
-- [ ] **P1**: Implement datatype conversion kernels for CUDA
+- [x] **P1**: Implement datatype conversion kernels for CUDA
 - [x] **P2**: Add datatype-aware memory allocation
 
 #### Task 3: Add Unit Tests (Priority: High)
