@@ -25,7 +25,21 @@ func TestQuantizedTensor(t *testing.T) {
 }
 
 func TestQuantizedTensorInt4(t *testing.T) {
-	t.Skip("QuantInt4 has a bug - skipping")
+	data := make([]float32, 128)
+	for i := range data {
+		data[i] = float32(i) * 0.1
+	}
+
+	qt := QuantizeFloat32(data, 1, 128, QuantInt4, 32)
+	require.NotNil(t, qt)
+
+	r, c := qt.Dims()
+	require.Equal(t, 1, r)
+	require.Equal(t, 128, c)
+
+	result := qt.ToFloat32()
+	require.NotNil(t, result)
+	require.Len(t, result, 128)
 }
 
 func TestTurboQuant(t *testing.T) {

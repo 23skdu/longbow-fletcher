@@ -403,19 +403,22 @@ func NewQJLQuantizer(dimensions int) *QJLQuantizer {
 }
 
 func (q *QJLQuantizer) generateMatrix() {
-	q.matrix = make([]float32, q.dimensions*q.dimensions)
-	for i := 0; i < q.dimensions*q.dimensions; i++ {
+	matrixSize := q.dimensions * q.dimensions
+	q.matrix = make([]float32, matrixSize)
+	for i := 0; i < matrixSize; i++ {
 		q.matrix[i] = float32(q.random.NormFloat64()) / float32(math.Sqrt(float64(q.dimensions)))
 	}
 }
 
 func (q *QJLQuantizer) Compress(data []float32) []int8 {
 	result := make([]int8, q.dimensions)
+	dataLen := len(data)
+	matrixCols := q.dimensions
 
-	for j := 0; j < q.dimensions; j++ {
+	for j := 0; j < matrixCols; j++ {
 		var dotProduct float32
-		for i := 0; i < len(data); i++ {
-			dotProduct += data[i] * q.matrix[i*q.dimensions+j]
+		for i := 0; i < dataLen && i < matrixCols; i++ {
+			dotProduct += data[i] * q.matrix[i*matrixCols+j]
 		}
 		if dotProduct >= 0 {
 			result[j] = 1
@@ -428,12 +431,13 @@ func (q *QJLQuantizer) Compress(data []float32) []int8 {
 }
 
 func (q *QJLQuantizer) Decompress(compressed []int8) []float32 {
-	reconstructed := make([]float32, len(q.matrix)/q.dimensions)
+	matrixCols := q.dimensions
+	reconstructed := make([]float32, matrixCols)
 
-	for i := 0; i < len(reconstructed); i++ {
+	for i := 0; i < matrixCols; i++ {
 		var sum float32
-		for j := 0; j < q.dimensions && i*q.dimensions+j < len(q.matrix); j++ {
-			sum += float32(compressed[j]) * q.matrix[i*q.dimensions+j]
+		for j := 0; j < matrixCols; j++ {
+			sum += float32(compressed[j]) * q.matrix[i*matrixCols+j]
 		}
 		reconstructed[i] = sum * float32(math.Sqrt(float64(q.dimensions)))
 	}

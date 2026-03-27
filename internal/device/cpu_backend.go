@@ -46,6 +46,7 @@ func (b *CPUBackend) NewTensorWithType(r, c int, dtype DataType, data []float32)
 	size := r * c
 	t := &CPUTensor{
 		backend: b,
+		dtype:   dtype,
 		rows:    r,
 		cols:    c,
 	}
@@ -60,6 +61,75 @@ func (b *CPUBackend) NewTensorWithType(r, c int, dtype DataType, data []float32)
 		copy(t.data, data)
 	}
 
+	return t
+}
+
+func (b *CPUBackend) NewTensorInt(r, c int, data []int) Tensor {
+	size := r * c
+	t := &CPUTensor{
+		backend: b,
+		dtype:   Int,
+		rows:    r,
+		cols:    c,
+	}
+	t.data = make([]float32, size)
+	if data != nil {
+		for i := 0; i < size && i < len(data); i++ {
+			t.data[i] = float32(data[i])
+		}
+	}
+	return t
+}
+
+func (b *CPUBackend) NewTensorUint(r, c int, data []uint) Tensor {
+	size := r * c
+	t := &CPUTensor{
+		backend: b,
+		dtype:   Uint,
+		rows:    r,
+		cols:    c,
+	}
+	t.data = make([]float32, size)
+	if data != nil {
+		for i := 0; i < size && i < len(data); i++ {
+			t.data[i] = float32(data[i])
+		}
+	}
+	return t
+}
+
+func (b *CPUBackend) NewTensorFloat64(r, c int, data []float64) Tensor {
+	size := r * c
+	t := &CPUTensor{
+		backend: b,
+		dtype:   Float64,
+		rows:    r,
+		cols:    c,
+	}
+	t.data = make([]float32, size)
+	if data != nil {
+		for i := 0; i < size && i < len(data); i++ {
+			t.data[i] = float32(data[i])
+		}
+	}
+	return t
+}
+
+func (b *CPUBackend) NewTensorComplex(r, c int, data []complex128) Tensor {
+	size := r * c
+	t := &CPUTensor{
+		backend: b,
+		dtype:   Complex128,
+		rows:    r,
+		cols:    c,
+	}
+	t.data = make([]float32, size*2)
+	if data != nil {
+		for i := 0; i < size && i < len(data); i++ {
+			t.data[i*2] = float32(real(data[i]))
+			t.data[i*2+1] = float32(imag(data[i]))
+		}
+	}
 	return t
 }
 
@@ -141,6 +211,7 @@ func (b *CPUBackend) GetTensor(r, c int) Tensor {
 
 	// Initialize/reset the tensor
 	ct.backend = b
+	ct.dtype = Float32
 	ct.rows = r
 	ct.cols = c
 	ct.trans = false
@@ -191,6 +262,7 @@ func (b *CPUBackend) GetVRAMUsage() (int64, int64) {
 type CPUTensor struct {
 	backend *CPUBackend
 	data    []float32
+	dtype   DataType
 	rows    int
 	cols    int
 	trans   bool // Transposed view flag
@@ -228,7 +300,7 @@ func (t *CPUTensor) Data() []float32 {
 }
 
 func (t *CPUTensor) DataType() DataType {
-	return Float32
+	return t.dtype
 }
 
 func (t *CPUTensor) ToHost() []float32 {
@@ -320,6 +392,7 @@ func (t *CPUTensor) Paste(dstRow, dstCol int, src Tensor, srcRow, srcCol, rows, 
 func (t *CPUTensor) T() Tensor {
 	return &CPUTensor{
 		backend: t.backend,
+		dtype:   t.dtype,
 		data:    t.data, // Share data
 		rows:    t.rows,
 		cols:    t.cols,

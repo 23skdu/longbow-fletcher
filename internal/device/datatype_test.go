@@ -433,3 +433,65 @@ func TestPerformanceRegression(t *testing.T) {
 	maxExpected := 5 * time.Second
 	require.Less(t, elapsed, maxExpected, "Performance regression detected")
 }
+
+func TestNewTensorWithType(t *testing.T) {
+	backend := NewCPUBackend()
+
+	t.Run("Float32", func(t *testing.T) {
+		data := []float32{1.0, 2.0, 3.0, 4.0}
+		tensor := backend.NewTensorWithType(2, 2, Float32, data)
+		require.Equal(t, Float32, tensor.DataType())
+		r, c := tensor.Dims()
+		require.Equal(t, 2, r)
+		require.Equal(t, 2, c)
+	})
+
+	t.Run("Int", func(t *testing.T) {
+		data := []int{1, 2, 3, 4}
+		tensor := backend.NewTensorInt(2, 2, data)
+		require.Equal(t, Int, tensor.DataType())
+		r, c := tensor.Dims()
+		require.Equal(t, 2, r)
+		require.Equal(t, 2, c)
+		host := tensor.ToHost()
+		require.Equal(t, float32(1.0), host[0])
+	})
+
+	t.Run("Uint", func(t *testing.T) {
+		data := []uint{1, 2, 3, 4}
+		tensor := backend.NewTensorUint(2, 2, data)
+		require.Equal(t, Uint, tensor.DataType())
+		r, c := tensor.Dims()
+		require.Equal(t, 2, r)
+		require.Equal(t, 2, c)
+		host := tensor.ToHost()
+		require.Equal(t, float32(1.0), host[0])
+	})
+
+	t.Run("Float64", func(t *testing.T) {
+		data := []float64{1.5, 2.5, 3.5, 4.5}
+		tensor := backend.NewTensorFloat64(2, 2, data)
+		require.Equal(t, Float64, tensor.DataType())
+		r, c := tensor.Dims()
+		require.Equal(t, 2, r)
+		require.Equal(t, 2, c)
+		host := tensor.ToHost()
+		require.Equal(t, float32(1.5), host[0])
+	})
+
+	t.Run("Complex", func(t *testing.T) {
+		data := []complex128{1 + 2i, 3 + 4i, 5 + 6i, 7 + 8i}
+		tensor := backend.NewTensorComplex(2, 2, data)
+		require.Equal(t, Complex128, tensor.DataType())
+		r, c := tensor.Dims()
+		require.Equal(t, 2, r)
+		require.Equal(t, 2, c)
+	})
+
+	t.Run("NilData", func(t *testing.T) {
+		tensor := backend.NewTensorWithType(3, 3, Float32, nil)
+		require.Equal(t, Float32, tensor.DataType())
+		host := tensor.ToHost()
+		require.Len(t, host, 9)
+	})
+}

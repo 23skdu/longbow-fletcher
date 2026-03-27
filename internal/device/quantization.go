@@ -108,14 +108,19 @@ func (t *QuantizedTensor) dequantizeInt4(out []float32) {
 			scale := t.scales[b]
 			zero := t.zeros[b]
 			blockStart := b * blockSize
+			dataIdx := b * blockSize / 2
 			for i := 0; i < blockSize; i += 2 {
-				qb := t.data[blockStart/2+i/2]
+				if dataIdx >= len(t.data) {
+					break
+				}
+				qb := t.data[dataIdx]
 				val0 := int8(qb&0x0F) - 8
 				val1 := int8((qb>>4)&0x0F) - 8
 				out[blockStart+i] = float32(val0)*scale + zero
 				if blockStart+i+1 < len(out) {
 					out[blockStart+i+1] = float32(val1)*scale + zero
 				}
+				dataIdx++
 			}
 		}
 	})
@@ -170,12 +175,13 @@ func QuantizeFloat32(data []float32, rows, cols int, qtype QuantizationType, blo
 				qt.scales[b] = rangeVal / 15.0
 				qt.zeros[b] = minVal
 				for i := start; i < end; i += 2 {
-					v0 := byte(((data[start+i] - minVal) / qt.scales[b]) + 0.5)
+					idx := i - start
+					v0 := byte(((data[i] - minVal) / qt.scales[b]) + 0.5)
 					var v1 byte
-					if start+i+1 < end {
-						v1 = byte(((data[start+i+1] - minVal) / qt.scales[b]) + 0.5)
+					if i+1 < end {
+						v1 = byte(((data[i+1] - minVal) / qt.scales[b]) + 0.5)
 					}
-					qt.data[(start+i)/2] = v0 | (v1 << 4)
+					qt.data[idx/2] = v0 | (v1 << 4)
 				}
 			}
 		}
