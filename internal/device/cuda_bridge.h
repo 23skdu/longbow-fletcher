@@ -69,6 +69,20 @@ void Cuda_Tanh(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, in
 // Cast operations
 void Cuda_Cast_F32_to_F16(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
 void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_F64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F64_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_I32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_I32_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_I64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_I64_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_U32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_U32_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_U64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_U64_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_I8(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_I8_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_F32_to_U8(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
+void Cuda_Cast_U8_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size);
 
 // Slice operation (extract sub-matrix)
 void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output, 

@@ -73,10 +73,13 @@ func (b *CudaBackend) NewTensorWithType(r, c int, dtype DataType, data []float32
 func (b *CudaBackend) GetTensor(r, c int) Tensor {
 	size := r * c
 	var sizeBytes int
+	var dtype DataType
 	if b.useFP16 {
 		sizeBytes = size * 2
+		dtype = Float16
 	} else {
 		sizeBytes = size * 4
+		dtype = Float32
 	}
 
 	buf := C.Cuda_Alloc(b.ctx, C.int(sizeBytes))
@@ -90,6 +93,7 @@ func (b *CudaBackend) GetTensor(r, c int) Tensor {
 		rows:      r,
 		cols:      c,
 		sizeBytes: sizeBytes,
+		dtype:     dtype,
 	}
 
 	runtime.SetFinalizer(t, func(t *CudaTensor) {
@@ -97,6 +101,47 @@ func (b *CudaBackend) GetTensor(r, c int) Tensor {
 	})
 
 	return t
+}
+
+func (b *CudaBackend) GetTensorOfType(r, c int, dtype DataType) Tensor {
+	size := r * c
+	elemSize := dtypeSize(dtype)
+	sizeBytes := size * elemSize
+
+	buf := C.Cuda_Alloc(b.ctx, C.int(sizeBytes))
+	if buf == nil {
+		panic("Failed to allocate CUDA memory")
+	}
+
+	t := &CudaTensor{
+		backend:   b,
+		buf:       buf,
+		rows:      r,
+		cols:      c,
+		sizeBytes: sizeBytes,
+		dtype:     dtype,
+	}
+
+	runtime.SetFinalizer(t, func(t *CudaTensor) {
+		C.Cuda_FreeBuffer(t.backend.ctx, t.buf)
+	})
+
+	return t
+}
+
+func dtypeSize(dtype DataType) int {
+	switch dtype {
+	case Float16:
+		return 2
+	case Float32, Int32, Uint32:
+		return 4
+	case Float64, Int64, Uint64:
+		return 8
+	case Int8, Uint8:
+		return 1
+	default:
+		return 4
+	}
 }
 
 func (b *CudaBackend) PutTensor(t Tensor) {
@@ -127,6 +172,7 @@ type CudaTensor struct {
 	rows      int
 	cols      int
 	sizeBytes int
+	dtype     DataType
 }
 
 func (t *CudaTensor) Dims() (int, int) {
@@ -134,6 +180,9 @@ func (t *CudaTensor) Dims() (int, int) {
 }
 
 func (t *CudaTensor) DataType() DataType {
+	if t.dtype != 0 {
+		return t.dtype
+	}
 	if t.backend.useFP16 {
 		return Float16
 	}
@@ -148,7 +197,8 @@ func (t *CudaTensor) At(i, j int) float32 {
 }
 
 func (t *CudaTensor) Set(i, j int, v float32) {
-	if t.backend.useFP16 {
+	dtype := t.DataType()
+	if dtype == Float16 {
 		f16 := Float32ToFloat16(v)
 		C.Cuda_CopyToDevice(t.buf, C.int((i*t.cols+j)*2), unsafe.Pointer(&f16), 2)
 	} else {
@@ -162,8 +212,9 @@ func (t *CudaTensor) Data() []float32 {
 
 func (t *CudaTensor) ToHost() []float32 {
 	size := t.rows * t.cols
+	dtype := t.DataType()
 
-	if t.backend.useFP16 {
+	if dtype == Float16 {
 		raw16 := make([]uint16, size)
 		C.Cuda_CopyToHost(t.buf, 0, unsafe.Pointer(&raw16[0]), C.int(t.sizeBytes))
 
@@ -180,7 +231,8 @@ func (t *CudaTensor) ToHost() []float32 {
 }
 
 func (t *CudaTensor) CopyFromFloat32(data []float32) {
-	if t.backend.useFP16 {
+	dtype := t.DataType()
+	if dtype == Float16 {
 		size := len(data)
 		f16 := make([]uint16, size)
 		for i, v := range data {
@@ -392,18 +444,92 @@ func (t *CudaTensor) HasNaN() (bool, error) {
 
 func (t *CudaTensor) Cast(dtype DataType) Tensor {
 	size := t.rows * t.cols
-	if dtype == Float32 && t.backend.useFP16 {
-		nt := t.backend.NewTensor(t.rows, t.cols, nil).(*CudaTensor)
+	currentDtype := t.DataType()
+
+	if dtype == Float32 && currentDtype == Float16 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
 		C.Cuda_Cast_F16_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
 		return nt
-	} else if dtype == Float16 && !t.backend.useFP16 {
-		nt := t.backend.GetTensor(t.rows, t.cols).(*CudaTensor)
+	} else if dtype == Float16 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float16).(*CudaTensor)
 		C.Cuda_Cast_F32_to_F16(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
 		return nt
-	} else if dtype == Float32 && !t.backend.useFP16 {
-		nt := t.backend.NewTensor(t.rows, t.cols, nil)
+	} else if dtype == Float64 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float64).(*CudaTensor)
+		C.Cuda_Cast_F32_to_F64(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Float64 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_F64_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Int32 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Int32).(*CudaTensor)
+		C.Cuda_Cast_F32_to_I32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Int32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_I32_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Int64 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Int64).(*CudaTensor)
+		C.Cuda_Cast_F32_to_I64(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Int64 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_I64_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Uint32 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Uint32).(*CudaTensor)
+		C.Cuda_Cast_F32_to_U32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Uint32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_U32_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Uint64 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Uint64).(*CudaTensor)
+		C.Cuda_Cast_F32_to_U64(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Uint64 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_U64_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Int8 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Int8).(*CudaTensor)
+		C.Cuda_Cast_F32_to_I8(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Int8 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_I8_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Uint8 && currentDtype == Float32 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Uint8).(*CudaTensor)
+		C.Cuda_Cast_F32_to_U8(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == Float32 && currentDtype == Uint8 {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, Float32).(*CudaTensor)
+		C.Cuda_Cast_U8_to_F32(t.backend.ctx, t.buf, nt.buf, C.int(size))
+		t.backend.Synchronize()
+		return nt
+	} else if dtype == currentDtype {
+		nt := t.backend.GetTensorOfType(t.rows, t.cols, dtype).(*CudaTensor)
 		nt.Copy(t)
 		return nt
 	}
-	panic("Cast: Unsupported conversion")
+	panic("Cast: Unsupported conversion from " + currentDtype.String() + " to " + dtype.String())
 }

@@ -120,6 +120,104 @@ __global__ void castF16toF32Kernel(__half* input, float* result, int size) {
   }
 }
 
+__global__ void castF32toF64Kernel(float* input, double* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (double)input[idx];
+  }
+}
+
+__global__ void castF64toF32Kernel(double* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
+__global__ void castF32toI32Kernel(float* input, int32_t* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (int32_t)roundf(input[idx]);
+  }
+}
+
+__global__ void castI32toF32Kernel(int32_t* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
+__global__ void castF32toI64Kernel(float* input, int64_t* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (int64_t)roundf(input[idx]);
+  }
+}
+
+__global__ void castI64toF32Kernel(int64_t* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
+__global__ void castF32toU32Kernel(float* input, uint32_t* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (uint32_t)max(0.0f, roundf(input[idx]));
+  }
+}
+
+__global__ void castU32toF32Kernel(uint32_t* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
+__global__ void castF32toU64Kernel(float* input, uint64_t* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (uint64_t)max(0.0f, roundf(input[idx]));
+  }
+}
+
+__global__ void castU64toF32Kernel(uint64_t* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
+__global__ void castF32toI8Kernel(float* input, int8_t* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (int8_t)max(-128.0f, min(127.0f, roundf(input[idx])));
+  }
+}
+
+__global__ void castI8toF32Kernel(int8_t* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
+__global__ void castF32toU8Kernel(float* input, uint8_t* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (uint8_t)max(0.0f, min(255.0f, roundf(input[idx])));
+  }
+}
+
+__global__ void castU8toF32Kernel(uint8_t* input, float* result, int size) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < size) {
+    result[idx] = (float)input[idx];
+  }
+}
+
 __global__ void addLayerNormKernel(float* residual, float* gamma, float* beta,
                                    float* result, int rows, int cols, float eps) {
   int row = blockIdx.x;
@@ -332,6 +430,90 @@ void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef
   int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
   castF16toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
     (__half*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_F64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toF64Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (double*)result, size);
+}
+
+void Cuda_Cast_F64_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF64toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (double*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_I32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toI32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (int32_t*)result, size);
+}
+
+void Cuda_Cast_I32_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castI32toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (int32_t*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_I64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toI64Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (int64_t*)result, size);
+}
+
+void Cuda_Cast_I64_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castI64toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (int64_t*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_U32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toU32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (uint32_t*)result, size);
+}
+
+void Cuda_Cast_U32_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castU32toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (uint32_t*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_U64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toU64Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (uint64_t*)result, size);
+}
+
+void Cuda_Cast_U64_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castU64toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (uint64_t*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_I8(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toI8Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (int8_t*)result, size);
+}
+
+void Cuda_Cast_I8_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castI8toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (int8_t*)input, (float*)result, size);
+}
+
+void Cuda_Cast_F32_to_U8(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castF32toU8Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (float*)input, (uint8_t*)result, size);
+}
+
+void Cuda_Cast_U8_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
+  int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  castU8toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
+    (uint8_t*)input, (float*)result, size);
 }
 
 void Cuda_Slice(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef output,
