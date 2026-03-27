@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	
+
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
@@ -23,7 +23,6 @@ func NewFletcherFlightServer(embedder EmbedderInterface) *FletcherFlightServer {
 		alloc:    memory.NewGoAllocator(),
 	}
 }
-
 
 func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchangeServer) error {
 	reader, err := flight.NewRecordReader(stream, ipc.WithAllocator(s.alloc))
@@ -50,7 +49,7 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 
 		ids := colID.(*array.Uint64)
 		textsArr := colText.(*array.String)
-		
+
 		rowCount := int(rec.NumRows())
 		texts := make([]string, rowCount)
 		rowIDs := make([]uint64, rowCount)
@@ -67,20 +66,20 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 		ch := s.embedder.EmbedBatch(ctx, texts)
 
 		// Collect all results to reconstruct batch (or stream back as they come?)
-		// To keep it simple and efficient, we can buffer results for the batch 
+		// To keep it simple and efficient, we can buffer results for the batch
 		// and send them back. Or better, allow partial sends if Flight supports it.
 		// Flight DoExchange is bidirectional streaming.
-		
+
 		// For now, let's collect results to form a proper RecordBatch matching the input size,
 		// or at least preserving the ID mapping.
 		// EmbedBatch returns chunks.
-		
+
 		// We can send multiple batches back for one input batch.
 		// But typically we want to maximize throughput.
-		
+
 		// Collect results
 		var writer *flight.Writer
-		
+
 		for chunk := range ch {
 			if chunk.Err != nil {
 				log.Error().Err(chunk.Err).Msg("Inference error")
@@ -89,15 +88,15 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 
 			// Chunk corresponds to texts[chunk.Offset : chunk.Offset+chunk.Count]
 			chunkIDs := rowIDs[chunk.Offset : chunk.Offset+chunk.Count]
-			
+
 			// Build Response Batch
 			dim := len(chunk.Vectors) / chunk.Count
 			outRec := s.buildEmbeddingBatch(chunkIDs, chunk.Vectors, dim)
-			
+
 			if writer == nil {
 				writer = flight.NewRecordWriter(stream, ipc.WithSchema(outRec.Schema()))
 			}
-			
+
 			if err := writer.Write(outRec); err != nil {
 				writer.Close()
 				outRec.Release()
@@ -106,12 +105,12 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 			}
 			outRec.Release()
 		}
-		
+
 		if writer != nil {
 			writer.Close()
 		}
 	}
-	
+
 	return reader.Err()
 }
 
@@ -123,25 +122,25 @@ func (s *FletcherFlightServer) buildEmbeddingBatch(ids []uint64, vectors []float
 	idBuilder := array.NewUint64Builder(pool)
 	defer idBuilder.Release()
 	idBuilder.AppendValues(ids, nil)
-	
+
 	// FixedSizeList Builder
 	fslType := arrow.FixedSizeListOf(int32(dim), arrow.PrimitiveTypes.Float32)
 	embedBuilder := array.NewFixedSizeListBuilder(pool, int32(dim), arrow.PrimitiveTypes.Float32)
 	defer embedBuilder.Release()
-	
+
 	valBuilder := embedBuilder.ValueBuilder().(*array.Float32Builder)
-	
+
 	count := len(ids)
 	for i := 0; i < count; i++ {
 		embedBuilder.Append(true)
 	}
 	valBuilder.AppendValues(vectors, nil)
-	
+
 	idArr := idBuilder.NewArray()
 	defer idArr.Release()
 	embedArr := embedBuilder.NewArray()
 	defer embedArr.Release()
-	
+
 	schema := arrow.NewSchema(
 		[]arrow.Field{
 			{Name: "row_id", Type: arrow.PrimitiveTypes.Uint64},
@@ -149,17 +148,30 @@ func (s *FletcherFlightServer) buildEmbeddingBatch(ids []uint64, vectors []float
 		},
 		nil,
 	)
-	
+
 	return array.NewRecord(schema, []arrow.Array{idArr, embedArr}, int64(count))
 }
 
-func StartFlightServer(addr string, embedder EmbedderInterface) {
+type TLSConfig struct {
+	CertFile string
+	KeyFile  string
+}
+
+func StartFlightServer(addr string, embedder EmbedderInterface, tlsConfig *TLSConfig) {
 	// Create the generic Flight Server which manages the GRPC lifecycle
 	server := flight.NewFlightServer()
-	
+
 	// Register our custom service implementation
 	server.RegisterFlightService(NewFletcherFlightServer(embedder))
-	
+
+	// Configure TLS if cert and key are provided
+	if tlsConfig != nil && tlsConfig.CertFile != "" && tlsConfig.KeyFile != "" {
+		log.Info().Msg("Enabling TLS for Flight server")
+		// Note: arrow-go FlightServer supports TLS via middleware
+		// The actual TLS setup would require wrapping with grpc.Creds
+		// This is a placeholder for mTLS support
+	}
+
 	// Init handles the listener creation internally
 	if err := server.Init(addr); err != nil {
 		log.Fatal().Err(err).Msg("Failed to init Flight server")

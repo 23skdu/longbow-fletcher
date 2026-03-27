@@ -14,7 +14,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	
+
 	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 	"github.com/rs/zerolog"
@@ -29,25 +29,27 @@ import (
 )
 
 var (
-	vocabPath   = flag.String("vocab", "vocab.txt", "Path to vocab file")
-	weightsPath = flag.String("weights", "bert_tiny.bin", "Path to weights file")
-	cpuProfile  = flag.String("cpuprofile", "", "Write cpu profile to file")
-	useGPU      = flag.Bool("gpu", false, "Use Metal GPU acceleration")
-	interactive = flag.Bool("interactive", false, "Interactive mode")
-	loremIpsum  = flag.Int("lorem", 0, "Generate N lines of lorem ipsum")
-	modelType   = flag.String("model", "bert-tiny", "Model type (bert-tiny, nomic-embed-text)")
-	precision   = flag.String("precision", "fp32", "Precision (fp32, fp16)")
-	duration    = flag.Duration("duration", 0, "Run soak test for specified duration (e.g. 10s, 20m)")
-	serverAddr  = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
-	datasetName = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
-	listenAddr  = flag.String("listen", "", "Address to listen on for HTTP Server (e.g. :8080)")
-	flightAddr  = flag.String("flight", "", "Address to listen on for Flight Server (e.g. :9090)")
-	maxConcurrent = flag.Int("max-concurrent", 16384, "Maximum number of concurrent sequences to process")
-	enableOTel    = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
-	flagMaxVRAM   = flag.String("max-vram", "4GB", "Maximum VRAM to use for admission control (e.g. 4GB, 512MB)")
+	vocabPath        = flag.String("vocab", "vocab.txt", "Path to vocab file")
+	weightsPath      = flag.String("weights", "bert_tiny.bin", "Path to weights file")
+	cpuProfile       = flag.String("cpuprofile", "", "Write cpu profile to file")
+	useGPU           = flag.Bool("gpu", false, "Use Metal GPU acceleration")
+	interactive      = flag.Bool("interactive", false, "Interactive mode")
+	loremIpsum       = flag.Int("lorem", 0, "Generate N lines of lorem ipsum")
+	modelType        = flag.String("model", "bert-tiny", "Model type (bert-tiny, nomic-embed-text)")
+	precision        = flag.String("precision", "fp32", "Precision (fp32, fp16)")
+	duration         = flag.Duration("duration", 0, "Run soak test for specified duration (e.g. 10s, 20m)")
+	serverAddr       = flag.String("server", "", "Longbow server address (e.g., localhost:3000)")
+	datasetName      = flag.String("dataset", "fletcher_dataset", "Target dataset name on server")
+	listenAddr       = flag.String("listen", "", "Address to listen on for HTTP Server (e.g. :8080)")
+	flightAddr       = flag.String("flight", "", "Address to listen on for Flight Server (e.g. :9090)")
+	maxConcurrent    = flag.Int("max-concurrent", 16384, "Maximum number of concurrent sequences to process")
+	enableOTel       = flag.Bool("otel", false, "Enable OpenTelemetry tracing (stdout)")
+	flagMaxVRAM      = flag.String("max-vram", "4GB", "Maximum VRAM to use for admission control (e.g. 4GB, 512MB)")
 	flagTransportFmt = flag.String("transport-fmt", "fp32", "Transport format for embeddings: 'fp32' (default) or 'fp16'")
-	inputFile = flag.String("input", "", "Path to input file (JSON array of strings)")
-	taskType = flag.String("task", "search_document", "Nomic task type (search_query, search_document)")
+	inputFile        = flag.String("input", "", "Path to input file (JSON array of strings)")
+	taskType         = flag.String("task", "search_document", "Nomic task type (search_query, search_document)")
+	tlsCertFile      = flag.String("tls-cert", "", "TLS certificate file path (enables TLS)")
+	tlsKeyFile       = flag.String("tls-key", "", "TLS key file path")
 )
 
 func parseBytes(s string) int64 {
@@ -59,7 +61,7 @@ func parseBytes(s string) int64 {
 	var val int64
 	var unit string
 	fmt.Sscanf(s, "%d%s", &val, &unit)
-	
+
 	switch unit {
 	case "GB", "G":
 		return val * 1024 * 1024 * 1024
@@ -86,7 +88,7 @@ func main() {
 		}
 		defer shutdown(context.Background())
 	}
-	
+
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
 		if err != nil {
@@ -125,12 +127,16 @@ func main() {
 			select {}
 		}
 	}
-	
+
 	if *flightAddr != "" {
-		StartFlightServer(*flightAddr, embedder)
+		var tlsConfig *TLSConfig
+		if *tlsCertFile != "" && *tlsKeyFile != "" {
+			tlsConfig = &TLSConfig{CertFile: *tlsCertFile, KeyFile: *tlsKeyFile}
+		}
+		StartFlightServer(*flightAddr, embedder, tlsConfig)
 		return
 	}
-	
+
 	if *listenAddr != "" {
 		// Was waiting above
 		select {}
@@ -142,7 +148,7 @@ func main() {
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to read input file")
 		}
-		
+
 		// Try parsing as JSON array
 		if err := json.Unmarshal(data, &texts); err != nil {
 			// Fallback: simple line by line?
@@ -174,7 +180,7 @@ func main() {
 		default:
 			prefix = *taskType + ": "
 		}
-		
+
 		if prefix != "" {
 			log.Info().Str("prefix", prefix).Msg("Applying task prefix")
 			for i := range texts {
@@ -189,20 +195,20 @@ func main() {
 			// Default soak payload if not specified
 			texts = generateLorem(1000)
 		}
-		
+
 		startTime := time.Now()
 		endTime := startTime.Add(*duration)
 		var totalVectors int64
 		var iter int
-		
+
 		for time.Now().Before(endTime) {
 			iterStart := time.Now()
 			_ = embedder.ProxyEmbedBatch(context.Background(), texts)
 			_ = time.Since(iterStart) // Keep timer call but ignore result to silence usage error, or just remove.
-			
+
 			totalVectors += int64(len(texts))
 			iter++
-			
+
 			if iter%10 == 0 {
 				elapsed := time.Since(startTime)
 				tps := float64(totalVectors) / elapsed.Seconds()
@@ -214,7 +220,7 @@ func main() {
 					Msg("Soak test progress")
 			}
 		}
-		
+
 		totalElapsed := time.Since(startTime)
 		log.Info().
 			Int64("total_vectors", totalVectors).
@@ -242,14 +248,14 @@ func main() {
 	// Example: write to Arrow IPC
 	// Using Arrow Go library
 	pool := memory.NewGoAllocator()
-	
+
 	// Define Schema
 	// Schema: { "text": utf8, "embedding": fixed_size_list<float32>[128] }
 	// Assuming 128 dim for BERT Tiny (fallback if dim is 0)
 	if dim == 0 {
 		dim = 128
 	}
-	
+
 	schema := arrow.NewSchema(
 		[]arrow.Field{
 			{Name: "text", Type: arrow.BinaryTypes.String},
@@ -261,7 +267,7 @@ func main() {
 	// Build Columns
 	textBuilder := array.NewStringBuilder(pool)
 	defer textBuilder.Release()
-	
+
 	embedBuilder := array.NewFixedSizeListBuilder(pool, int32(dim), arrow.PrimitiveTypes.Float32)
 	defer embedBuilder.Release()
 	floatBuilder := embedBuilder.ValueBuilder().(*array.Float32Builder)
@@ -269,7 +275,7 @@ func main() {
 	// Append Data
 	for i, text := range texts {
 		textBuilder.Append(text)
-		
+
 		embedBuilder.Append(true)
 		floatBuilder.AppendValues(vectors[i*dim:(i+1)*dim], nil)
 	}

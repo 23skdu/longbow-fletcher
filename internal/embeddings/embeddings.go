@@ -796,6 +796,9 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 	// Update metrics after batch completion
 	elapsed := time.Since(batchStart)
 
+	// Calculate throughput before lock
+	currentThroughput := float64(totalSequences) / elapsed.Seconds()
+
 	metrics.mu.Lock()
 	metrics.LastBatchTime = elapsed
 	metrics.BatchCount++
@@ -803,7 +806,6 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 	metrics.TotalTokens += int64(totalTokensProcessed)
 
 	// Exponential moving average for throughput (alpha = 0.3 for responsiveness)
-	currentThroughput := float64(totalSequences) / elapsed.Seconds()
 	if metrics.AvgThroughput == 1.0 {
 		// First real measurement, replace default
 		metrics.AvgThroughput = currentThroughput
@@ -812,13 +814,15 @@ func runInferenceOnDevice(ctx context.Context, m *model.BertModel, maxBatchSize 
 		metrics.AvgThroughput = alpha*currentThroughput + (1-alpha)*metrics.AvgThroughput
 	}
 
-	// Export to Prometheus
+	// Capture values under lock, export outside
+	avgThroughput := metrics.AvgThroughput
 	deviceLabel := fmt.Sprintf("%d", metrics.DeviceID)
-	gpuThroughput.WithLabelValues(deviceLabel).Set(metrics.AvgThroughput)
+	metrics.mu.Unlock()
+
+	// Export to Prometheus outside lock to reduce contention
+	gpuThroughput.WithLabelValues(deviceLabel).Set(avgThroughput)
 	gpuBatchTime.WithLabelValues(deviceLabel).Set(elapsed.Seconds())
 	gpuBatchCount.WithLabelValues(deviceLabel).Inc()
 	gpuSequencesProcessed.WithLabelValues(deviceLabel).Add(float64(totalSequences))
 	gpuTokensProcessed.WithLabelValues(deviceLabel).Add(float64(totalTokensProcessed))
-
-	metrics.mu.Unlock()
 }

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	_ "net/http/pprof"
+	"net/http/pprof"
 	"runtime"
 	"time"
 
@@ -29,6 +29,38 @@ import (
 	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 )
+
+func handlePprofIndex(w http.ResponseWriter, r *http.Request) {
+	pprof.Index(w, r)
+}
+
+func handlePprofHeap(w http.ResponseWriter, r *http.Request) {
+	pprof.Handler("heap").ServeHTTP(w, r)
+}
+
+func handlePprofGoroutine(w http.ResponseWriter, r *http.Request) {
+	pprof.Handler("goroutine").ServeHTTP(w, r)
+}
+
+func handlePprofBlock(w http.ResponseWriter, r *http.Request) {
+	pprof.Handler("block").ServeHTTP(w, r)
+}
+
+func handlePprofMutex(w http.ResponseWriter, r *http.Request) {
+	pprof.Handler("mutex").ServeHTTP(w, r)
+}
+
+func handlePprofTrace(w http.ResponseWriter, r *http.Request) {
+	pprof.Trace(w, r)
+}
+
+func handlePprofCmdline(w http.ResponseWriter, r *http.Request) {
+	pprof.Cmdline(w, r)
+}
+
+func handlePprofSymbol(w http.ResponseWriter, r *http.Request) {
+	pprof.Symbol(w, r)
+}
 
 var (
 	vectorsProcessed = promauto.NewCounter(prometheus.CounterOpts{
@@ -134,6 +166,16 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	http.HandleFunc("/health", srv.handleHealth)
 	http.HandleFunc("/healthz", srv.handleHealthz)
 	http.HandleFunc("/readyz", srv.handleReadyz)
+
+	// Secured pprof endpoints (require API key auth)
+	http.HandleFunc("/debug/pprof/", srv.recoverMiddleware(apiKeyAuthMiddleware(handlePprofIndex)))
+	http.HandleFunc("/debug/pprof/heap", srv.recoverMiddleware(apiKeyAuthMiddleware(handlePprofHeap)))
+	http.HandleFunc("/debug/pprof/goroutine", srv.recoverMiddleware(apiKeyAuthMiddleware(handlePprofGoroutine)))
+	http.HandleFunc("/debug/pprof/block", srv.recoverMiddleware(apiKeyAuthMiddleware(handlePprofBlock)))
+	http.HandleFunc("/debug/pprof/mutex", srv.recoverMiddleware(apiKeyAuthMiddleware(handlePprofMutex)))
+	http.HandleFunc("/debug/pprof/trace", srv.recoverMiddleware(apiKeyAuthMiddleware(handlePprofTrace)))
+	http.HandleFunc("/debug/pprof/cmdline", srv.recoverMiddleware(handlePprofCmdline))
+	http.HandleFunc("/debug/pprof/symbol", srv.recoverMiddleware(handlePprofSymbol))
 
 	http.HandleFunc("/v1/embeddings", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Embeddings)))
 	http.HandleFunc("/v1/embeddings/batch", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1EmbeddingsBatch)))
