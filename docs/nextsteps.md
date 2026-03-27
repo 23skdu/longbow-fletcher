@@ -487,6 +487,10 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 ### Part 5: Quantization Support (Priority: Medium)
 - [x] Implement Q4/Q8 dequantization for CPU backend
 - [x] Add INT8 datatype support to Tensor interface (CPU supports)
+- [x] Implement TurboQuant algorithm (Google Research 2026)
+  - PolarQuant: Cartesian to polar coordinate conversion
+  - QJL: 1-bit Johnson-Lindenstrauss residual correction
+  - 6x memory reduction with zero accuracy loss
 - [ ] Add INT8 kernel support for Metal (requires Metal kernel implementation)
 - [ ] Test with quantized nomic-embed-text
 
