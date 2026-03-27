@@ -494,7 +494,9 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 - [x] Implement datatype conversion kernels for CUDA
   - Float32<->Float64, Int8/16/32/64, Uint8/16/32/64
   - Added dtype tracking to CudaTensor
-- [ ] Add INT8 kernel support for Metal (requires Metal kernel implementation)
+- [x] Implement datatype conversion kernels for Metal
+  - Float32<->Float64, Int32/64, Uint32/64, Int8/Uint8
+  - Added to Metal shaders and Objective-C++ backend
 - [ ] Test with quantized nomic-embed-text
 
 ### Part 6: API & Auth (Priority: Medium)
@@ -666,7 +668,7 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 - [x] **P0**: Add float64 support (in addition to float32)
 - [x] **P0**: Add complex64/complex128 support
 - [x] **P1**: Implement datatype conversion kernels for CPU
-- [ ] **P1**: Implement datatype conversion kernels for Metal
+- [x] **P1**: Implement datatype conversion kernels for Metal
 - [x] **P1**: Implement datatype conversion kernels for CUDA
 - [x] **P2**: Add datatype-aware memory allocation
 
