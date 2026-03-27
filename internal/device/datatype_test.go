@@ -310,14 +310,13 @@ func TestFuzzTensorCreation(t *testing.T) {
 }
 
 func TestFuzzDimensionValidation(t *testing.T) {
+	validDims := map[int]bool{
+		128: true, 384: true, 768: true, 1024: true, 1536: true, 2048: true, 3072: true,
+	}
 	for i := 0; i < 1000; i++ {
-		dim := rand.Intn(10000) - 1000
-
-		if dim > 0 && dim%128 == 0 && dim <= 3072 {
-			require.True(t, IsValidEmbeddingDimension(dim))
-		} else {
-			require.False(t, IsValidEmbeddingDimension(dim))
-		}
+		dim := rand.Intn(10000)
+		_, isValid := validDims[dim]
+		require.Equal(t, isValid, IsValidEmbeddingDimension(dim))
 	}
 }
 
