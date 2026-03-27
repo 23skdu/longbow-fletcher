@@ -467,14 +467,14 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 ### Part 2: Implement Real CUDA GPU Kernels (Priority: Critical)
 - [x] Replace memcpy stubs with actual cuBLAS kernels for MatMul (cublasSgemm)
 - [x] Implement LayerNorm, Softmax, GELU activation functions (all implemented in cuda_backend.cu)
-- [ ] Add attention flash algorithm support
+- [x] Add attention flash algorithm support
 - [ ] Test with real GPU inference on ancalagon
 
 ### Part 3: Metal Performance Optimization (Priority: High)
 - [ ] Profile current Metal kernel bottlenecks
-- [ ] Implement flash attention for Metal
-- [ ] Add FP16 mixed-precision support
-- [ ] Optimize memory allocation/reuse
+- [x] Implement flash attention for Metal
+- [x] Add FP16 mixed-precision support
+- [x] Optimize memory allocation/reuse
 
 ### Part 4: Ollama Comparison Tests (Priority: High)
 - [x] Write test that compares Fletcher embeddings to Ollama output
@@ -506,7 +506,7 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 
 ### Part 9: Client SDKs (Priority: Low)
 - [x] Python SDK with async support
-- [ ] Node.js client
+- [x] Node.js client
 - [x] OpenAPI spec generation
 
 ### Part 10: CI/CD & Testing (Priority: Low)
