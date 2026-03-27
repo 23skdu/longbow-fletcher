@@ -180,10 +180,15 @@ func (t *CudaTensor) Dims() (int, int) {
 }
 
 func (t *CudaTensor) DataType() DataType {
-	if t.dtype != 0 {
-		return t.dtype
+	if t.rows > 0 || t.cols > 0 { // If tensor was initialized
+		if t.dtype == Float16 || t.dtype == Float32 || t.dtype == Float64 ||
+			t.dtype == Int8 || t.dtype == Int16 || t.dtype == Int32 || t.dtype == Int64 ||
+			t.dtype == Int || t.dtype == Uint8 || t.dtype == Uint16 || t.dtype == Uint32 ||
+			t.dtype == Uint64 || t.dtype == Uint || t.dtype == Complex64 || t.dtype == Complex128 {
+			return t.dtype // Explicitly set dtype
+		}
 	}
-	if t.backend.useFP16 {
+	if t.backend != nil && t.backend.useFP16 {
 		return Float16
 	}
 	return Float32

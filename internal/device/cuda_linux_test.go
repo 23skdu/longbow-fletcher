@@ -145,7 +145,6 @@ func TestCudaTensor_Slice(t *testing.T) {
 }
 
 func TestCudaTensor_Cast_FP16_to_FP32(t *testing.T) {
-	t.Skip("FP16->FP32 cast has a pre-existing bug in CUDA backend")
 	backend := NewCudaBackendFP16()
 
 	// Create FP16 tensor
@@ -154,10 +153,22 @@ func TestCudaTensor_Cast_FP16_to_FP32(t *testing.T) {
 	}
 	a := backend.NewTensor(1, 3, data)
 
+	// Debug: check what we wrote
+	raw := a.ToHost()
+	t.Logf("After NewTensor (FP16 backend): %v", raw)
+
 	// Cast to FP32
 	b := a.Cast(Float32)
 
+	// Check result tensor dtype
+	t.Logf("Result dtype: %v", b.DataType())
+
 	result := b.ToHost()
+	t.Logf("After Cast to FP32: %v", result)
+
+	// Also check raw bytes
+	rawBytes := b.ExtractBytes()
+	t.Logf("Raw bytes: %v", rawBytes)
 
 	for i, e := range data {
 		if math.Abs(float64(result[i]-e)) > 0.01 {
