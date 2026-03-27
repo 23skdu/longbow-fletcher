@@ -756,6 +756,97 @@ kernel void cast_f16_to_f32(device const half *input [[ buffer(0) ]],
     output[index] = float(input[index]);
 }
 
+// Cast Float32 to Float64
+kernel void cast_f32_to_f64(device const float *input [[ buffer(0) ]],
+                            device double *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = double(input[index]);
+}
+
+kernel void cast_f64_to_f32(device const double *input [[ buffer(0) ]],
+                            device float *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
+// Cast Float32 to Int32
+kernel void cast_f32_to_i32(device const float *input [[ buffer(0) ]],
+                            device int32_t *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = int32_t(round(input[index]));
+}
+
+kernel void cast_i32_to_f32(device const int32_t *input [[ buffer(0) ]],
+                            device float *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
+// Cast Float32 to Int64
+kernel void cast_f32_to_i64(device const float *input [[ buffer(0) ]],
+                            device int64_t *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = int64_t(round(input[index]));
+}
+
+kernel void cast_i64_to_f32(device const int64_t *input [[ buffer(0) ]],
+                            device float *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
+// Cast Float32 to Uint32
+kernel void cast_f32_to_u32(device const float *input [[ buffer(0) ]],
+                            device uint32_t *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = uint32_t(max(0.0f, round(input[index])));
+}
+
+kernel void cast_u32_to_f32(device const uint32_t *input [[ buffer(0) ]],
+                            device float *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
+// Cast Float32 to Uint64
+kernel void cast_f32_to_u64(device const float *input [[ buffer(0) ]],
+                            device uint64_t *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = uint64_t(max(0.0f, round(input[index])));
+}
+
+kernel void cast_u64_to_f32(device const uint64_t *input [[ buffer(0) ]],
+                            device float *output [[ buffer(1) ]],
+                            uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
+// Cast Float32 to Int8
+kernel void cast_f32_to_i8(device const float *input [[ buffer(0) ]],
+                           device int8_t *output [[ buffer(1) ]],
+                           uint index [[ thread_position_in_grid ]]) {
+    output[index] = int8_t(clamp(round(input[index]), -128.0f, 127.0f));
+}
+
+kernel void cast_i8_to_f32(device const int8_t *input [[ buffer(0) ]],
+                           device float *output [[ buffer(1) ]],
+                           uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
+// Cast Float32 to Uint8
+kernel void cast_f32_to_u8(device const float *input [[ buffer(0) ]],
+                           device uint8_t *output [[ buffer(1) ]],
+                           uint index [[ thread_position_in_grid ]]) {
+    output[index] = uint8_t(clamp(round(input[index]), 0.0f, 255.0f));
+}
+
+kernel void cast_u8_to_f32(device const uint8_t *input [[ buffer(0) ]],
+                           device float *output [[ buffer(1) ]],
+                           uint index [[ thread_position_in_grid ]]) {
+    output[index] = float(input[index]);
+}
+
 kernel void copy_submatrix(device const float *src [[ buffer(0) ]],
                            device float *dest [[ buffer(1) ]],
                            constant int &src_cols [[ buffer(2) ]],

@@ -1247,67 +1247,87 @@ func (t *MetalTensor) ExtractBytes() []byte {
 
 func (t *MetalTensor) Cast(dtype DataType) Tensor {
 	if t.dtype == dtype {
-		// Identity cast: create a copy
 		res := t.backend.NewTensorWithType(t.rows, t.cols, dtype, nil)
 		res.Copy(t)
 		return res
 	}
 
+	size := t.rows * t.cols
+	elemSize := dtypeElementSize(dtype)
+	outSizeBytes := size * elemSize
+	outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
+
+	newDtype := dtype
+
 	if t.dtype == Float32 && dtype == Float16 {
-		size := t.rows * t.cols
-		outSizeBytes := size * 2
-		outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
-
 		C.Metal_Cast_F32_to_F16(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
-
-		tFinal := &MetalTensor{
-			backend:    t.backend,
-			rows:       t.rows,
-			cols:       t.cols,
-			buf:        outBuf,
-			offset:     0,
-			sizeBytes:  outSizeBytes,
-			ownsBuffer: true,
-			dtype:      Float16,
-		}
-
-		runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
-			if mt.ownsBuffer && mt.offset == 0 {
-				mt.backend.returnToPool(mt.buf, mt.sizeBytes)
-			}
-		})
-
-		return tFinal
-	}
-
-	if t.dtype == Float16 && dtype == Float32 {
-		size := t.rows * t.cols
-		outSizeBytes := size * 4
-		outBuf := C.Metal_Alloc(t.backend.ctx, C.int(outSizeBytes))
-
+	} else if t.dtype == Float16 && dtype == Float32 {
 		C.Metal_Cast_F16_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
-
-		tFinal := &MetalTensor{
-			backend:    t.backend,
-			rows:       t.rows,
-			cols:       t.cols,
-			buf:        outBuf,
-			offset:     0,
-			sizeBytes:  outSizeBytes,
-			ownsBuffer: true,
-			dtype:      Float32,
-		}
-
-		runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
-			if mt.ownsBuffer && mt.offset == 0 {
-				mt.backend.returnToPool(mt.buf, mt.sizeBytes)
-			}
-		})
-
-		return tFinal
+	} else if t.dtype == Float32 && dtype == Float64 {
+		C.Metal_Cast_F32_to_F64(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float64 && dtype == Float32 {
+		C.Metal_Cast_F64_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float32 && dtype == Int32 {
+		C.Metal_Cast_F32_to_I32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Int32 && dtype == Float32 {
+		C.Metal_Cast_I32_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float32 && dtype == Int64 {
+		C.Metal_Cast_F32_to_I64(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Int64 && dtype == Float32 {
+		C.Metal_Cast_I64_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float32 && dtype == Uint32 {
+		C.Metal_Cast_F32_to_U32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Uint32 && dtype == Float32 {
+		C.Metal_Cast_U32_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float32 && dtype == Uint64 {
+		C.Metal_Cast_F32_to_U64(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Uint64 && dtype == Float32 {
+		C.Metal_Cast_U64_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float32 && dtype == Int8 {
+		C.Metal_Cast_F32_to_I8(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Int8 && dtype == Float32 {
+		C.Metal_Cast_I8_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Float32 && dtype == Uint8 {
+		C.Metal_Cast_F32_to_U8(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else if t.dtype == Uint8 && dtype == Float32 {
+		C.Metal_Cast_U8_to_F32(t.backend.ctx, t.buf, C.int(t.offset), outBuf, 0, C.int(size))
+	} else {
+		panic("Cast: Unsupported conversion from " + t.dtype.String() + " to " + dtype.String())
 	}
 
-	panic("Cast: Unsupported conversion")
+	tFinal := &MetalTensor{
+		backend:    t.backend,
+		rows:       t.rows,
+		cols:       t.cols,
+		buf:        outBuf,
+		offset:     0,
+		sizeBytes:  outSizeBytes,
+		ownsBuffer: true,
+		dtype:      newDtype,
+	}
+
+	runtime.SetFinalizer(tFinal, func(mt *MetalTensor) {
+		if mt.ownsBuffer && mt.offset == 0 {
+			mt.backend.returnToPool(mt.buf, mt.sizeBytes)
+		}
+	})
+
+	return tFinal
+}
+
+func dtypeElementSize(dtype DataType) int {
+	switch dtype {
+	case Float16:
+		return 2
+	case Float32, Int32, Uint32:
+		return 4
+	case Float64, Int64, Uint64:
+		return 8
+	case Int8, Uint8:
+		return 1
+	default:
+		return 4
+	}
 }
 
 func (b *MetalBackend) GetVRAMUsage() (int64, int64) {

@@ -34,6 +34,34 @@ void Metal_Cast_F32_to_F16(MetalContextRef ctx, MetalBufferRef input, int offIn,
                            MetalBufferRef output, int offOut, int count);
 void Metal_Cast_F16_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
                            MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_F64(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F64_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_I32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_I32_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_I64(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_I64_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_U32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_U32_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_U64(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_U64_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_I8(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count);
+void Metal_Cast_I8_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count);
+void Metal_Cast_F32_to_U8(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count);
+void Metal_Cast_U8_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count);
 
 // Ops
 void Metal_CopySubmatrix(MetalContextRef ctx, MetalBufferRef src, int offSrc,

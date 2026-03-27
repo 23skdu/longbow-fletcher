@@ -41,6 +41,20 @@
 @property(strong) id<MTLComputePipelineState> pipelineSwiglu_F16;
 @property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F16;
 @property(strong) id<MTLComputePipelineState> pipelineCast_F16_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_F64;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F64_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_I32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_I32_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_I64;
+@property(strong) id<MTLComputePipelineState> pipelineCast_I64_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_U32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_U32_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_U64;
+@property(strong) id<MTLComputePipelineState> pipelineCast_U64_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_I8;
+@property(strong) id<MTLComputePipelineState> pipelineCast_I8_to_F32;
+@property(strong) id<MTLComputePipelineState> pipelineCast_F32_to_U8;
+@property(strong) id<MTLComputePipelineState> pipelineCast_U8_to_F32;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix;
 @property(strong) id<MTLComputePipelineState> pipelineCopySubmatrix_F16;
 @property(strong) id<MTLComputePipelineState> pipelineFlashAttn;
@@ -173,6 +187,20 @@ MetalContextRef Metal_Init(const char *libSource) {
   ctx.pipelineSwiglu_F16 = loadPipeline(ctx, @"swiglu_kernel_f16");
   ctx.pipelineCast_F32_to_F16 = loadPipeline(ctx, @"cast_f32_to_f16");
   ctx.pipelineCast_F16_to_F32 = loadPipeline(ctx, @"cast_f16_to_f32");
+  ctx.pipelineCast_F32_to_F64 = loadPipeline(ctx, @"cast_f32_to_f64");
+  ctx.pipelineCast_F64_to_F32 = loadPipeline(ctx, @"cast_f64_to_f32");
+  ctx.pipelineCast_F32_to_I32 = loadPipeline(ctx, @"cast_f32_to_i32");
+  ctx.pipelineCast_I32_to_F32 = loadPipeline(ctx, @"cast_i32_to_f32");
+  ctx.pipelineCast_F32_to_I64 = loadPipeline(ctx, @"cast_f32_to_i64");
+  ctx.pipelineCast_I64_to_F32 = loadPipeline(ctx, @"cast_i64_to_f32");
+  ctx.pipelineCast_F32_to_U32 = loadPipeline(ctx, @"cast_f32_to_u32");
+  ctx.pipelineCast_U32_to_F32 = loadPipeline(ctx, @"cast_u32_to_f32");
+  ctx.pipelineCast_F32_to_U64 = loadPipeline(ctx, @"cast_f32_to_u64");
+  ctx.pipelineCast_U64_to_F32 = loadPipeline(ctx, @"cast_u64_to_f32");
+  ctx.pipelineCast_F32_to_I8 = loadPipeline(ctx, @"cast_f32_to_i8");
+  ctx.pipelineCast_I8_to_F32 = loadPipeline(ctx, @"cast_i8_to_f32");
+  ctx.pipelineCast_F32_to_U8 = loadPipeline(ctx, @"cast_f32_to_u8");
+  ctx.pipelineCast_U8_to_F32 = loadPipeline(ctx, @"cast_u8_to_f32");
   ctx.pipelineCopySubmatrix = loadPipeline(ctx, @"copy_submatrix");
   ctx.pipelineCopySubmatrix_F16 = loadPipeline(ctx, @"copy_submatrix_f16");
   ctx.pipelineFlashAttn = loadPipeline(ctx, @"flash_attn_fwd_f16");
@@ -306,6 +334,202 @@ void Metal_Cast_F16_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
                            MetalBufferRef output, int offOut, int count) {
   MetalWrapper *c = (__bridge MetalWrapper *)ctx;
   ENCODE(c, pipelineCast_F16_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_F64(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_F64);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F64_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F64_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_I32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_I32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_I32_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_I32_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_I64(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_I64);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_I64_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_I64_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_U32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_U32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_U32_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_U32_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_U64(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_U64);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_U64_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                           MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_U64_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_I8(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_I8);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_I8_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_I8_to_F32);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_F32_to_U8(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_F32_to_U8);
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
+                       offset:offIn
+                      atIndex:0];
+  [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)output
+                       offset:offOut
+                      atIndex:1];
+  [c.currentEncoder dispatchThreads:MTLSizeMake(count, 1, 1)
+              threadsPerThreadgroup:MTLSizeMake(MIN(count, 512), 1, 1)];
+}
+
+void Metal_Cast_U8_to_F32(MetalContextRef ctx, MetalBufferRef input, int offIn,
+                          MetalBufferRef output, int offOut, int count) {
+  MetalWrapper *c = (__bridge MetalWrapper *)ctx;
+  ENCODE(c, pipelineCast_U8_to_F32);
   [c.currentEncoder setBuffer:(__bridge id<MTLBuffer>)input
                        offset:offIn
                       atIndex:0];
