@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Go
-RUN curl -L https://go.dev/dl/go1.24.linux-amd64.tar.gz | tar -C /usr/local -xz
+RUN curl -L https://go.dev/dl/go1.26.linux-amd64.tar.gz | tar -C /usr/local -xz
 ENV PATH=$PATH:/usr/local/go/bin
 
 # Install MatX (Header-only)
