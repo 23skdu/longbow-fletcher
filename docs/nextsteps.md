@@ -485,34 +485,34 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 - [ ] Document performance delta
 
 ### Part 5: Quantization Support (Priority: Medium)
-- [ ] Implement Q4/Q8 dequantization for CPU backend
+- [x] Implement Q4/Q8 dequantization for CPU backend
 - [ ] Add INT8 kernel support for Metal
 - [ ] Test with quantized nomic-embed-text
 
 ### Part 6: API & Auth (Priority: Medium)
-- [ ] Add API key authentication to HTTP server
-- [ ] Add mTLS support for Flight/gRPC
-- [ ] Add rate limiting
+- [x] Add API key authentication to HTTP server
+- [x] Add mTLS support for Flight/gRPC
+- [x] Add rate limiting
 
 ### Part 7: Model Support Expansion (Priority: Medium)
-- [ ] Add bge-m3 model support
-- [ ] Add e5-mistral model support  
-- [ ] Document model conversion process
+- [x] Add bge-m3 model support
+- [x] Add e5-mistral model support  
+- [x] Document model conversion process
 
 ### Part 8: Observability (Priority: Low)
-- [ ] Add Grafana dashboard templates
-- [ ] Add structured logging with correlation IDs
-- [ ] Add pprof endpoints with security
+- [x] Add Grafana dashboard templates
+- [x] Add structured logging with correlation IDs
+- [x] Add pprof endpoints with security
 
 ### Part 9: Client SDKs (Priority: Low)
-- [ ] Python SDK with async support
+- [x] Python SDK with async support
 - [ ] Node.js client
-- [ ] OpenAPI spec generation
+- [x] OpenAPI spec generation
 
 ### Part 10: CI/CD & Testing (Priority: Low)
 - [ ] Add GPU test runner to CI
-- [ ] Add benchmark regression tests
-- [ ] Add fuzzing infrastructure
+- [x] Add benchmark regression tests
+- [x] Add fuzzing infrastructure
 
 ---
 
@@ -627,55 +627,55 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 | 384 | ✅ Implemented | all-MiniLM-L6-v2 |
 | 768 | ✅ Implemented | BERT-Base, Nomic |
 | 1024 | ✅ Implemented | bge-m3 |
-| 1536 | ❌ Missing | Custom models |
-| 2048 | ❌ Missing | Large models |
-| 3072 | ❌ Missing | XL models |
+| 1536 | ✅ Implemented | Custom models |
+| 2048 | ✅ Implemented | Large models |
+| 3072 | ✅ Implemented | XL models |
 
 ### Supported Datatypes
 
 | Category | Types | Status |
 |----------|-------|--------|
-| **Integers** | int, int8, int16, int32, int64 | ❌ Missing |
-| **Unsigned** | uint, uint8, uint16, uint32, uint64, uintptr | ❌ Missing |
-| **Float** | float32, float64 | ✅ Implemented (float32) |
-| **Complex** | complex64, complex128 | ❌ Missing |
+| **Integers** | int, int8, int16, int32, int64 | ✅ Implemented |
+| **Unsigned** | uint, uint8, uint16, uint32, uint64, uintptr | ✅ Implemented |
+| **Float** | float32, float64 | ✅ Implemented |
+| **Complex** | complex64, complex128 | ✅ Implemented |
 
 ### Implementation Plan
 
 #### Task 1: Add Dimension Support (Priority: High)
 
-- [ ] **P0**: Add dimension 1536 support in model configs
-- [ ] **P0**: Add dimension 2048 support in model configs
-- [ ] **P0**: Add dimension 3072 support in model configs
-- [ ] **P1**: Add dimension validation in embeddings.go
-- [ ] **P1**: Update pooling layer for variable dimensions
-- [ ] **P2**: Add benchmark tests for each dimension
+- [x] **P0**: Add dimension 1536 support in model configs
+- [x] **P0**: Add dimension 2048 support in model configs
+- [x] **P0**: Add dimension 3072 support in model configs
+- [x] **P1**: Add dimension validation in embeddings.go
+- [x] **P1**: Update pooling layer for variable dimensions
+- [x] **P2**: Add benchmark tests for each dimension
 
 #### Task 2: Add Datatype Support (Priority: High)
 
-- [ ] **P0**: Add int8/int16/int32/int64 support to Tensor interface
-- [ ] **P0**: Add uint8/uint16/uint32/uint64 support to Tensor interface
-- [ ] **P0**: Add float64 support (in addition to float32)
-- [ ] **P0**: Add complex64/complex128 support
-- [ ] **P1**: Implement datatype conversion kernels for CPU
+- [x] **P0**: Add int8/int16/int32/int64 support to Tensor interface
+- [x] **P0**: Add uint8/uint16/uint32/uint64 support to Tensor interface
+- [x] **P0**: Add float64 support (in addition to float32)
+- [x] **P0**: Add complex64/complex128 support
+- [x] **P1**: Implement datatype conversion kernels for CPU
 - [ ] **P1**: Implement datatype conversion kernels for Metal
 - [ ] **P1**: Implement datatype conversion kernels for CUDA
-- [ ] **P2**: Add datatype-aware memory allocation
+- [x] **P2**: Add datatype-aware memory allocation
 
 #### Task 3: Add Unit Tests (Priority: High)
 
-- [ ] **P0**: Add dimension validation tests (128, 384, 768, 1024, 1536, 2048, 3072)
-- [ ] **P0**: Add datatype conversion tests (int/uint/float/complex)
-- [ ] **P1**: Add backend-specific tests (CPU, Metal, CUDA)
-- [ ] **P1**: Add pooling tests for all dimensions
+- [x] **P0**: Add dimension validation tests (128, 384, 768, 1024, 1536, 2048, 3072)
+- [x] **P0**: Add datatype conversion tests (int/uint/float/complex)
+- [x] **P1**: Add backend-specific tests (CPU, Metal, CUDA)
+- [x] **P1**: Add pooling tests for all dimensions
 
 #### Task 4: Add Fuzz Tests (Priority: High)
 
-- [ ] **P0**: Add fuzz tests for dimension handling
-- [ ] **P0**: Add fuzz tests for datatype conversions
-- [ ] **P1**: Add fuzz tests for numeric overflow handling
-- [ ] **P1**: Add fuzz tests for NaN/Inf in all datatypes
-- [ ] **P2**: Add fuzz tests for cross-dimension operations
+- [x] **P0**: Add fuzz tests for dimension handling
+- [x] **P0**: Add fuzz tests for datatype conversions
+- [x] **P1**: Add fuzz tests for numeric overflow handling
+- [x] **P1**: Add fuzz tests for NaN/Inf in all datatypes
+- [x] **P2**: Add fuzz tests for cross-dimension operations
 
 ### Files to Modify
 
@@ -690,8 +690,8 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 
 ### Success Criteria
 
-- [ ] All 7 dimensions (128, 384, 768, 1024, 1536, 2048, 3072) work correctly
-- [ ] All Go native datatypes (int, uint, float, complex) supported
-- [ ] Unit test coverage > 80% for new code
-- [ ] Fuzz tests pass with 10,000 iterations
-- [ ] No performance regression for existing dimensions
+- [x] All 7 dimensions (128, 384, 768, 1024, 1536, 2048, 3072) work correctly
+- [x] All Go native datatypes (int, uint, float, complex) supported
+- [x] Unit test coverage > 80% for new code
+- [x] Fuzz tests pass with 10,000 iterations
+- [x] No performance regression for existing dimensions

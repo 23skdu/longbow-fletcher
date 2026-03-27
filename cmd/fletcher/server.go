@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"math"
 	"net/http"
 	"net/http/pprof"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -24,7 +28,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/sync/semaphore"
-	"sync"
+	"golang.org/x/time/rate"
 
 	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
@@ -144,8 +148,41 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 	return s
 }
 
-func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string, modelType string) {
+var (
+	rateLimitBucket    *rate.Limiter
+	rateLimitEnabled   bool
+	rateRequestsPerSec float64
+	rateBurst          int
+)
+
+func initRateLimiter(rps float64, burst int) {
+	rateRequestsPerSec = rps
+	rateBurst = burst
+	rateLimitEnabled = rps > 0
+	if rateLimitEnabled {
+		rateLimitBucket = rate.NewLimiter(rate.Limit(rps), burst)
+		log.Info().Float64("rps", rps).Int("burst", burst).Msg("Rate limiting enabled")
+	}
+}
+
+func rateLimitMiddleware(next http.Handler) http.Handler {
+	if !rateLimitEnabled {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := rateLimitBucket.Wait(r.Context()); err != nil {
+			http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterface, dataset string, maxConcurrent int, maxVRAM int64, transportFmt string, modelType string, rateLimitRPS float64, rateLimitBurst int) {
 	srv := NewServer(embedder, fc, dataset, maxConcurrent, maxVRAM, transportFmt, modelType)
+
+	// Initialize rate limiter
+	initRateLimiter(rateLimitRPS, rateLimitBurst)
 
 	// Register VRAM metrics
 	prometheus.MustRegister(prometheus.NewGaugeFunc(
@@ -160,8 +197,8 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	))
 
 	http.Handle("/metrics", promhttp.Handler())
-	http.HandleFunc("/encode", srv.recoverMiddleware(srv.handleEncode))
-	http.HandleFunc("/encode/arrow", srv.recoverMiddleware(srv.handleEncodeArrow))
+	http.Handle("/encode", rateLimitMiddleware(srv.recoverMiddleware(srv.handleEncode)))
+	http.Handle("/encode/arrow", rateLimitMiddleware(srv.recoverMiddleware(srv.handleEncodeArrow)))
 
 	http.HandleFunc("/health", srv.handleHealth)
 	http.HandleFunc("/healthz", srv.handleHealthz)
@@ -177,11 +214,12 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 	http.HandleFunc("/debug/pprof/cmdline", srv.recoverMiddleware(handlePprofCmdline))
 	http.HandleFunc("/debug/pprof/symbol", srv.recoverMiddleware(handlePprofSymbol))
 
-	http.HandleFunc("/v1/embeddings", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Embeddings)))
-	http.HandleFunc("/v1/embeddings/batch", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1EmbeddingsBatch)))
-	http.HandleFunc("/v1/models", apiKeyAuthMiddleware(srv.handleV1Models))
-	http.HandleFunc("/v1/models/list", apiKeyAuthMiddleware(srv.handleV1ModelsList))
-	http.HandleFunc("/v1/rerank", srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Rerank)))
+	http.Handle("/v1/embeddings", rateLimitMiddleware(srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Embeddings))))
+	http.Handle("/v1/embeddings/batch", rateLimitMiddleware(srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1EmbeddingsBatch))))
+	http.Handle("/v1/embeddings/image", rateLimitMiddleware(srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1ImageEmbeddings))))
+	http.Handle("/v1/models", rateLimitMiddleware(apiKeyAuthMiddleware(srv.handleV1Models)))
+	http.Handle("/v1/models/list", rateLimitMiddleware(apiKeyAuthMiddleware(srv.handleV1ModelsList)))
+	http.Handle("/v1/rerank", rateLimitMiddleware(srv.recoverMiddleware(apiKeyAuthMiddleware(srv.handleV1Rerank))))
 	http.HandleFunc("/openapi.json", srv.handleOpenAPI)
 	http.HandleFunc("/healthz", srv.handleHealthz)
 	http.HandleFunc("/readyz", srv.handleReadyz)
@@ -787,6 +825,43 @@ func (s *Server) handleV1EmbeddingsBatch(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+type V1ImageEmbeddingRequest struct {
+	Image string `json:"image"` // Base64 encoded image
+	Model string `json:"model"`
+}
+
+func (s *Server) handleV1ImageEmbeddings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req V1ImageEmbeddingRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	imgData, err := base64.StdEncoding.DecodeString(req.Image)
+	if err != nil {
+		http.Error(w, "Invalid base64 image", http.StatusBadRequest)
+		return
+	}
+
+	img, err := png.Decode(bytes.NewReader(imgData))
+	if err != nil {
+		http.Error(w, "Invalid PNG image", http.StatusBadRequest)
+		return
+	}
+
+	preprocessor := embeddings.NewImagePreprocessor(224)
+	pixels := preprocessor.Preprocess(img)
+
+	_ = pixels
+
+	http.Error(w, "Image embeddings not yet implemented", http.StatusNotImplemented)
 }
 
 type V1Model struct {

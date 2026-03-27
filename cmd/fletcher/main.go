@@ -50,6 +50,8 @@ var (
 	taskType         = flag.String("task", "search_document", "Nomic task type (search_query, search_document)")
 	tlsCertFile      = flag.String("tls-cert", "", "TLS certificate file path (enables TLS)")
 	tlsKeyFile       = flag.String("tls-key", "", "TLS key file path")
+	rateLimitRPS     = flag.Float64("rate-limit-rps", 0, "Rate limit: requests per second (0 = disabled)")
+	rateLimitBurst   = flag.Int("rate-limit-burst", 10, "Rate limit: burst size")
 )
 
 func parseBytes(s string) int64 {
@@ -121,7 +123,7 @@ func main() {
 		maxVRAMBytes := parseBytes(*flagMaxVRAM)
 		log.Info().Str("max_vram", *flagMaxVRAM).Int64("bytes", maxVRAMBytes).Msg("VRAM Admission Control")
 
-		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent, maxVRAMBytes, *flagTransportFmt, *modelType)
+		go startServer(*listenAddr, embedder, fcInterface, *datasetName, *maxConcurrent, maxVRAMBytes, *flagTransportFmt, *modelType, *rateLimitRPS, *rateLimitBurst)
 		if *flightAddr == "" {
 			// specific usage for wait
 			select {}
