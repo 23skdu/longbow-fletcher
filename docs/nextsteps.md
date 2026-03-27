@@ -468,7 +468,7 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
 - [x] Replace memcpy stubs with actual cuBLAS kernels for MatMul (cublasSgemm)
 - [x] Implement LayerNorm, Softmax, GELU activation functions (all implemented in cuda_backend.cu)
 - [x] Add attention flash algorithm support
-- [ ] Test with real GPU inference on ancalagon
+- [x] Test with real GPU inference on ancalagon (CUDA build works, tests pass)
 
 ### Part 3: Metal Performance Optimization (Priority: High)
 - [ ] Profile current Metal kernel bottlenecks
