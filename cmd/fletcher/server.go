@@ -94,6 +94,24 @@ var (
 	})
 )
 
+var metricsCh chan func()
+
+func init() {
+	metricsCh = make(chan func(), 1000)
+	go func() {
+		for fn := range metricsCh {
+			fn()
+		}
+	}()
+}
+
+func recordMetric(fn func()) {
+	select {
+	case metricsCh <- fn:
+	default:
+	}
+}
+
 type EmbedderInterface interface {
 	EmbedBatch(ctx context.Context, texts []string) <-chan embeddings.StreamResult
 	ProxyEmbedBatch(ctx context.Context, texts []string) []float32
@@ -242,7 +260,8 @@ func (s *Server) handleEncode(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	defer func() {
-		requestDuration.Observe(time.Since(start).Seconds())
+		duration := time.Since(start).Seconds()
+		recordMetric(func() { requestDuration.Observe(duration) })
 	}()
 
 	if r.Method != http.MethodPost {
@@ -493,7 +512,8 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	defer func() {
-		requestDuration.Observe(time.Since(start).Seconds())
+		duration := time.Since(start).Seconds()
+		recordMetric(func() { requestDuration.Observe(duration) })
 	}()
 
 	if r.Method != http.MethodPost {
