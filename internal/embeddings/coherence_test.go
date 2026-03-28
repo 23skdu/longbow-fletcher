@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"testing"
@@ -16,6 +17,7 @@ type OllamaEmbeddingRequest struct {
 
 type OllamaEmbeddingResponse struct {
 	Embedding []float64 `json:"embedding"`
+	Error     string    `json:"error"`
 }
 
 func cosineSimilarity(a, b []float32) float64 {
@@ -236,6 +238,10 @@ func getOllamaEmbedding(model, text string) ([]float32, error) {
 		return nil, err
 	}
 
+	if result.Error != "" {
+		return nil, fmt.Errorf("Ollama error: %s", result.Error)
+	}
+
 	// Convert []float64 to []float32
 	embedding := make([]float32, len(result.Embedding))
 	for i, v := range result.Embedding {
@@ -245,10 +251,10 @@ func getOllamaEmbedding(model, text string) ([]float32, error) {
 }
 
 func TestOllamaCoherence_BertTiny(t *testing.T) {
-	// Check if Ollama is running
+	// Check if Ollama is running and has bert-tiny
 	_, err := getOllamaEmbedding("bert-tiny", "test")
 	if err != nil {
-		t.Skipf("Skipping: Ollama not running: %v", err)
+		t.Skipf("Skipping: Ollama bert-tiny not available: %v", err)
 	}
 
 	// Create Fletcher embedder
