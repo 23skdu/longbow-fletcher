@@ -428,8 +428,17 @@ void Cuda_Cast_F32_to_F16(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef
 
 void Cuda_Cast_F16_to_F32(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
   int blocks = (size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    fprintf(stderr, "CUDA error before kernel: %s\n", cudaGetErrorString(err));
+  }
   castF16toF32Kernel<<<blocks, BLOCK_SIZE, 0, ((CudaContext*)ctx)->stream>>>(
     (__half*)input, (float*)result, size);
+  cudaStreamSynchronize(((CudaContext*)ctx)->stream);
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    fprintf(stderr, "CUDA error after Cast_F16_to_F32 kernel: %s\n", cudaGetErrorString(err));
+  }
 }
 
 void Cuda_Cast_F32_to_F64(CudaContextRef ctx, CudaBufferRef input, CudaBufferRef result, int size) {
