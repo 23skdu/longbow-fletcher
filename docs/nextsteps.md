@@ -481,8 +481,10 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
   - Added `TestOllamaCoherence_BertTiny` and `TestOllamaCoherence_NomicEmbedText` in coherence_test.go
   - Uses Ollama REST API at http://localhost:11434/api/embeddings
 - [x] Validate cosine similarity > 0.99 for same text (tests use 0.90 for bert-tiny, 0.85 for nomic-embed-text)
+- [x] Fix Ollama error handling in coherence tests (model not found returns proper error)
 - [ ] Benchmark: Fletcher Metal vs Ollama nomic-embed-text
 - [ ] Document performance delta
+- [ ] Fix nomic-embed-text weights (nomic.bin is corrupted - needs re-conversion)
 
 ### Part 5: Quantization Support (Priority: Medium)
 - [x] Implement Q4/Q8 dequantization for CPU backend
