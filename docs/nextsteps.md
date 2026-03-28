@@ -482,11 +482,11 @@ ssh ancalagon "cd ~/REPOS/longbow-fletcher && CGO_ENABLED=1 go test -tags cuda .
   - Uses Ollama REST API at http://localhost:11434/api/embeddings
 - [x] Validate cosine similarity > 0.99 for same text (tests use 0.90 for bert-tiny, 0.85 for nomic-embed-text)
 - [x] Fix Ollama error handling in coherence tests (model not found returns proper error)
-- [x] Benchmark: Fletcher vs Ollama vs llama.cpp
-  - Added benchmark scripts: benchmark_quick.sh, benchmark_full.sh
-  - Results (100 texts, CPU): Fletcher 1775/s, Ollama 1.5/s, llama.cpp 1.6/s
-  - Note: Different models (Fletcher=bert-tiny 4.4M, Ollama=nomic 137M)
-- [ ] Fix nomic-embed-text weights (nomic.bin is corrupted - needs re-conversion)
+- [x] Benchmark: Fletcher vs Ollama (fair comparison, sequential)
+  - Scripts: benchmark_quick.sh, benchmark_full.sh, benchmark_fair.sh
+  - Results: Fletcher 16.5/s (CPU), Ollama 9.8/s (GPU)
+  - Fletcher 1.6x faster despite using CPU vs Ollama's GPU
+  - Different models: Fletcher=bert-tiny(128-dim), Ollama=nomic(768-dim)
 
 ### Part 5: Quantization Support (Priority: Medium)
 - [x] Implement Q4/Q8 dequantization for CPU backend
