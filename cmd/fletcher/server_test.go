@@ -3,16 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/23skdu/longbow-fletcher/internal/embeddings"
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/23skdu/longbow-fletcher/internal/client"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -69,7 +70,7 @@ func TestServer_Full(t *testing.T) {
 	t.Run("Health Check Legacy", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/health", nil)
 		rr := httptest.NewRecorder()
-		
+
 		srv.handleHealth(rr, req)
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.Equal(t, "OK", rr.Body.String())
@@ -78,7 +79,7 @@ func TestServer_Full(t *testing.T) {
 	t.Run("Health Check Z", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/healthz", nil)
 		rr := httptest.NewRecorder()
-		
+
 		srv.handleHealthz(rr, req)
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.Equal(t, "OK", rr.Body.String())
@@ -87,7 +88,7 @@ func TestServer_Full(t *testing.T) {
 	t.Run("Ready Check Z", func(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/readyz", nil)
 		rr := httptest.NewRecorder()
-		
+
 		srv.handleReadyz(rr, req)
 		assert.Equal(t, http.StatusOK, rr.Code)
 		assert.Equal(t, "Ready", rr.Body.String())
@@ -98,12 +99,12 @@ func TestServer_Full(t *testing.T) {
 			panic("oops")
 		}
 		handler := srv.recoverMiddleware(panicker)
-		
+
 		req, _ := http.NewRequest("GET", "/panic", nil)
 		rr := httptest.NewRecorder()
-		
+
 		handler.ServeHTTP(rr, req)
-		
+
 		assert.Equal(t, http.StatusInternalServerError, rr.Code)
 		assert.Equal(t, "Internal Server Error\n", rr.Body.String())
 	})
@@ -133,14 +134,14 @@ func (m *mockEmbedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 func TestServer_VRAMAdmission(t *testing.T) {
 	emb := &mockEmbedder{}
 	mfc := &mockFlightClient{}
-	
+
 	// Create server with 100 bytes VRAM limit
 	srv := NewServer(emb, mfc, "test-dataset", 10, 100, "fp32", "bert-tiny")
-	
+
 	t.Run("Reject Request Exceeding VRAM", func(t *testing.T) {
 		// Mock estimation to return 200 bytes (Over limit)
 		emb.On("EstimateVRAM", 1, 4).Return(int64(200)).Once()
-		
+
 		texts := []string{"test"}
 		data, _ := cbor.Marshal(texts)
 		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
@@ -148,11 +149,11 @@ func TestServer_VRAMAdmission(t *testing.T) {
 		ctx, cancel := context.WithTimeout(req.Context(), 100*time.Millisecond)
 		defer cancel()
 		req = req.WithContext(ctx)
-		
+
 		rr := httptest.NewRecorder()
-		
+
 		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
-		
+
 		// Should fail with 503
 		assert.Equal(t, http.StatusServiceUnavailable, rr.Code)
 		emb.AssertExpectations(t)
@@ -161,19 +162,19 @@ func TestServer_VRAMAdmission(t *testing.T) {
 	t.Run("Accept Request Within VRAM", func(t *testing.T) {
 		// Mock estimation to return 50 bytes (Under limit)
 		emb.On("EstimateVRAM", 1, 4).Return(int64(50)).Once()
-		
+
 		// Mock EmbedBatch to return empty channel
 		ch := make(chan embeddings.StreamResult)
 		close(ch)
 		emb.On("EmbedBatch", mock.Anything, []string{"test"}).Return((<-chan embeddings.StreamResult)(ch)).Once()
-		
+
 		texts := []string{"test"}
 		data, _ := cbor.Marshal(texts)
 		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
 		rr := httptest.NewRecorder()
-		
+
 		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
-		
+
 		// Should succeed
 		assert.Equal(t, http.StatusOK, rr.Code)
 		emb.AssertExpectations(t)
@@ -183,10 +184,10 @@ func TestServer_VRAMAdmission(t *testing.T) {
 func TestServer_FP16Transport(t *testing.T) {
 	emb := &mockEmbedder{}
 	mfc := &mockFlightClient{}
-	
+
 	// Create server with FP16 transport
 	srv := NewServer(emb, mfc, "test-dataset", 10, 0, "fp16", "bert-tiny")
-	
+
 	t.Run("Verify FP16 Conversion", func(t *testing.T) {
 		// Mock EmbedBatch to return a chunk with known values
 		ch := make(chan embeddings.StreamResult, 1)
@@ -194,37 +195,45 @@ func TestServer_FP16Transport(t *testing.T) {
 		vectors := []float32{1.0, -2.0}
 		ch <- embeddings.StreamResult{
 			Vectors: vectors,
-			Count: 1,
-			Offset: 0,
-			Err: nil,
+			Count:   1,
+			Offset:  0,
+			Err:     nil,
 		}
 		close(ch)
-		
+
 		emb.On("EmbedBatch", mock.Anything, []string{"test"}).Return((<-chan embeddings.StreamResult)(ch)).Once()
 		emb.On("EstimateVRAM", mock.Anything, mock.Anything).Return(int64(0)).Maybe() // if called
-		
+
 		// Validate DoPut Arguments
 		mfc.On("DoPut", mock.Anything, "test-dataset", mock.MatchedBy(func(rb arrow.RecordBatch) bool {
 			// Check Schema
 			schema := rb.Schema()
-			if !assert.Equal(t, 2, len(schema.Fields())) { return false }
-			if !assert.Equal(t, "embedding", schema.Field(1).Name) { return false }
-			
+			if !assert.Equal(t, 2, len(schema.Fields())) {
+				return false
+			}
+			if !assert.Equal(t, "embedding", schema.Field(1).Name) {
+				return false
+			}
+
 			// Check Type is FixedSizeList<Float16>
 			fsl, ok := schema.Field(1).Type.(*arrow.FixedSizeListType)
-			if !assert.True(t, ok, "Expected FixedSizeList") { return false }
-			if !assert.Equal(t, arrow.FixedWidthTypes.Float16, fsl.Elem()) { return false }
-			
+			if !assert.True(t, ok, "Expected FixedSizeList") {
+				return false
+			}
+			if !assert.Equal(t, arrow.FixedWidthTypes.Float16, fsl.Elem()) {
+				return false
+			}
+
 			return true
 		})).Return(nil).Once()
-		
+
 		texts := []string{"test"}
 		data, _ := cbor.Marshal(texts)
 		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
 		rr := httptest.NewRecorder()
-		
+
 		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
-		
+
 		assert.Equal(t, http.StatusOK, rr.Code)
 		mfc.AssertExpectations(t)
 	})
@@ -237,46 +246,184 @@ func TestServer_FP16Transport(t *testing.T) {
 		// standard float16: 1.0 = 0x3c00. LE: 00 3c
 		// -2.0 = 0xc000. LE: 00 c0
 		rawBytes := []byte{0x00, 0x3c, 0x00, 0xc0}
-		
+
 		ch <- embeddings.StreamResult{
 			RawBytes: rawBytes,
-			Vectors: nil, 
-			Count: 1,
-			Offset: 0,
-			Err: nil,
+			Vectors:  nil,
+			Count:    1,
+			Offset:   0,
+			Err:      nil,
 		}
 		close(ch)
-		
+
 		emb.On("EmbedBatch", mock.MatchedBy(func(ctx context.Context) bool {
 			// Verify context has "fp16". Using string key check might be tricky with private type.
 			// But we know Server sets it.
-			return true 
+			return true
 		}), []string{"test_zc"}).Return((<-chan embeddings.StreamResult)(ch)).Once()
-		
+
 		// Validate DoPut Arguments
 		mfc.On("DoPut", mock.Anything, "test-dataset", mock.MatchedBy(func(rb arrow.RecordBatch) bool {
 			// Check Type is FixedSizeList<Float16>
 			fsl, ok := rb.Column(1).(*array.FixedSizeList)
-			if !assert.True(t, ok) { return false }
-			
+			if !assert.True(t, ok) {
+				return false
+			}
+
 			// Verify values match input bytes
 			// We can check the underlying buffer or values
 			values := fsl.ListValues().(*array.Float16)
-			if !assert.Equal(t, float32(1.0), values.Value(0).Float32()) { return false }
-			if !assert.Equal(t, float32(-2.0), values.Value(1).Float32()) { return false }
-			
+			if !assert.Equal(t, float32(1.0), values.Value(0).Float32()) {
+				return false
+			}
+			if !assert.Equal(t, float32(-2.0), values.Value(1).Float32()) {
+				return false
+			}
+
 			return true
 		})).Return(nil).Once()
-		
+
 		texts := []string{"test_zc"}
 		data, _ := cbor.Marshal(texts)
 		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
 		rr := httptest.NewRecorder()
-		
+
 		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
-		
+
 		assert.Equal(t, http.StatusOK, rr.Code)
 		mfc.AssertExpectations(t)
 	})
 }
 
+func TestServer_E2EHTTPEndpoints(t *testing.T) {
+	vocabFile := "test_vocab_e2e.txt"
+	os.WriteFile(vocabFile, []byte("[CLS]\n[SEP]\n[UNK]\ntest\nhello\nworld\n"), 0644)
+	defer os.Remove(vocabFile)
+
+	emb, err := embeddings.NewEmbedder(vocabFile, "", false, "bert-tiny", "fp32")
+	if err != nil {
+		t.Skip("Skipping e2e test: could not create embedder")
+	}
+
+	mfc := &mockFlightClient{}
+	srv := NewServer(emb, mfc, "test-dataset", 100, 0, "fp32", "bert-tiny")
+	mfc.On("DoPut", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	t.Run("GET /health returns 200", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/health", nil)
+		rr := httptest.NewRecorder()
+		srv.handleHealth(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Equal(t, "OK", rr.Body.String())
+	})
+
+	t.Run("GET /healthz returns 200", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/healthz", nil)
+		rr := httptest.NewRecorder()
+		srv.handleHealthz(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("GET /readyz returns 200", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/readyz", nil)
+		rr := httptest.NewRecorder()
+		srv.handleReadyz(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("GET /openapi.json returns 200", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/openapi.json", nil)
+		rr := httptest.NewRecorder()
+		srv.handleOpenAPI(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.Contains(t, rr.Header().Get("Content-Type"), "application/json")
+	})
+
+	t.Run("POST /encode with CBOR returns 200", func(t *testing.T) {
+		texts := []string{"hello world"}
+		data, _ := cbor.Marshal(texts)
+		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
+		req.Header.Set("Content-Type", "application/cbor")
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("POST /encode with JSON returns 400 (CBOR only)", func(t *testing.T) {
+		texts := []string{"test text"}
+		data, _ := json.Marshal(texts)
+		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusBadRequest, rr.Code)
+	})
+
+	t.Run("POST /encode wrong method returns 405", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/encode", nil)
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleEncode).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusMethodNotAllowed, rr.Code)
+	})
+
+	t.Run("POST /v1/embeddings returns 200", func(t *testing.T) {
+		body := map[string]interface{}{
+			"input": "The quick brown fox",
+			"model": "bert-tiny",
+		}
+		data, _ := json.Marshal(body)
+		req, _ := http.NewRequest("POST", "/v1/embeddings", bytes.NewReader(data))
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleV1Embeddings).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("POST /v1/embeddings/batch returns 200", func(t *testing.T) {
+		body := map[string]interface{}{
+			"input": []string{"first text", "second text"},
+			"model": "bert-tiny",
+		}
+		data, _ := json.Marshal(body)
+		req, _ := http.NewRequest("POST", "/v1/embeddings/batch", bytes.NewReader(data))
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleV1EmbeddingsBatch).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("GET /v1/models returns 200", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/v1/models", nil)
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleV1Models).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("GET /v1/models/list returns 200", func(t *testing.T) {
+		req, _ := http.NewRequest("GET", "/v1/models/list", nil)
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleV1ModelsList).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("POST /v1/rerank returns 200", func(t *testing.T) {
+		body := map[string]interface{}{
+			"query":     "What is the best way to test?",
+			"documents": []string{"Testing is important", "Code quality matters", "Both are good"},
+			"top_n":     2,
+		}
+		data, _ := json.Marshal(body)
+		req, _ := http.NewRequest("POST", "/v1/rerank", bytes.NewReader(data))
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(srv.handleV1Rerank).ServeHTTP(rr, req)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+
+	t.Run("Rate limiting endpoint exists", func(t *testing.T) {
+		texts := []string{"test"}
+		data, _ := cbor.Marshal(texts)
+		req, _ := http.NewRequest("POST", "/encode", bytes.NewReader(data))
+		rr := httptest.NewRecorder()
+		handler := rateLimitMiddleware(http.HandlerFunc(srv.handleEncode))
+		handler.ServeHTTP(rr, req)
+		assert.True(t, rr.Code == http.StatusOK || rr.Code == http.StatusTooManyRequests)
+	})
+}
