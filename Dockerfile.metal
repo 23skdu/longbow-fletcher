@@ -4,7 +4,7 @@
 # For cross-platform builds, use Dockerfile (CPU) or Dockerfile.cuda (NVIDIA).
 
 # Stage 1: Build (macOS only - requires Xcode and Metal SDK)
-FROM --platform=darwin/arm64 golang:1.26 AS builder
+FROM --platform=darwin/arm64 golang:1.27 AS builder
 
 WORKDIR /app
 
