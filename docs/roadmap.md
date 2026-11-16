@@ -415,7 +415,6 @@ Longbow uses Prometheus metrics and OpenTelemetry tracing with defined naming.
 
 
 
-- [ ] 7.2 Add Arrow Flight round-trip tests against Longbow's `DoPut`/`DoGet`.
 
 
 

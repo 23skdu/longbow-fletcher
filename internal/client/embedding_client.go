@@ -79,6 +79,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
+	_ = stream.CloseSend()
 
 	// Read Response
 	reader, err := flight.NewRecordReader(stream, ipc.WithAllocator(c.alloc))

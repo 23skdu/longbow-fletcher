@@ -38,23 +38,27 @@ func TestFlightRoundTripIntegration(t *testing.T) {
 	go StartFlightServer(listenAddr, emb, nil)
 
 	var ec *client.EmbeddingClient
+	var vecs [][]float32
+	var embedErr error
 	for i := 0; i < 50; i++ {
-		c, err := client.NewEmbeddingClient(listenAddr)
-		if err == nil {
+		c, cerr := client.NewEmbeddingClient(listenAddr)
+		if cerr != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		vecs, embedErr = c.Embed(context.Background(), []string{"hello world"})
+		if embedErr == nil {
 			ec = c
 			break
 		}
+		c.Close()
 		time.Sleep(100 * time.Millisecond)
 	}
 	if ec == nil {
-		t.Fatal("could not connect")
+		t.Fatal("could not embed: " + embedErr.Error())
 	}
 	defer ec.Close()
-
-	vecs, err := ec.Embed(context.Background(), []string{"hello world"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_ = vecs
 	if len(vecs) != 1 || len(vecs[0]) == 0 {
 		t.Fatalf("unexpected result: %d", len(vecs))
 	}
