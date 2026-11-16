@@ -392,7 +392,6 @@ Longbow uses Prometheus metrics and OpenTelemetry tracing with defined naming.
 
 
 
-- [ ] 6.4 Provide Grafana dashboard templates for Fletcher.
 
 
 
@@ -3268,13 +3267,10 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 ## 9. Batched Implementation Plan (Subtasks)
 
 ### Batch A - Protocol and Transport (High Impact)
-- [ ] A.2 Implement Longbow namespace path parsing in client (`namespace/dataset`).
 - [ ] A.7 Add CI job building against Longbow module versions.
 
 ### Batch B - Security and Observability (High Impact)
-- [ ] B.2 Add tenant propagation to all client requests.
 - [ ] B.4 Align metric names and add Grafana dashboard templates.
-- [ ] B.5 Propagate OpenTelemetry trace context over gRPC metadata.
 
 ### Batch C - Multi-Modal (Medium Impact)
 - [ ] C.1 Complete CLIP vision encoder with weights loading.
