@@ -8,6 +8,9 @@ Welcome to the documentation for **Fletcher**, the high-performance embedding en
 - **[Usage Guide](usage.md)**: Installation, CLI basics, running the server, and enabling GPU acceleration.
 - **[Development](development.md)**: Building from source, running tests, benchmarks, and client scripts.
 - **[Reference](reference.md)**: CLI flags, supported models, and metrics reference.
+- **[Benchmarking](benchmark.md)**: Pure-Go benchmark tool and Python orchestrator.
+- **[Performance](performance.md)**: Performance notes and regression workflow.
+- **[Roadmap](roadmap.md)**: Integration roadmap and remaining work.
 
 ## Quick Links
 
