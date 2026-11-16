@@ -3,12 +3,16 @@ package main
 import (
 	"fmt"
 
+	"google.golang.org/grpc/credentials"
+
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/rs/zerolog/log"
+
+	"google.golang.org/grpc"
 )
 
 type FletcherFlightServer struct {
@@ -33,6 +37,13 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 	defer reader.Release()
 
 	for reader.Next() {
+		if desc := reader.LatestFlightDescriptor(); desc != nil {
+			log.Info().
+				Str("cmd", string(desc.Cmd)).
+				Strs("path", desc.Path).
+				Msg("Flight DoExchange descriptor")
+		}
+
 		rec := reader.Record()
 		if rec.NumRows() == 0 {
 			continue
@@ -159,18 +170,20 @@ type TLSConfig struct {
 
 func StartFlightServer(addr string, embedder EmbedderInterface, tlsConfig *TLSConfig) {
 	// Create the generic Flight Server which manages the GRPC lifecycle
-	server := flight.NewFlightServer()
+	var opts []grpc.ServerOption
+	if tlsConfig != nil && tlsConfig.CertFile != "" && tlsConfig.KeyFile != "" {
+		creds, err := credentials.NewServerTLSFromFile(tlsConfig.CertFile, tlsConfig.KeyFile)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to load TLS credentials")
+		}
+		opts = append(opts, grpc.Creds(creds))
+		log.Info().Msg("Enabling TLS for Flight server")
+	}
+
+	server := flight.NewFlightServer(opts...)
 
 	// Register our custom service implementation
 	server.RegisterFlightService(NewFletcherFlightServer(embedder))
-
-	// Configure TLS if cert and key are provided
-	if tlsConfig != nil && tlsConfig.CertFile != "" && tlsConfig.KeyFile != "" {
-		log.Info().Msg("Enabling TLS for Flight server")
-		// Note: arrow-go FlightServer supports TLS via middleware
-		// The actual TLS setup would require wrapping with grpc.Creds
-		// This is a placeholder for mTLS support
-	}
 
 	// Init handles the listener creation internally
 	if err := server.Init(addr); err != nil {

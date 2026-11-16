@@ -8,7 +8,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // FlightClient handles communication with a Longbow server via Apache Flight.
@@ -19,7 +18,16 @@ type FlightClient struct {
 
 // NewFlightClient creates a new Flight client connected to the given address.
 func NewFlightClient(addr string) (*FlightClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	return NewFlightClientWithConfig(addr, ClientConfig{})
+}
+
+// NewFlightClientWithConfig creates a Flight client with TLS/API-key options.
+func NewFlightClientWithConfig(addr string, cfg ClientConfig) (*FlightClient, error) {
+	opts, err := buildDialOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, err
 	}

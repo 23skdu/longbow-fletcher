@@ -9,7 +9,6 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type EmbeddingClient struct {
@@ -19,16 +18,20 @@ type EmbeddingClient struct {
 }
 
 func NewEmbeddingClient(addr string) (*EmbeddingClient, error) {
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	}
-	
-	client, err := flight.NewClientWithMiddleware(addr, nil, nil, opts...)
+	return NewEmbeddingClientWithConfig(addr, ClientConfig{})
+}
+
+func NewEmbeddingClientWithConfig(addr string, cfg ClientConfig) (*EmbeddingClient, error) {
+	opts, err := buildDialOptions(cfg)
 	if err != nil {
 		return nil, err
 	}
-	
+	conn, err := grpc.NewClient(addr, opts...)
+	if err != nil {
+		return nil, err
+	}
+	client := flight.NewClientFromConn(conn, nil)
+
 	return &EmbeddingClient{
 		client: client,
 		alloc:  memory.NewGoAllocator(),

@@ -36,11 +36,11 @@ Flight with RBAC authorization and TLS/mTLS. Fletcher must match these contracts
 
 ### 2.1 Ingest Path (Fletcher -> Longbow)
 
-- [ ] 2.1.1 Send a valid `FlightDescriptor` with `Path = [datasetName]` on every `DoPut`
+- [x] 2.1.1 Send a valid `FlightDescriptor` with `Path = [datasetName]` on every `DoPut`
       (already set via `writer.SetFlightDescriptor`).
 - [ ] 2.1.2 Ensure Fletcher's output schema (`text: utf8`, `embedding: fixed_size_list<float32>[dim]`)
       is accepted by Longbow's schema evolution (`Evolve`) – verify no metadata mismatches.
-- [ ] 2.1.3 Add optional row identity column (`row_id: uint64`) to match Longbow's
+- [x] 2.1.3 Add optional row identity column (`row_id: uint64`) to match Longbow's
       provenance expectations and enable idempotent upserts.
 - [ ] 2.1.4 Support Longbow namespaces via `namespace/dataset` path parsing
       (`ParseNamespacedPath`).
@@ -51,7 +51,7 @@ Flight with RBAC authorization and TLS/mTLS. Fletcher must match these contracts
 Fletcher's Flight server should act as a first-class embedding provider for Longbow,
 analogous to ONNX/WASM/Ollama providers.
 
-- [ ] 2.2.1 Define a stable `DoExchange` protocol:
+- [x] 2.2.1 Define a stable `DoExchange` protocol:
       - Input schema: `{row_id: uint64, text: utf8}` (and optional `modality`, `blob`).
       - Output schema: `{row_id: uint64, embedding: fixed_size_list<float32>[dim]}`.
 - [ ] 2.2.2 Route requests by `FlightDescriptor`:
@@ -62,7 +62,7 @@ analogous to ONNX/WASM/Ollama providers.
 
 ### 2.3 Version Skew
 
-- [ ] 2.3.1 Keep Arrow Go, gRPC, and protobuf versions pinned to Longbow's
+- [x] 2.3.1 Keep Arrow Go, gRPC, and protobuf versions pinned to Longbow's
       (`v18.8.0`, `v1.85.0`) to avoid IPC wire incompatibilities.
 - [ ] 2.3.2 Add a CI check that builds Fletcher against Longbow's module versions.
 
@@ -71,8 +71,8 @@ analogous to ONNX/WASM/Ollama providers.
 Longbow v0.2.5 enforces RBAC (admin/writer/reader/tenant-admin), API keys, tenant
 isolation, and TLS/mTLS.
 
-- [ ] 3.1 Implement TLS/mTLS in `StartFlightServer` (currently a placeholder).
-- [ ] 3.2 Add TLS options to `NewFlightClient`/`NewEmbeddingClient`.
+- [x] 3.1 Implement TLS/mTLS in `StartFlightServer` (currently a placeholder).
+- [x] 3.2 Add TLS options to `NewFlightClient`/`NewEmbeddingClient`.
 - [ ] 3.3 Propagate API keys via gRPC metadata (`authorization: Bearer <key>`).
 - [ ] 3.4 Support tenant/namespace scoping in client requests.
 - [ ] 3.5 Add audit-friendly structured logs with correlation IDs.

@@ -260,6 +260,7 @@ func main() {
 
 	schema := arrow.NewSchema(
 		[]arrow.Field{
+			{Name: "row_id", Type: arrow.PrimitiveTypes.Uint64},
 			{Name: "text", Type: arrow.BinaryTypes.String},
 			{Name: "embedding", Type: arrow.FixedSizeListOf(int32(dim), arrow.PrimitiveTypes.Float32)},
 		},
@@ -267,6 +268,9 @@ func main() {
 	)
 
 	// Build Columns
+	idBuilder := array.NewUint64Builder(pool)
+	defer idBuilder.Release()
+
 	textBuilder := array.NewStringBuilder(pool)
 	defer textBuilder.Release()
 
@@ -276,18 +280,22 @@ func main() {
 
 	// Append Data
 	for i, text := range texts {
+		idBuilder.Append(uint64(i))
+
 		textBuilder.Append(text)
 
 		embedBuilder.Append(true)
 		floatBuilder.AppendValues(vectors[i*dim:(i+1)*dim], nil)
 	}
 
+	idArr := idBuilder.NewArray()
+	defer idArr.Release()
 	textArr := textBuilder.NewArray()
 	defer textArr.Release()
 	embedArr := embedBuilder.NewArray()
 	defer embedArr.Release()
 
-	rec := array.NewRecordBatch(schema, []arrow.Array{textArr, embedArr}, int64(len(texts)))
+	rec := array.NewRecordBatch(schema, []arrow.Array{idArr, textArr, embedArr}, int64(len(texts)))
 	defer rec.Release()
 
 	// If server is provided, send via Flight
