@@ -424,7 +424,6 @@ Longbow uses Prometheus metrics and OpenTelemetry tracing with defined naming.
 
 
 
-- [ ] 7.5 Add fuzz tests for Flight input schemas.
 
 
 
