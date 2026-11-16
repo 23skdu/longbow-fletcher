@@ -53,6 +53,8 @@ var (
 	rateLimitRPS     = flag.Float64("rate-limit-rps", 0, "Rate limit: requests per second (0 = disabled)")
 	rateLimitBurst   = flag.Int("rate-limit-burst", 10, "Rate limit: burst size")
 	clientAPIKey     = flag.String("api-key", "", "API key for Longbow authentication")
+	clientTenant     = flag.String("tenant", "", "Tenant for Longbow authentication")
+	serverAPIKey     = flag.String("server-api-key", "", "API key required by Fletcher HTTP server")
 )
 
 func parseBytes(s string) int64 {
@@ -109,11 +111,20 @@ func main() {
 	}
 
 	// Server Mode
+	if *serverAPIKey != "" {
+		SetAPIKey(*serverAPIKey)
+	}
+
 	if *listenAddr != "" {
 		var fcInterface FlightClientInterface
 		if *serverAddr != "" {
+			var fc *client.FlightClient
 			var err error
-			fc, err := client.NewFlightClientWithConfig(*serverAddr, client.ClientConfig{APIKey: *clientAPIKey})
+			if *clientAPIKey == "" && *clientTenant == "" {
+				fc, err = client.NewFlightClient(*serverAddr)
+			} else {
+				fc, err = client.NewFlightClientWithConfig(*serverAddr, client.ClientConfig{APIKey: *clientAPIKey, Tenant: *clientTenant})
+			}
 			if err != nil {
 				log.Fatal().Err(err).Msg("Failed to create flight client")
 			}
@@ -302,7 +313,13 @@ func main() {
 	// If server is provided, send via Flight
 	if *serverAddr != "" {
 		log.Info().Int("count", len(texts)).Str("server", *serverAddr).Str("dataset", *datasetName).Msg("Sending vectors to Longbow")
-		flightClient, err := client.NewFlightClientWithConfig(*serverAddr, client.ClientConfig{APIKey: *clientAPIKey})
+		var flightClient *client.FlightClient
+		var err error
+		if *clientAPIKey == "" && *clientTenant == "" {
+			flightClient, err = client.NewFlightClient(*serverAddr)
+		} else {
+			flightClient, err = client.NewFlightClientWithConfig(*serverAddr, client.ClientConfig{APIKey: *clientAPIKey, Tenant: *clientTenant})
+		}
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to connect to Longbow")
 		}

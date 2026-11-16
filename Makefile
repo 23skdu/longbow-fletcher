@@ -18,7 +18,7 @@ IMAGE_TAG     ?= latest
 .PHONY: all help build build-release build-debug build-race clean deps deps-upgrade \
 	fmt fmt-check vet lint lint-fix staticcheck security test test-short test-all race \
 	coverage coverage-html bench cross-compile docker-build-cpu docker-build-cuda docker-build-metal \
-	accuracy-gate oracle-gate makehooks install-hooks verify pre-commit
+	accuracy-gate oracle-gate makehooks install-hooks verify pre-commit deadcode
 
 all: build
 
@@ -99,9 +99,16 @@ deps-upgrade:
 	$(GO) mod tidy
 
 clean:
-	@echo "Cleaning build artifacts..."
+	@echo "Cleaning build artifacts, Docker images, and Go caches..."
 	rm -rf bin/ dist/ build/ coverage.out coverage.html
-	$(GO) clean -testcache
+	$(GO) clean -cache -testcache -modcache
+	@if command -v $(DOCKER) >/dev/null 2>&1; then \
+		IMAGES=$$($(DOCKER) images --filter "reference=fletcher*" --filter "reference=*/fletcher*" -q 2>/dev/null | sort -u); \
+		if [ -n "$$IMAGES" ]; then \
+			$(DOCKER) rmi -f $$IMAGES || true; \
+		fi; \
+		$(DOCKER) image prune -f >/dev/null 2>&1 || true; \
+	fi
 
 fmt:
 	@echo "Formatting Go source..."
@@ -190,6 +197,10 @@ makehooks:
 	@echo "Pre-commit hook installed."
 
 install-hooks: makehooks
+
+deadcode:
+	@echo "Running deadcode analysis..."
+	@$(DEADCODE) ./... 2>/dev/null || $(GO) run golang.org/x/tools/cmd/deadcode@latest ./... 2>/dev/null || echo "deadcode tool not available"
 
 verify:
 	@./scripts/verify.sh
