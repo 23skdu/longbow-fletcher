@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"google.golang.org/grpc/credentials"
@@ -26,6 +27,18 @@ func NewFletcherFlightServer(embedder EmbedderInterface) *FletcherFlightServer {
 		embedder: embedder,
 		alloc:    memory.NewGoAllocator(),
 	}
+}
+
+func (s *FletcherFlightServer) DoAction(action *flight.Action, stream flight.FlightService_DoActionServer) error {
+	if action != nil && string(action.Type) == "GetModels" {
+		models := []string{
+			"bert-tiny", "all-MiniLM-L6-v2", "nomic-embed-text", "roberta-base",
+			"xlm-roberta-base", "bge-m3", "e5-mistral-7b-instruct",
+		}
+		b, _ := json.Marshal(models)
+		return stream.Send(&flight.Result{Body: b})
+	}
+	return s.BaseFlightServer.DoAction(action, stream)
 }
 
 func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchangeServer) error {
