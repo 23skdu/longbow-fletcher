@@ -1,5 +1,7 @@
 package embeddings
 
+// Audio embeddings are out of scope for Fletcher; only text and image (CLIP) are supported.
+
 import (
 	"fmt"
 	"image"

@@ -299,7 +299,6 @@ cross-modal search.
 
 
 
-- [ ] 4.2 Add audio encoder path (Whisper/CLAP) or document Fletcher's text-only scope.
 
 
 
