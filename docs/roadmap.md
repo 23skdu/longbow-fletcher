@@ -343,7 +343,6 @@ Longbow's learned-index features track `embedding_provider` and `embedding_model
 
 
 
-- [ ] 5.2 Document supported `(model, dimension)` pairs and ensure Longbow dataset
 
 
 
@@ -355,7 +354,6 @@ Longbow's learned-index features track `embedding_provider` and `embedding_model
 
 
 
-- [ ] 5.4 Validate FP16 transport (`-transport-fmt fp16`) against Longbow's
 
 
 
@@ -383,7 +381,6 @@ Longbow uses Prometheus metrics and OpenTelemetry tracing with defined naming.
 
 
 
-- [ ] 6.1 Align Fletcher metric names with Longbow conventions
 
 
 
