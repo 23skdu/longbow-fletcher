@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+
+	"github.com/23skdu/longbow-fletcher/internal/device"
+	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 )
 
 type InputType int
@@ -113,7 +116,27 @@ func NewClipVisionEncoder(config ClipVisionConfig, backend interface{}) (VisionE
 }
 
 func (e *clipVisionEncoder) EncodeImage(pixels []float32) ([]float32, error) {
-	return nil, ErrNotImplemented
+	backend, ok := e.backend.(device.Backend)
+	if !ok || backend == nil {
+		backend = device.NewCPUBackend()
+	}
+
+	cfg := model.VisionConfig{
+		ImageSize:     e.config.ImageSize,
+		PatchSize:     e.config.PatchSize,
+		HiddenSize:    e.config.HiddenSize,
+		NumLayers:     e.config.NumLayers,
+		NumHeads:      e.config.NumHeads,
+		MLPHiddenSize: e.config.HiddenSize * 4,
+		EmbedDim:      e.config.EmbedDim,
+	}
+
+	vm := model.NewVisionModel(cfg, backend)
+	out := vm.Forward(pixels)
+	host := out.ToHost()
+	res := make([]float32, len(host))
+	copy(res, host)
+	return res, nil
 }
 
 func (e *clipVisionEncoder) GetEmbeddingDim() int {
