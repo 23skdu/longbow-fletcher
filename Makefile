@@ -18,7 +18,7 @@ IMAGE_TAG     ?= latest
 .PHONY: all help build build-release build-debug build-race clean deps deps-upgrade \
 	fmt fmt-check vet lint lint-fix staticcheck security test test-short test-all race \
 	coverage coverage-html bench cross-compile docker-build-cpu docker-build-cuda docker-build-metal \
-	accuracy-gate oracle-gate makehooks install-hooks verify pre-commit deadcode
+	accuracy-gate oracle-gate makehooks install-hooks verify pre-commit deadcode test-integration
 
 all: build
 
@@ -201,6 +201,10 @@ install-hooks: makehooks
 deadcode:
 	@echo "Running deadcode analysis..."
 	@$(DEADCODE) ./... 2>/dev/null || $(GO) run golang.org/x/tools/cmd/deadcode@latest ./... 2>/dev/null || echo "deadcode tool not available"
+
+test-integration:
+	@echo "Running integration tests..."
+	$(GO) test -tags=integration ./tests/integration/...
 
 verify:
 	@./scripts/verify.sh

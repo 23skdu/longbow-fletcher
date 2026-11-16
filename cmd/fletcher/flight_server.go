@@ -38,6 +38,19 @@ func (s *FletcherFlightServer) DoAction(action *flight.Action, stream flight.Fli
 		b, _ := json.Marshal(models)
 		return stream.Send(&flight.Result{Body: b})
 	}
+	if action != nil && string(action.Type) == "GetDimensions" {
+		dims := map[string]int{
+			"bert-tiny":              128,
+			"all-MiniLM-L6-v2":       384,
+			"nomic-embed-text":       768,
+			"roberta-base":           768,
+			"xlm-roberta-base":       768,
+			"bge-m3":                 1024,
+			"e5-mistral-7b-instruct": 4096,
+		}
+		b, _ := json.Marshal(dims)
+		return stream.Send(&flight.Result{Body: b})
+	}
 	return s.BaseFlightServer.DoAction(action, stream)
 }
 

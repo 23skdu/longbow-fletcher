@@ -3276,12 +3276,10 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 ## 9. Batched Implementation Plan (Subtasks)
 
 ### Batch A - Protocol and Transport (High Impact)
-- [ ] A.1 Add integration test harness skeleton under `tests/integration/`.
 - [ ] A.2 Implement Longbow namespace path parsing in client (`namespace/dataset`).
 - [ ] A.3 Add admission-control backpressure retries in `AsyncStream`.
 - [ ] A.4 Route Flight `DoExchange` by descriptor (`embed`, `search`, `ingest`).
 - [ ] A.5 Implement per-batch error reporting in `DoExchange` responses.
-- [ ] A.6 Add `GetModels`/`GetDimensions` DoAction responses.
 - [ ] A.7 Add CI job building against Longbow module versions.
 
 ### Batch B - Security and Observability (High Impact)
@@ -3832,3 +3830,15 @@ Fletcher reaches parity when:
 3. LoRA adapter support
 4. OpenAI-compatible API
 5. Quantization (INT8/INT4)
+## 16. God Module Refactoring (Context Window Optimization)
+
+Large "god" modules should be split into smaller, focused files/packages so they fit
+more easily into context windows and are easier to maintain.
+
+- [ ] 16.1 Identify modules over 1000 lines (`embeddings.go`, `server.go`, `bert.go`, `device.go`).
+- [ ] 16.2 Split `embeddings.go` into tokenizer, batching, caching, and metrics components.
+- [ ] 16.3 Split `server.go` into HTTP handlers, middleware, and OpenAPI handlers.
+- [ ] 16.4 Split `bert.go` into layers, attention, and pooling submodules.
+- [ ] 16.5 Split device backends into per-operation files.
+- [ ] 16.6 Add package-level documentation for each new module.
+- [ ] 16.7 Update imports and tests after refactor.
