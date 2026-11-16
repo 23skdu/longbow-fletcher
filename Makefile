@@ -62,6 +62,11 @@ build:
 	@echo "Building all packages..."
 	$(GO) build ./...
 
+build-bench:
+	@echo "Building bench tool..."
+	@mkdir -p bin
+	$(GO) build -o bin/bench ./cmd/bench
+
 build-release:
 	@echo "Building release artifacts..."
 	@mkdir -p bin
