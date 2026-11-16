@@ -73,7 +73,7 @@ isolation, and TLS/mTLS.
 
 - [x] 3.1 Implement TLS/mTLS in `StartFlightServer` (currently a placeholder).
 - [x] 3.2 Add TLS options to `NewFlightClient`/`NewEmbeddingClient`.
-- [ ] 3.3 Propagate API keys via gRPC metadata (`authorization: Bearer <key>`).
+- [x] 3.3 Propagate API keys via gRPC metadata (`authorization: Bearer <key>`).
 - [ ] 3.4 Support tenant/namespace scoping in client requests.
 - [ ] 3.5 Add audit-friendly structured logs with correlation IDs.
 
