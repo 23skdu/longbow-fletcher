@@ -55,50 +55,52 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Write Request
 	writer := flight.NewRecordWriter(stream, ipc.WithSchema(c.schema))
-	
+
 	builder := array.NewRecordBuilder(c.alloc, c.schema)
 	defer builder.Release()
-	
+
 	idBuilder := builder.Field(0).(*array.Uint64Builder)
 	textBuilder := builder.Field(1).(*array.StringBuilder)
-	
+
 	for i, t := range texts {
 		idBuilder.Append(uint64(i))
 		textBuilder.Append(t)
 	}
-	
+
 	rec := builder.NewRecordBatch()
 	defer rec.Release()
-	
+
 	if err := writer.Write(rec); err != nil {
 		return nil, err
 	}
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
-	
+
 	// Read Response
 	reader, err := flight.NewRecordReader(stream, ipc.WithAllocator(c.alloc))
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Release()
-	
+
 	results := make([][]float32, len(texts))
-	
+
 	for reader.Next() {
-		outRec := reader.Record()
+		outRec := reader.RecordBatch()
 		rowCount := int(outRec.NumRows())
-		if rowCount == 0 { continue }
-		
+		if rowCount == 0 {
+			continue
+		}
+
 		ids := outRec.Column(0).(*array.Uint64)
 		embs := outRec.Column(1).(*array.FixedSizeList)
 		values := embs.ListValues().(*array.Float32)
 		listSize := int(embs.DataType().(*arrow.FixedSizeListType).Len())
-		
+
 		for i := 0; i < rowCount; i++ {
 			id := ids.Value(i)
 			if int(id) < len(results) {
@@ -110,6 +112,6 @@ func (c *EmbeddingClient) Embed(ctx context.Context, texts []string) ([][]float3
 			}
 		}
 	}
-	
+
 	return results, reader.Err()
 }

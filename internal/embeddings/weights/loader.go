@@ -193,12 +193,11 @@ func (l *Loader) loadFusedQKVSafeTensors(file *os.File, header map[string]SafeTe
 		return fmt.Errorf("fused QKV tensor %q size mismatch: expected %d, got %d (shape %v)", name, expectedSize, headerSize, info.Shape)
 	}
 
-	dataStart := int64(8) + int64(len(header)) // rough, will be recalculated below
 	// Re-read header size from file position
-	file.Seek(0, io.SeekStart)
+	_, _ = file.Seek(0, io.SeekStart)
 	var hs uint64
-	binary.Read(file, binary.LittleEndian, &hs)
-	dataStart = int64(8) + int64(hs)
+	_ = binary.Read(file, binary.LittleEndian, &hs)
+	dataStart := int64(8) + int64(hs)
 
 	length := info.DataOffsets[1] - info.DataOffsets[0]
 	data := make([]byte, length)
@@ -237,7 +236,7 @@ func (l *Loader) LoadFromSafeTensors(path string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// 1. Read Header Size (uint64)
 	var headerSize uint64

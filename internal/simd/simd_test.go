@@ -55,7 +55,7 @@ func TestMatVecMul(t *testing.T) {
 	}
 	vec := []float32{1, 2, 3}
 	dst := make([]float32, 2)
-	
+
 	// Row 0: 1*1 + 2*2 + 3*3 = 1+4+9 = 14
 	// Row 1: 4*1 + 5*2 + 6*3 = 4+10+18 = 32
 	expected := []float32{14, 32}
@@ -76,7 +76,7 @@ func TestFastMath(t *testing.T) {
 		std  func(float64) float64
 		tol  float64 // Relative tolerance
 	}{
-		{"ExpFast", ExpFast, math.Exp, 0.05} , // 5% tolerance for approx
+		{"ExpFast", ExpFast, math.Exp, 0.05},    // 5% tolerance for approx
 		{"TanhFast", TanhFast, math.Tanh, 0.05}, // 5% tolerance
 	}
 
@@ -87,10 +87,12 @@ func TestFastMath(t *testing.T) {
 			for _, x := range inputs {
 				got := tt.fn(x)
 				want := tt.std(float64(x))
-				
+
 				diff := math.Abs(float64(got) - want)
 				avg := math.Abs(want)
-				if avg == 0 { avg = 1 }
+				if avg == 0 {
+					avg = 1
+				}
 				relErr := diff / avg
 
 				// Relax tolerance for very small numbers where diff dominates

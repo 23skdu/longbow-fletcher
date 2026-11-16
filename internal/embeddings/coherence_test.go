@@ -231,7 +231,7 @@ func getOllamaEmbedding(model, text string) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result OllamaEmbeddingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {

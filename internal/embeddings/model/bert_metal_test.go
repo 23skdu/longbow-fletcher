@@ -3,8 +3,9 @@
 package model
 
 import (
-	"github.com/23skdu/longbow-fletcher/internal/device"
 	"testing"
+
+	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
 func TestBertModel_Forward_Metal(t *testing.T) {

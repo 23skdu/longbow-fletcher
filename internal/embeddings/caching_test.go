@@ -15,7 +15,7 @@ import (
 
 func getMetricValue(m prometheus.Metric) float64 {
 	var metric dto.Metric
-	m.Write(&metric)
+	_ = m.Write(&metric)
 	if metric.Counter != nil {
 		return *metric.Counter.Value
 	}

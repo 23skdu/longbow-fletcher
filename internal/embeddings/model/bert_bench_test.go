@@ -1,8 +1,9 @@
 package model
 
 import (
-	"github.com/23skdu/longbow-fletcher/internal/device"
 	"testing"
+
+	"github.com/23skdu/longbow-fletcher/internal/device"
 )
 
 func BenchmarkBertModel_Forward_CPU(b *testing.B) {

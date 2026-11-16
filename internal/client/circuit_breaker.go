@@ -17,12 +17,12 @@ const (
 // CircuitBreaker implements a standard circuit breaker pattern.
 // It is thread-safe.
 type CircuitBreaker struct {
-	mu           sync.Mutex
-	state        State
-	failures     int
-	maxFailures  int
-	timeout      time.Duration
-	lastFailure  time.Time
+	mu          sync.Mutex
+	state       State
+	failures    int
+	maxFailures int
+	timeout     time.Duration
+	lastFailure time.Time
 }
 
 // NewCircuitBreaker creates a new CircuitBreaker.
@@ -57,7 +57,7 @@ func (cb *CircuitBreaker) Allow() bool {
 	}
 
 	// StateHalfOpen
-	// We allow one request to probe. 
+	// We allow one request to probe.
 	// In a real high-concurrency scenario, we might want to strictly limit this to 1 concurrent request.
 	// For this use case (single loop), it usually works naturally.
 	return true
@@ -68,10 +68,11 @@ func (cb *CircuitBreaker) Success() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	if cb.state == StateHalfOpen {
+	switch cb.state {
+	case StateHalfOpen:
 		cb.state = StateClosed
 		cb.failures = 0
-	} else if cb.state == StateClosed {
+	case StateClosed:
 		cb.failures = 0
 	}
 }
@@ -83,12 +84,13 @@ func (cb *CircuitBreaker) Failure() {
 
 	cb.failures++
 	cb.lastFailure = time.Now()
-	
-	if cb.state == StateClosed {
+
+	switch cb.state {
+	case StateClosed:
 		if cb.failures >= cb.maxFailures {
 			cb.state = StateOpen
 		}
-	} else if cb.state == StateHalfOpen {
+	case StateHalfOpen:
 		cb.state = StateOpen
 	}
 }

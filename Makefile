@@ -17,7 +17,8 @@ IMAGE_TAG     ?= latest
 
 .PHONY: all help build build-release build-debug build-race clean deps deps-upgrade \
 	fmt fmt-check vet lint lint-fix staticcheck security test test-short test-all race \
-	coverage coverage-html bench cross-compile docker-build-cpu docker-build-cuda docker-build-metal
+	coverage coverage-html bench cross-compile docker-build-cpu docker-build-cuda docker-build-metal \
+	accuracy-gate oracle-gate makehooks install-hooks verify pre-commit
 
 all: build
 
@@ -158,6 +159,14 @@ coverage-html:
 	$(GO) test -short -coverprofile=coverage.out ./...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
+accuracy-gate:
+	@echo "Running Accuracy Gate..."
+	$(GO) test -v ./internal/simd/ -run='Accuracy'
+
+oracle-gate:
+	@echo "Running Oracle Gate..."
+	$(GO) test -v ./internal/simd/... -run='Parity|Oracle'
+
 bench:
 	@echo "Running benchmarks..."
 	$(GO) test -short -run='^$$' -bench=. -benchmem ./...
@@ -173,3 +182,16 @@ docker-build-cuda:
 docker-build-metal:
 	@echo "Building Metal Docker image..."
 	$(DOCKER) build -f Dockerfile.metal -t fletcher-metal:$(IMAGE_TAG) .
+
+makehooks:
+	@mkdir -p .git/hooks
+	@chmod +x scripts/verify.sh scripts/check_fuzz_coverage.sh
+	@ln -sf ../../scripts/verify.sh .git/hooks/pre-commit
+	@echo "Pre-commit hook installed."
+
+install-hooks: makehooks
+
+verify:
+	@./scripts/verify.sh
+
+pre-commit: verify

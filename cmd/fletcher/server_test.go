@@ -39,8 +39,8 @@ func (m *mockFlightClient) StartStream(ctx context.Context, datasetName string) 
 func TestServer_Full(t *testing.T) {
 	// 1. Create dummy vocab
 	vocabFile := "test_vocab.txt"
-	os.WriteFile(vocabFile, []byte("[CLS]\n[SEP]\n[UNK]\ntest\n"), 0644)
-	defer os.Remove(vocabFile)
+	_ = os.WriteFile(vocabFile, []byte("[CLS]\n[SEP]\n[UNK]\ntest\n"), 0644)
+	defer func() { _ = os.Remove(vocabFile) }()
 
 	// 2. Create minimal embedder (CPU, bert-tiny)
 	// We skip weight loading by passing empty path
@@ -297,8 +297,8 @@ func TestServer_FP16Transport(t *testing.T) {
 
 func TestServer_E2EHTTPEndpoints(t *testing.T) {
 	vocabFile := "test_vocab_e2e.txt"
-	os.WriteFile(vocabFile, []byte("[CLS]\n[SEP]\n[UNK]\ntest\nhello\nworld\n"), 0644)
-	defer os.Remove(vocabFile)
+	_ = os.WriteFile(vocabFile, []byte("[CLS]\n[SEP]\n[UNK]\ntest\nhello\nworld\n"), 0644)
+	defer func() { _ = os.Remove(vocabFile) }()
 
 	emb, err := embeddings.NewEmbedder(vocabFile, "", false, "bert-tiny", "fp32")
 	if err != nil {

@@ -140,4 +140,3 @@ func percentile(xs []float64, p float64) float64 {
 	}
 	return xs[idx]
 }
-

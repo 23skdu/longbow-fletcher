@@ -59,12 +59,6 @@ func TestEstimateVRAM_Logic(t *testing.T) {
 	// Let's rely on code review for the "FP16" string check or create a fake backend wrapper.
 }
 
-type mockFP16Backend struct {
-	device.Backend
-}
-
-func (m *mockFP16Backend) Name() string { return "Metal-FP16" }
-
 func TestEstimateVRAM_FP16(t *testing.T) {
 	// Setup logic only if we wrap backend properly,
 	// checking via regular TestEstimateVRAM_Logic covers core logic.

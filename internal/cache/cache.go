@@ -29,7 +29,7 @@ func NewMapCache() *MapCache {
 func (c *MapCache) Get(key string) ([]float32, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	// Return copy to avoid modification of cached value
 	if v, ok := c.data[key]; ok {
 		dst := make([]float32, len(v))
@@ -42,7 +42,7 @@ func (c *MapCache) Get(key string) ([]float32, bool) {
 func (c *MapCache) Put(key string, vec []float32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	// Store copy
 	dst := make([]float32, len(vec))
 	copy(dst, vec)

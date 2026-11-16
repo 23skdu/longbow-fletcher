@@ -634,9 +634,6 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 	// Attention: O(L^2) scores + O(L*D) projections
 	// MLP: O(L*D*4)
 
-	hiddenSize := e.models[0].Config.HiddenSize  // e.g., 128
-	layers := e.models[0].Config.NumHiddenLayers // e.g., 2
-
 	// 3. Calculate Memory Usage per Sequence (Heuristic)
 	// Check Backend Precision
 	bytesPerElement := 4
@@ -655,8 +652,8 @@ func (e *Embedder) EstimateVRAM(numSequences int, totalBytes int) int64 {
 		effectiveBatchSize *= 2
 	}
 
-	hiddenSize = e.models[0].Config.HiddenSize
-	layers = e.models[0].Config.NumHiddenLayers
+	hiddenSize := e.models[0].Config.HiddenSize
+	layers := e.models[0].Config.NumHiddenLayers
 
 	// Heuristic Factors (Tunable):
 	// Fixed overhead per batch

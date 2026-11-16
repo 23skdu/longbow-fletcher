@@ -2,10 +2,11 @@ package embeddings
 
 import (
 	"fmt"
-	"github.com/23skdu/longbow-fletcher/internal/device"
-	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 	"math"
 	"testing"
+
+	"github.com/23skdu/longbow-fletcher/internal/device"
+	"github.com/23skdu/longbow-fletcher/internal/embeddings/model"
 )
 
 func TestNaNGuard(t *testing.T) {

@@ -12,36 +12,36 @@ func ExpFast(x float32) float32 {
 	if x < -88 {
 		return 0
 	}
-	
+
 	// exp(x) = 2^(x * log2(e))
 	// log2(e) ≈ 1.442695
 	const log2e = 1.442695
-	
+
 	t := x * log2e
 	k := int(t)
 	if t < 0 {
 		k--
 	}
-	
+
 	// Fractional part in [0, 1)
 	f := t - float32(k)
-	
+
 	// Polynomial approximation for 2^f where f in [0, 1)
 	// 2^f ≈ 1 + f*ln(2) + f^2*ln(2)^2/2 + ...
 	// Simplified: 2^f ≈ 1 + 0.6931*f + 0.2401*f^2 + 0.0554*f^3
 	p := 1.0 + f*(0.6931472+f*(0.2402265+f*0.0555041))
-	
+
 	// Multiply by 2^k using bit manipulation
 	// This requires float32 bit manipulation which is slightly different
 	// but for simplicity/portability we can use math.Ldexp or simple power
 	// However, standard Go math.Ldexp takes float64.
 	// We can use a power of 2 table or simple multiplication.
-	
+
 	// Optimized: float32 exp manipulation
 	// fast 2^k * p
-	
-	return p * float32(math.Pow(2, float64(k))) 
-	// Note: Pow is slow, but we are prototyping. 
+
+	return p * float32(math.Pow(2, float64(k)))
+	// Note: Pow is slow, but we are prototyping.
 	// Ideally we manipulate exponent bits directly.
 }
 
@@ -55,7 +55,7 @@ func TanhFast(x float32) float32 {
 	if x < -4 {
 		return -1
 	}
-	
+
 	// Rational approximation for small x
 	x2 := x * x
 	// Padé approximation: tanh(x) ≈ x * (27 + x^2) / (27 + 9*x^2)
@@ -83,14 +83,14 @@ func SoftmaxFast(row []float32) {
 			max = v
 		}
 	}
-	
+
 	// Exp and sum using fast exp
 	var sum float32
 	for i, v := range row {
 		row[i] = ExpFast(v - max)
 		sum += row[i]
 	}
-	
+
 	// Normalize
 	invSum := 1.0 / sum
 	for i := range row {

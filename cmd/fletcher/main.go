@@ -52,7 +52,7 @@ var (
 	tlsKeyFile       = flag.String("tls-key", "", "TLS key file path")
 	rateLimitRPS     = flag.Float64("rate-limit-rps", 0, "Rate limit: requests per second (0 = disabled)")
 	rateLimitBurst   = flag.Int("rate-limit-burst", 10, "Rate limit: burst size")
-	clientAPIKey    = flag.String("api-key", "", "API key for Longbow authentication")
+	clientAPIKey     = flag.String("api-key", "", "API key for Longbow authentication")
 )
 
 func parseBytes(s string) int64 {
@@ -63,7 +63,7 @@ func parseBytes(s string) int64 {
 	}
 	var val int64
 	var unit string
-	fmt.Sscanf(s, "%d%s", &val, &unit)
+	_, _ = fmt.Sscanf(s, "%d%s", &val, &unit)
 
 	switch unit {
 	case "GB", "G":
@@ -89,7 +89,7 @@ func main() {
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to initialize tracer")
 		}
-		defer shutdown(context.Background())
+		defer func() { _ = shutdown(context.Background()) }()
 	}
 
 	if *cpuProfile != "" {

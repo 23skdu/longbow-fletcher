@@ -747,8 +747,6 @@ func (s *BertSelfAttention) ForwardBatch(hiddenStates device.Tensor, lengths []i
 
 		// Result is the output
 		output = contextLayer
-		// Result is the output
-		output = contextLayer
 	} else {
 		// Variable length path
 		// Fallback to manual loop calling Attention per sequence to avoid NaNs in FusedVarLen

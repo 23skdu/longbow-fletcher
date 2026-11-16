@@ -167,15 +167,11 @@ func NewServer(embedder EmbedderInterface, fc FlightClientInterface, dataset str
 }
 
 var (
-	rateLimitBucket    *rate.Limiter
-	rateLimitEnabled   bool
-	rateRequestsPerSec float64
-	rateBurst          int
+	rateLimitBucket  *rate.Limiter
+	rateLimitEnabled bool
 )
 
 func initRateLimiter(rps float64, burst int) {
-	rateRequestsPerSec = rps
-	rateBurst = burst
 	rateLimitEnabled = rps > 0
 	if rateLimitEnabled {
 		rateLimitBucket = rate.NewLimiter(rate.Limit(rps), burst)
@@ -462,7 +458,7 @@ func (s *Server) forwardToLongbow(ctx context.Context, texts []string, res embed
 	fslArr := array.NewFixedSizeListData(fslData)
 	defer fslArr.Release()
 
-	rec := array.NewRecord(
+	rec := array.NewRecordBatch(
 		arrow.NewSchema(
 			[]arrow.Field{
 				{Name: "text", Type: arrow.BinaryTypes.String},
@@ -531,7 +527,7 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 	totalProcessed := 0
 
 	for reader.Next() {
-		rec := reader.Record()
+		rec := reader.RecordBatch()
 		if rec.NumCols() == 0 {
 			continue
 		}
@@ -634,7 +630,7 @@ func (s *Server) handleEncodeArrow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Processed %d vectors", totalProcessed)
+	_, _ = fmt.Fprintf(w, "Processed %d vectors", totalProcessed)
 }
 
 func (s *Server) processBatch(ctx context.Context, texts []string) {
@@ -799,7 +795,7 @@ func (s *Server) handleV1Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 type V1BatchEmbeddingRequest struct {
@@ -844,7 +840,7 @@ func (s *Server) handleV1EmbeddingsBatch(w http.ResponseWriter, r *http.Request)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 type V1ImageEmbeddingRequest struct {
@@ -900,7 +896,7 @@ func (s *Server) handleV1Models(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleV1ModelsList(w http.ResponseWriter, r *http.Request) {
@@ -917,7 +913,7 @@ func (s *Server) handleV1ModelsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 type V1RerankRequest struct {
@@ -997,7 +993,7 @@ func (s *Server) handleV1Rerank(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func cosineSimilarityFloat64(a, b []float32) float64 {
@@ -1077,5 +1073,5 @@ var openAPISpec = `{
 
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(openAPISpec))
+	_, _ = w.Write([]byte(openAPISpec))
 }

@@ -22,7 +22,7 @@ var (
 		Name: "fletcher_metal_pool_size_bytes",
 		Help: "Current total size of buffers in the pool in bytes",
 	})
-	
+
 	poolBuffers = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "fletcher_metal_pool_buffers_count",
 		Help: "Current total number of buffers in the pool",

@@ -21,19 +21,19 @@ func Float32ToFloat16(f float32) uint16 {
 	if math.IsInf(float64(f), -1) {
 		return 0xFC00 // FP16 -Inf
 	}
-	
+
 	// FP16 range: ±65504 (max normal), ±6.10e-5 (min normal)
 	// Clamp to prevent overflow which can cause NaN
 	const maxFP16 = 65504.0
 	const minNormalFP16 = 6.10351562e-5
-	
+
 	// Clamp to FP16 range
 	if f > maxFP16 {
 		f = maxFP16
 	} else if f < -maxFP16 {
 		f = -maxFP16
 	}
-	
+
 	// Handle values very close to zero (subnormals)
 	absF := f
 	if absF < 0 {
@@ -46,13 +46,13 @@ func Float32ToFloat16(f float32) uint16 {
 		}
 		return 0x0000 // +0
 	}
-	
+
 	bits := math.Float32bits(f)
 	sign := (bits >> 16) & 0x8000
 	// Use signed integer to handle underflow (negative exponent)
-	exp := int((bits >> 23) & 0xFF) - 127 + 15
+	exp := int((bits>>23)&0xFF) - 127 + 15
 	frac := (bits >> 13) & 0x3FF
-	
+
 	// Handle overflow (exponent too large for FP16)
 	if exp >= 0x1F {
 		// Return max value instead of infinity to prevent issues
@@ -61,13 +61,13 @@ func Float32ToFloat16(f float32) uint16 {
 		}
 		return 0x7BFF // Max positive
 	}
-	
+
 	// Handle underflow (exponent too small)
 	if exp <= 0 {
 		// Flush to zero
 		return uint16(sign)
 	}
-	
+
 	return uint16(sign | (uint32(exp) << 10) | frac)
 }
 
@@ -76,7 +76,7 @@ func Float16ToFloat32(h uint16) float32 {
 	sign := (uint32(h) >> 15) & 1
 	exp := (uint32(h) >> 10) & 0x1F
 	frac := uint32(h) & 0x3FF
-	
+
 	if exp == 0 { // Zero/Denorm
 		return 0.0
 	}
@@ -84,7 +84,7 @@ func Float16ToFloat32(h uint16) float32 {
 		bits := (sign << 31) | (0xFF << 23) | (frac << 13)
 		return *(*float32)(unsafe.Pointer(&bits))
 	}
-	
+
 	newExp := int(exp) - 15 + 127
 	bits := (sign << 31) | (uint32(newExp) << 23) | (frac << 13)
 	return *(*float32)(unsafe.Pointer(&bits))

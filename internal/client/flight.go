@@ -54,7 +54,7 @@ func (c *FlightClient) DoPut(ctx context.Context, datasetName string, record arr
 	writer := flight.NewRecordWriter(stream)
 	// Set the flight descriptor in the writer if needed, or send it in the first message.
 	// Flight DoPut usually starts with a FlightDescriptor.
-	// The flight.Client.DoPut doesn't take the descriptor directly, 
+	// The flight.Client.DoPut doesn't take the descriptor directly,
 	// we use the writer to send it.
 	writer.SetFlightDescriptor(desc)
 
@@ -89,7 +89,7 @@ func (c *FlightClient) StartStream(ctx context.Context, datasetName string) *Asy
 		// Default config: 3 consecutive failures, 5s timeout
 		breaker: NewCircuitBreaker(3, 5*time.Second),
 	}
-	
+
 	s.wg.Add(1)
 	go s.run()
 	return s
@@ -114,19 +114,19 @@ func (s *AsyncStream) Close() {
 
 func (s *AsyncStream) run() {
 	defer s.wg.Done()
-	
+
 	var stream flight.FlightService_DoPutClient
 	var writer *flight.Writer
 	var err error
-	
+
 	// Helper to close current stream
 	reset := func() {
 		if writer != nil {
-			writer.Close()
+			_ = writer.Close()
 			writer = nil
 		}
 		if stream != nil {
-			stream.CloseSend() // Best effort
+			_ = stream.CloseSend() // Best effort
 			stream = nil
 		}
 	}
@@ -151,7 +151,7 @@ func (s *AsyncStream) run() {
 				Type: flight.DescriptorPATH,
 				Path: []string{s.dataset},
 			}
-			
+
 			// We use a separate context for the stream I/O so we can cancel it
 			// independently or it ends when s.ctx ends.
 			stream, err = s.client.client.DoPut(s.ctx)
@@ -165,15 +165,15 @@ func (s *AsyncStream) run() {
 					continue
 				}
 			}
-			
+
 			writer = flight.NewRecordWriter(stream)
 			writer.SetFlightDescriptor(desc)
-			
+
 			// Successfully connected (though we only count Write success usually?)
-			// For stream establishment, let's treat it as a success/progress step, 
+			// For stream establishment, let's treat it as a success/progress step,
 			// OR wait for first write. Let's wait for first write to confirm health.
 		}
-		
+
 		// 3. Read from channel
 		select {
 		case <-s.ctx.Done():
@@ -182,8 +182,8 @@ func (s *AsyncStream) run() {
 			// 4. Write
 			if err := writer.Write(rec); err != nil {
 				s.breaker.Failure()
-				// Write failed. Requeue? 
-				// For now, we drop and reconnect to avoid head-of-line blocking 
+				// Write failed. Requeue?
+				// For now, we drop and reconnect to avoid head-of-line blocking
 				// or complex buffer management.
 				// Ideally, we'd log this.
 				rec.Release()
@@ -196,7 +196,6 @@ func (s *AsyncStream) run() {
 		}
 	}
 }
-
 
 // Close closes the client connection.
 func (c *FlightClient) Close() error {

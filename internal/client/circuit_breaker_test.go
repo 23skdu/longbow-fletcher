@@ -35,12 +35,12 @@ func TestCircuitBreaker(t *testing.T) {
 
 	// Wait for timeout (Half-Open)
 	time.Sleep(150 * time.Millisecond)
-	
+
 	// First call should probe (allow) and transit to Half-Open internal check
 	if !cb.Allow() {
 		t.Error("Should allow probe request after timeout")
 	}
-	
+
 	// Check state transition
 	if cb.State() != StateHalfOpen {
 		t.Errorf("Expected HalfOpen state, got %v", cb.State())
@@ -55,7 +55,7 @@ func TestCircuitBreaker(t *testing.T) {
 	// Wait again
 	time.Sleep(150 * time.Millisecond)
 	cb.Allow() // Trigger Half-Open
-	
+
 	// Case B: Probe Succeeds -> Closed
 	cb.Success()
 	if cb.State() != StateClosed {

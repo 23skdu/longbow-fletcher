@@ -37,7 +37,7 @@ func (b *RecordBatchBuilder) BuildRecordBatch(embeddings [][]float32) (arrow.Rec
 	// Build Vector Column
 	listBuilder := array.NewListBuilder(b.mem, arrow.PrimitiveTypes.Float32)
 	defer listBuilder.Release()
-	
+
 	valueBuilder := listBuilder.ValueBuilder().(*array.Float32Builder)
 
 	for _, emb := range embeddings {

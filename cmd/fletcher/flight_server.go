@@ -44,7 +44,7 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 				Msg("Flight DoExchange descriptor")
 		}
 
-		rec := reader.Record()
+		rec := reader.RecordBatch()
 		if rec.NumRows() == 0 {
 			continue
 		}
@@ -109,7 +109,7 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 			}
 
 			if err := writer.Write(outRec); err != nil {
-				writer.Close()
+				_ = writer.Close()
 				outRec.Release()
 				log.Error().Err(err).Msg("Failed to write to stream")
 				return err
@@ -118,7 +118,7 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 		}
 
 		if writer != nil {
-			writer.Close()
+			_ = writer.Close()
 		}
 	}
 
@@ -126,7 +126,7 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 }
 
 // buildEmbeddingBatch creates a record batch from vectors
-func (s *FletcherFlightServer) buildEmbeddingBatch(ids []uint64, vectors []float32, dim int) arrow.Record {
+func (s *FletcherFlightServer) buildEmbeddingBatch(ids []uint64, vectors []float32, dim int) arrow.RecordBatch {
 	pool := s.alloc
 
 	// Builders
@@ -160,7 +160,7 @@ func (s *FletcherFlightServer) buildEmbeddingBatch(ids []uint64, vectors []float
 		nil,
 	)
 
-	return array.NewRecord(schema, []arrow.Array{idArr, embedArr}, int64(count))
+	return array.NewRecordBatch(schema, []arrow.Array{idArr, embedArr}, int64(count))
 }
 
 type TLSConfig struct {
@@ -180,7 +180,7 @@ func StartFlightServer(addr string, embedder EmbedderInterface, tlsConfig *TLSCo
 		log.Info().Msg("Enabling TLS for Flight server")
 	}
 
-	server := flight.NewFlightServer(opts...)
+	server := flight.NewServerWithMiddleware(nil, opts...)
 
 	// Register our custom service implementation
 	server.RegisterFlightService(NewFletcherFlightServer(embedder))

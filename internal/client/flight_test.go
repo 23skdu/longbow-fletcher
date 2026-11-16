@@ -14,7 +14,7 @@ import (
 
 type mockFlightServer struct {
 	flight.BaseFlightServer
-	recordsReceived []arrow.Record
+	recordsReceived []arrow.RecordBatch
 }
 
 func (s *mockFlightServer) DoPut(server flight.FlightService_DoPutServer) error {
@@ -23,18 +23,18 @@ func (s *mockFlightServer) DoPut(server flight.FlightService_DoPutServer) error 
 		if err != nil {
 			return nil
 		}
-		
+
 		record, err := flight.NewRecordReader(server)
 		if err != nil {
 			return err
 		}
-		
+
 		for record.Next() {
-			rec := record.Record()
+			rec := record.RecordBatch()
 			rec.Retain()
 			s.recordsReceived = append(s.recordsReceived, rec)
 		}
-		
+
 		_ = batch // We can check the descriptor here if needed
 	}
 }
@@ -44,11 +44,11 @@ func TestFlightClient_DoPut(t *testing.T) {
 	mockServer := &mockFlightServer{}
 	server := flight.NewServerWithMiddleware(nil)
 	server.RegisterFlightService(mockServer)
-	
+
 	err := server.Init("localhost:0")
 	require.NoError(t, err)
 	addr := server.Addr().String()
-	
+
 	go func() {
 		_ = server.Serve()
 	}()
@@ -56,7 +56,7 @@ func TestFlightClient_DoPut(t *testing.T) {
 
 	client, err := NewFlightClient(addr)
 	require.NoError(t, err)
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	pool := memory.NewGoAllocator()
 	schema := arrow.NewSchema(
@@ -68,7 +68,7 @@ func TestFlightClient_DoPut(t *testing.T) {
 	b.AppendValues([]float32{1.0, 2.0}, nil)
 	a := b.NewArray()
 	defer a.Release()
-	
+
 	rb := array.NewRecordBatch(schema, []arrow.Array{a}, 2)
 	defer rb.Release()
 

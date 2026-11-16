@@ -185,7 +185,6 @@ func (t *WordPieceTokenizer) splitOnPunctuationASCII(text string) []string {
 		if offset == -1 {
 			// No more separators (punct or space)
 			// Consume rest
-			i = len(text)
 			break
 		}
 
