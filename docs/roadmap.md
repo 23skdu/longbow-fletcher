@@ -269,7 +269,6 @@ isolation, and TLS/mTLS.
 
 
 
-- [ ] 3.5 Add audit-friendly structured logs with correlation IDs.
 
 
 
@@ -297,7 +296,6 @@ cross-modal search.
 
 
 
-- [ ] 4.1 Complete `ClipVisionEncoder.EncodeImage` (currently `ErrNotImplemented`).
 
 
 
@@ -451,7 +449,6 @@ Longbow uses Prometheus metrics and OpenTelemetry tracing with defined naming.
 
 
 
-- [ ] 8.1 Update Dockerfiles to Go 1.27.4 and aligned module cache.
 
 
 
