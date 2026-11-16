@@ -154,7 +154,6 @@ Flight with RBAC authorization and TLS/mTLS. Fletcher must match these contracts
 
 
 
-- [ ] 2.1.2 Ensure Fletcher's output schema (`text: utf8`, `embedding: fixed_size_list<float32>[dim]`)
 
 
 
@@ -166,7 +165,6 @@ Flight with RBAC authorization and TLS/mTLS. Fletcher must match these contracts
 
 
 
-- [ ] 2.1.4 Support Longbow namespaces via `namespace/dataset` path parsing
 
 
 
@@ -174,7 +172,6 @@ Flight with RBAC authorization and TLS/mTLS. Fletcher must match these contracts
 
 
 
-- [ ] 2.1.5 Add backpressure handling for Longbow admission control responses.
 
 
 
@@ -210,7 +207,6 @@ analogous to ONNX/WASM/Ollama providers.
 
 
 
-- [ ] 2.2.2 Route requests by `FlightDescriptor`:
 
 
 
@@ -222,7 +218,6 @@ analogous to ONNX/WASM/Ollama providers.
 
 
 
-- [ ] 2.2.3 Support streaming partial results and per-batch error reporting.
 
 
 
@@ -244,7 +239,6 @@ analogous to ONNX/WASM/Ollama providers.
 
 
 
-- [ ] 2.3.2 Add a CI check that builds Fletcher against Longbow's module versions.
 
 
 
@@ -272,7 +266,6 @@ isolation, and TLS/mTLS.
 
 
 
-- [ ] 3.4 Support tenant/namespace scoping in client requests.
 
 
 

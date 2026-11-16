@@ -25,14 +25,23 @@ type TLSConfig struct {
 type ClientConfig struct {
 	TLS    *TLSConfig
 	APIKey string
+	Tenant string
 }
 
 type apiKeyCredentials struct {
-	key string
+	key    string
+	tenant string
 }
 
 func (a apiKeyCredentials) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
-	return map[string]string{"authorization": "Bearer " + a.key}, nil
+	md := map[string]string{}
+	if a.key != "" {
+		md["authorization"] = "Bearer " + a.key
+	}
+	if a.tenant != "" {
+		md["x-tenant"] = a.tenant
+	}
+	return md, nil
 }
 
 func (a apiKeyCredentials) RequireTransportSecurity() bool { return false }
@@ -68,8 +77,8 @@ func buildDialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	if cfg.APIKey != "" {
-		opts = append(opts, grpc.WithPerRPCCredentials(apiKeyCredentials{key: cfg.APIKey}))
+	if cfg.APIKey != "" || cfg.Tenant != "" {
+		opts = append(opts, grpc.WithPerRPCCredentials(apiKeyCredentials{key: cfg.APIKey, tenant: cfg.Tenant}))
 	}
 	return opts, nil
 }
