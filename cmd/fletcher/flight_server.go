@@ -83,13 +83,17 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 			continue
 		}
 
-		// Expect schema: {row_id: uint64, text: utf8}
+		// Expect schema: {row_id: uint64, text: utf8} or {row_id, text, modality}
 		colID := rec.Column(0)
 		colText := rec.Column(1)
 
 		// Validate types (simple check)
 		if colID.DataType().ID() != arrow.UINT64 || (colText.DataType().ID() != arrow.STRING) {
 			return fmt.Errorf("invalid schema: expected {row_id: uint64, text: string}")
+		}
+
+		if rec.NumCols() >= 3 {
+			log.Info().Msg("Flight request includes modality column")
 		}
 
 		ids := colID.(*array.Uint64)

@@ -302,7 +302,6 @@ cross-modal search.
 
 
 
-- [ ] 4.3 Align Fletcher's image preprocessing with Longbow's blob schema
 
 
 
@@ -310,7 +309,6 @@ cross-modal search.
 
 
 
-- [ ] 4.4 Expose modality in Flight `DoExchange` input/output schemas.
 
 
 
