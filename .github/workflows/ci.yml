@@ -20,3 +20,5 @@ jobs:
         run: make verify
       - name: Bench build
         run: make build-bench
+      - name: Security scan
+        run: make security

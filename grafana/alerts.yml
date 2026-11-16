@@ -1,0 +1,17 @@
+groups:
+  - name: fletcher
+    rules:
+      - alert: FletcherHighLatency
+        expr: histogram_quantile(0.99, rate(fletcher_request_duration_seconds_bucket[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fletcher request latency is high"
+      - alert: FletcherNoTraffic
+        expr: rate(fletcher_vectors_processed_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Fletcher has processed no vectors recently"

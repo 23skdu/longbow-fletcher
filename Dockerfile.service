@@ -26,14 +26,18 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Install certificates for Flight/HTTP
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r fletcher && useradd -r -g fletcher fletcher
 
+# Copy artifacts
 COPY --from=builder /app/fletcher /fletcher
 COPY --from=builder /app/vocab.txt /vocab.txt
-# Note: Weights file needs to be mounted or downloaded.
+
+RUN chown -R fletcher:fletcher /app /fletcher /vocab.txt
+
+USER fletcher
 
 EXPOSE 8080
 
 # Default command: Listen on 8080 in Server Mode
-# User should mount -v /path/to/weights:/weights and pass -weights flag if needed.
 ENTRYPOINT ["/fletcher", "-listen", ":8080"]

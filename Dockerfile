@@ -22,12 +22,17 @@ RUN CGO_ENABLED=1 GOOS=linux go build -tags metal -ldflags="-s -w -extldflags '-
 FROM alpine:latest
 
 # Install runtime dependencies
-RUN apk add --no-cache openblas libstdc++
+RUN apk add --no-cache openblas libstdc++ \
+    && addgroup -S fletcher && adduser -S fletcher -G fletcher
 
 WORKDIR /app
 
 # Copy the binary
 COPY --from=builder /app/fletcher /app/fletcher
 COPY --from=builder /app/vocab.txt /app/vocab.txt
+
+RUN chown -R fletcher:fletcher /app
+
+USER fletcher
 
 ENTRYPOINT ["/app/fletcher"]

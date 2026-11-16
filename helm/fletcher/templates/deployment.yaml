@@ -62,6 +62,20 @@ spec:
             - "-api-key"
             - "{{ .Values.server.apiKey }}"
             {{- end }}
+            {{- if .Values.server.serverAPIKey }}
+            - "-server-api-key"
+            - "{{ .Values.server.serverAPIKey }}"
+            {{- end }}
+            {{- if .Values.server.tenant }}
+            - "-tenant"
+            - "{{ .Values.server.tenant }}"
+            {{- end }}
+            {{- if .Values.server.tls.enabled }}
+            - "-tls-cert"
+            - "{{ .Values.server.tls.certFile }}"
+            - "-tls-key"
+            - "{{ .Values.server.tls.keyFile }}"
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

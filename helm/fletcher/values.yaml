@@ -18,16 +18,17 @@ serviceAccount:
 
 podAnnotations: {}
 
-podSecurityContext: {}
-  # fsGroup: 2000
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 2000
 
-securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
 
 service:
   type: ClusterIP
@@ -75,6 +76,16 @@ server:
   flightPort: 9090
   # API Key for authentication (optional)
   apiKey: ""
+  # API key required by Fletcher HTTP server (optional)
+  serverAPIKey: ""
+  # Tenant for Longbow authentication (optional)
+  tenant: ""
+  # TLS/mTLS settings for Flight server
+  tls:
+    enabled: false
+    certFile: ""
+    keyFile: ""
+    caFile: ""
   # Vocab file path
   vocabPath: "vocab.txt"
   # Weights file path
