@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:13.5.0-devel-ubuntu22.04 AS builder
 
 WORKDIR /app
 
@@ -45,7 +45,7 @@ RUN CGO_ENABLED=1 GOOS=linux go build -tags cuda \
     -o fletcher ./cmd/fletcher
 
 # Stage 2: Runtime image
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+FROM nvidia/cuda:13.5.0-runtime-ubuntu22.04
 
 WORKDIR /app
 
