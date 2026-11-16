@@ -3280,9 +3280,7 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 - [ ] A.7 Add CI job building against Longbow module versions.
 
 ### Batch B - Security and Observability (High Impact)
-- [ ] B.1 Implement full mTLS client/server certificate loading.
 - [ ] B.2 Add tenant propagation to all client requests.
-- [ ] B.3 Add correlation IDs to HTTP and Flight logs.
 - [ ] B.4 Align metric names and add Grafana dashboard templates.
 - [ ] B.5 Propagate OpenTelemetry trace context over gRPC metadata.
 

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"google.golang.org/grpc/credentials"
 
@@ -196,18 +199,33 @@ func (s *FletcherFlightServer) buildEmbeddingBatch(ids []uint64, vectors []float
 type TLSConfig struct {
 	CertFile string
 	KeyFile  string
+	CAFile   string
 }
 
 func StartFlightServer(addr string, embedder EmbedderInterface, tlsConfig *TLSConfig) {
 	// Create the generic Flight Server which manages the GRPC lifecycle
 	var opts []grpc.ServerOption
 	if tlsConfig != nil && tlsConfig.CertFile != "" && tlsConfig.KeyFile != "" {
-		creds, err := credentials.NewServerTLSFromFile(tlsConfig.CertFile, tlsConfig.KeyFile)
+		cert, err := tls.LoadX509KeyPair(tlsConfig.CertFile, tlsConfig.KeyFile)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Failed to load TLS credentials")
 		}
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+		if tlsConfig.CAFile != "" {
+			caPEM, err := os.ReadFile(tlsConfig.CAFile)
+			if err != nil {
+				log.Fatal().Err(err).Msg("Failed to read CA file")
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(caPEM) {
+				log.Fatal().Msg("Failed to parse CA certificate")
+			}
+			tlsCfg.ClientCAs = pool
+			tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+		creds := credentials.NewTLS(tlsCfg)
 		opts = append(opts, grpc.Creds(creds))
-		log.Info().Msg("Enabling TLS for Flight server")
+		log.Info().Msg("Enabling TLS/mTLS for Flight server")
 	}
 
 	server := flight.NewServerWithMiddleware(nil, opts...)

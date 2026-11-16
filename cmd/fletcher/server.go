@@ -243,7 +243,7 @@ func startServer(addr string, embedder EmbedderInterface, fc FlightClientInterfa
 		log.Info().Msg("Forwarding to Longbow at specified server address")
 	}
 
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	if err := http.ListenAndServe(addr, correlationMiddleware(http.DefaultServeMux)); err != nil {
 		log.Fatal().Err(err).Msg("Server failed")
 	}
 }
@@ -1074,4 +1074,16 @@ var openAPISpec = `{
 func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(openAPISpec))
+}
+
+func correlationMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("X-Request-ID")
+		if id == "" {
+			id = fmt.Sprintf("%x", time.Now().UnixNano())
+		}
+		w.Header().Set("X-Request-ID", id)
+		log.Info().Str("request_id", id).Str("method", r.Method).Str("path", r.URL.Path).Msg("request")
+		next.ServeHTTP(w, r)
+	})
 }
