@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -80,5 +81,6 @@ func buildDialOptions(cfg ClientConfig) ([]grpc.DialOption, error) {
 	if cfg.APIKey != "" || cfg.Tenant != "" {
 		opts = append(opts, grpc.WithPerRPCCredentials(apiKeyCredentials{key: cfg.APIKey, tenant: cfg.Tenant}))
 	}
+	opts = append(opts, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	return opts, nil
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc/credentials"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -228,6 +229,7 @@ func StartFlightServer(addr string, embedder EmbedderInterface, tlsConfig *TLSCo
 		log.Info().Msg("Enabling TLS/mTLS for Flight server")
 	}
 
+	opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	server := flight.NewServerWithMiddleware(nil, opts...)
 
 	// Register our custom service implementation

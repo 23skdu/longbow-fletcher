@@ -388,7 +388,6 @@ Longbow uses Prometheus metrics and OpenTelemetry tracing with defined naming.
 
 
 
-- [ ] 6.2 Propagate trace context over Flight gRPC metadata.
 
 
 
