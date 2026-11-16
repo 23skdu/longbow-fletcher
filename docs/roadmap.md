@@ -3277,9 +3277,6 @@ Support all standard embedding dimensions and Go native datatypes for maximum fl
 
 ### Batch A - Protocol and Transport (High Impact)
 - [ ] A.2 Implement Longbow namespace path parsing in client (`namespace/dataset`).
-- [ ] A.3 Add admission-control backpressure retries in `AsyncStream`.
-- [ ] A.4 Route Flight `DoExchange` by descriptor (`embed`, `search`, `ingest`).
-- [ ] A.5 Implement per-batch error reporting in `DoExchange` responses.
 - [ ] A.7 Add CI job building against Longbow module versions.
 
 ### Batch B - Security and Observability (High Impact)

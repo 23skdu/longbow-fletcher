@@ -68,6 +68,10 @@ func (s *FletcherFlightServer) DoExchange(stream flight.FlightService_DoExchange
 				Str("cmd", string(desc.Cmd)).
 				Strs("path", desc.Path).
 				Msg("Flight DoExchange descriptor")
+
+			if len(desc.Path) > 0 && desc.Path[0] == "ingest" {
+				return fmt.Errorf("ingest not supported over Fletcher embedding service; use Longbow DoPut")
+			}
 		}
 
 		rec := reader.RecordBatch()
