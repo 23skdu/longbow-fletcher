@@ -229,7 +229,7 @@ longbow-fletcher/
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details.
+This project is released into the public domain under the [Unlicense](https://unlicense.org). See [LICENSE](LICENSE) for details.
 
 ## Support
 
